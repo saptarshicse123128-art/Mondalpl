@@ -4,10 +4,7 @@ import {
   query,
   where,
   getDocs,
-  orderBy,
-  limit,
-  startAt,
-  endAt
+  orderBy
 } from 'firebase/firestore';
 
 /**
@@ -351,10 +348,5 @@ export const exportUtils = {
   }
 };
 
-export default {
-  searchUtils,
-  analyticsUtils,
-  validationUtils,
-  exportUtils
-};
-// Note: default export removed to avoid circular import / initialization issues.
+// Named exports are used above (searchUtils, analyticsUtils, validationUtils, exportUtils)
+// No default export to avoid circular import / initialization issues.
