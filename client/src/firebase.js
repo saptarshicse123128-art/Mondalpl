@@ -15,6 +15,20 @@ const firebaseConfig = {
   measurementId: process.env.REACT_APP_FIREBASE_MEASUREMENT_ID
 };
 
+// Helpful runtime validation: throw a clear error if required env vars are missing
+if (!firebaseConfig.apiKey || !firebaseConfig.projectId || !firebaseConfig.appId) {
+  // Log which values are missing (avoid printing the full API key in logs unless present)
+  const missing = [];
+  if (!firebaseConfig.apiKey) missing.push('REACT_APP_FIREBASE_API_KEY');
+  if (!firebaseConfig.projectId) missing.push('REACT_APP_FIREBASE_PROJECT_ID');
+  if (!firebaseConfig.appId) missing.push('REACT_APP_FIREBASE_APP_ID');
+  console.error(`Firebase configuration error: missing environment variables: ${missing.join(', ')}`);
+  throw new Error(
+    `Missing required Firebase environment variables: ${missing.join(', ')}. ` +
+    `Create a client/.env file or set them in your environment. See .env.example.`
+  );
+}
+
 // Initialize Firebase
 const app = initializeApp(firebaseConfig);
 
