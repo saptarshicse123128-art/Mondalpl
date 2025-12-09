@@ -9,6 +9,7 @@ import {
   serverTimestamp
 } from 'firebase/firestore';
 import { db } from '../../firebase';
+import { categoryService } from '../../services/firebaseService';
 import './StockManagement.css';
 
 function StockManagement() {
@@ -20,14 +21,30 @@ function StockManagement() {
     description: '',
     price: '',
     quantity: '',
-    category: ''
+    category: '',
+    subcategory: ''
   });
   const [loading, setLoading] = useState(false);
   const [initialLoading, setInitialLoading] = useState(true);
   const [message, setMessage] = useState({ type: '', text: '' });
   const [searchQuery, setSearchQuery] = useState('');
+  const [categories, setCategories] = useState([]);
+  const [selectedCategoryId, setSelectedCategoryId] = useState('');
+  const [subcategories, setSubcategories] = useState([]);
+  const [showCategoryPanel, setShowCategoryPanel] = useState(false);
+  const [newCategoryName, setNewCategoryName] = useState('');
+  const [newSubcategoryName, setNewSubcategoryName] = useState('');
 
   useEffect(() => {
+    // Subscribe to categories collection so form can show category/subcategory options
+    const unsubscribeCategories = categoryService.onCategoriesChange((cats, err) => {
+      if (err) {
+        console.error('Failed to listen categories:', err);
+        return;
+      }
+      setCategories(cats || []);
+    });
+
     // Set up real-time listener for products from Firestore
     const productsCollection = collection(db, 'products');
 
@@ -58,14 +75,33 @@ function StockManagement() {
       }
     );
 
-    return () => unsubscribe();
+    return () => {
+      unsubscribe();
+      if (typeof unsubscribeCategories === 'function') unsubscribeCategories();
+    };
   }, []);
+
+  // When categories change, if current selectedCategoryId exists update its subcategories
+  useEffect(() => {
+    if (!selectedCategoryId) return;
+    const cat = categories.find((c) => c.id === selectedCategoryId);
+    setSubcategories(cat?.subcategories || []);
+  }, [categories, selectedCategoryId]);
 
   const handleInputChange = (e) => {
     setFormData({
       ...formData,
       [e.target.name]: e.target.value
     });
+  };
+
+  const handleCategorySelect = (e) => {
+    const catId = e.target.value;
+    setSelectedCategoryId(catId);
+    const cat = categories.find((c) => c.id === catId);
+    setSubcategories(cat?.subcategories || []);
+    // Keep product.category as the category name for storage
+    setFormData({ ...formData, category: cat ? cat.name : '' , subcategory: '' });
   };
 
   const handleAddProduct = async (e) => {
@@ -75,12 +111,19 @@ function StockManagement() {
     
     try {
       // Add product to Firestore
+      // Use selected category name when available
+      const categoryName = (() => {
+        const cat = categories.find((c) => c.id === selectedCategoryId);
+        return cat ? cat.name : formData.category.trim();
+      })();
+
       await addDoc(collection(db, 'products'), {
         name: formData.name.trim(),
         description: formData.description.trim(),
         price: parseFloat(formData.price),
         quantity: parseInt(formData.quantity),
-        category: formData.category.trim(),
+        category: categoryName,
+        subcategory: formData.subcategory?.trim() || '',
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp()
       });
@@ -90,8 +133,10 @@ function StockManagement() {
         description: '',
         price: '',
         quantity: '',
-        category: ''
+        category: '',
+        subcategory: ''
       });
+      setSelectedCategoryId('');
       setShowAddForm(false);
       setMessage({ type: 'success', text: 'Product added successfully!' });
       
@@ -124,8 +169,18 @@ function StockManagement() {
       description: product.description || '',
       price: product.price?.toString() || '',
       quantity: product.quantity?.toString() || '',
-      category: product.category || ''
+      category: product.category || '',
+      subcategory: product.subcategory || ''
     });
+    // try to find category id by name
+    const matched = categories.find((c) => c.name === (product.category || ''));
+    if (matched) {
+      setSelectedCategoryId(matched.id);
+      setSubcategories(matched.subcategories || []);
+    } else {
+      setSelectedCategoryId('');
+      setSubcategories([]);
+    }
     setShowAddForm(true);
   };
 
@@ -136,12 +191,18 @@ function StockManagement() {
     
     try {
       const productRef = doc(db, 'products', editingProduct);
+      const categoryName = (() => {
+        const cat = categories.find((c) => c.id === selectedCategoryId);
+        return cat ? cat.name : formData.category.trim();
+      })();
+
       await updateDoc(productRef, {
         name: formData.name.trim(),
         description: formData.description.trim(),
         price: parseFloat(formData.price),
         quantity: parseInt(formData.quantity),
-        category: formData.category.trim(),
+        category: categoryName,
+        subcategory: formData.subcategory?.trim() || '',
         updatedAt: serverTimestamp()
       });
       
@@ -150,8 +211,10 @@ function StockManagement() {
         description: '',
         price: '',
         quantity: '',
-        category: ''
+        category: '',
+        subcategory: ''
       });
+      setSelectedCategoryId('');
       setShowAddForm(false);
       setEditingProduct(null);
       setMessage({ type: 'success', text: 'Product updated successfully!' });
@@ -169,11 +232,40 @@ function StockManagement() {
       description: '',
       price: '',
       quantity: '',
-      category: ''
+      category: '',
+      subcategory: ''
     });
     setShowAddForm(false);
     setEditingProduct(null);
     setMessage({ type: '', text: '' });
+  };
+
+  // Category management helpers
+  const handleAddCategory = async () => {
+    if (!newCategoryName.trim()) return setMessage({ type: 'error', text: 'Category name required' });
+    try {
+      await categoryService.addCategory(newCategoryName.trim());
+      setNewCategoryName('');
+      setMessage({ type: 'success', text: 'Category added' });
+      setTimeout(() => setMessage({ type: '', text: '' }), 2000);
+    } catch (err) {
+      console.error('Add category failed', err);
+      setMessage({ type: 'error', text: 'Failed to add category' });
+    }
+  };
+
+  const handleAddSubcategory = async (categoryId) => {
+    const name = newSubcategoryName.trim();
+    if (!categoryId || !name) return setMessage({ type: 'error', text: 'Select category and enter subcategory' });
+    try {
+      await categoryService.addSubcategory(categoryId, name);
+      setNewSubcategoryName('');
+      setMessage({ type: 'success', text: 'Subcategory added' });
+      setTimeout(() => setMessage({ type: '', text: '' }), 2000);
+    } catch (err) {
+      console.error('Add subcategory failed', err);
+      setMessage({ type: 'error', text: 'Failed to add subcategory' });
+    }
   };
 
   const handleIncrementQuantity = async (productId, currentQuantity) => {
@@ -266,12 +358,42 @@ function StockManagement() {
               </div>
               <div className="form-group">
                 <label>Category *</label>
+                <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                  <select
+                    name="categoryId"
+                    value={selectedCategoryId}
+                    onChange={handleCategorySelect}
+                    required
+                  >
+                    <option value="">Select category</option>
+                    {categories.map((c) => (
+                      <option key={c.id} value={c.id}>{c.name}</option>
+                    ))}
+                  </select>
+                  <select
+                    name="subcategory"
+                    value={formData.subcategory}
+                    onChange={handleInputChange}
+                    style={{ minWidth: 160 }}
+                  >
+                    <option value="">No subcategory</option>
+                    {subcategories.map((s) => (
+                      <option key={s} value={s}>{s}</option>
+                    ))}
+                  </select>
+                  <button type="button" className="small-btn" onClick={() => setShowCategoryPanel((v) => !v)}>
+                    Manage
+                  </button>
+                </div>
+                {/* Allow manual entry if user prefers */}
+                <small className="muted">Or type a category below to save with product</small>
                 <input
                   type="text"
                   name="category"
                   value={formData.category}
                   onChange={handleInputChange}
-                  required
+                  placeholder="(optional) fallback category name"
+                  style={{ marginTop: 8 }}
                 />
               </div>
             </div>
@@ -316,6 +438,51 @@ function StockManagement() {
               }
             </button>
           </form>
+          {showCategoryPanel && (
+            <div className="category-panel">
+              <h4>Manage Categories</h4>
+              <div className="form-row">
+                <div className="form-group">
+                  <label>New Category</label>
+                  <input
+                    type="text"
+                    value={newCategoryName}
+                    onChange={(e) => setNewCategoryName(e.target.value)}
+                    placeholder="Category name"
+                  />
+                  <button type="button" className="submit-btn" onClick={handleAddCategory}>Add Category</button>
+                </div>
+                <div className="form-group">
+                  <label>New Subcategory</label>
+                  <select value={selectedCategoryId} onChange={(e) => setSelectedCategoryId(e.target.value)}>
+                    <option value="">Select category</option>
+                    {categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+                  </select>
+                  <input
+                    type="text"
+                    value={newSubcategoryName}
+                    onChange={(e) => setNewSubcategoryName(e.target.value)}
+                    placeholder="Subcategory name"
+                  />
+                  <button type="button" className="submit-btn" onClick={() => handleAddSubcategory(selectedCategoryId)}>Add Subcategory</button>
+                </div>
+              </div>
+
+              <div className="categories-list">
+                <h5>Existing Categories</h5>
+                <ul>
+                  {categories.map((c) => (
+                    <li key={c.id}>
+                      <strong>{c.name}</strong>
+                      {Array.isArray(c.subcategories) && c.subcategories.length > 0 && (
+                        <div className="sub-list">{c.subcategories.join(', ')}</div>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            </div>
+          )}
         </div>
       )}
 
@@ -354,7 +521,7 @@ function StockManagement() {
               {filteredProducts.map((product) => (
                 <tr key={product.id}>
                   <td>{product.name}</td>
-                  <td>{product.category}</td>
+                  <td>{product.category}{product.subcategory ? ' / ' + product.subcategory : ''}</td>
                   <td>{product.description || '-'}</td>
                   <td>₹{product.price?.toFixed(2) || '0.00'}</td>
                   <td>

@@ -4,6 +4,86 @@ import { db } from '../../firebase';
 import { analyticsUtils, searchUtils } from '../../utils/firebaseUtils';
 import './Analytics.css';
 
+// Small inline SVG LineChart component — no external deps
+function LineChart({ data }) {
+  const [hover, setHover] = useState(null);
+
+  // dimensions
+  const width = 800;
+  const height = 380;
+  const padding = { top: 30, right: 40, bottom: 80, left: 48 };
+
+  const totals = data.map((d) => d.total || 0);
+  const max = Math.max(...totals, 1);
+
+  // map data to points
+  const points = data.map((d, i) => {
+    const x = padding.left + (i * (width - padding.left - padding.right)) / Math.max(1, data.length - 1);
+    const y = padding.top + (1 - (d.total / max)) * (height - padding.top - padding.bottom);
+    return { x, y, label: new Date(d.date).toLocaleDateString('en-IN'), value: d.total };
+  });
+
+  const pathD = points.map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.x.toFixed(2)} ${p.y.toFixed(2)}`).join(' ');
+
+  return (
+    <div className="linechart-wrapper" style={{ maxWidth: '100%', overflowX: 'auto' }}>
+      <svg viewBox={`0 0 ${width} ${height}`} width="100%" height="380" preserveAspectRatio="xMidYMid meet">
+        <defs>
+          <linearGradient id="lineGrad" x1="0" x2="0" y1="0" y2="1">
+            <stop offset="0%" stopColor="#21b6ae" stopOpacity="1" />
+            <stop offset="100%" stopColor="#21b6ae" stopOpacity="0.12" />
+          </linearGradient>
+        </defs>
+
+        {/* background */}
+        <rect x="0" y="0" width="100%" height="100%" fill="#ffffff" />
+
+        {/* horizontal grid lines */}
+        {[0, 0.25, 0.5, 0.75, 1].map((t, idx) => (
+          <line
+            key={idx}
+            x1={padding.left}
+            x2={width - padding.right}
+            y1={padding.top + t * (height - padding.top - padding.bottom)}
+            y2={padding.top + t * (height - padding.top - padding.bottom)}
+            stroke="rgba(0,0,0,0.1)"
+            strokeWidth="1"
+          />
+        ))}
+
+        {/* path fill */}
+        <path d={`${pathD} L ${width - padding.right} ${height - padding.bottom} L ${padding.left} ${height - padding.bottom} Z`} fill="url(#lineGrad)" opacity="0.9" />
+
+        {/* line */}
+        <path d={pathD} fill="none" stroke="#21b6ae" strokeWidth="3" strokeLinejoin="round" strokeLinecap="round" />
+
+        {/* points */}
+        {points.map((p, idx) => {
+          // Smart tooltip positioning: show below if point is in top half, above if in bottom half
+          const isTopHalf = p.y < height / 2;
+          const tooltipY = isTopHalf ? p.y + 50 : p.y - 58;
+          const textY1 = isTopHalf ? p.y + 70 : p.y - 38;
+          const textY2 = isTopHalf ? p.y + 84 : p.y - 22;
+          
+          return (
+            <g key={idx} onMouseEnter={() => setHover(idx)} onMouseLeave={() => setHover(null)} style={{ cursor: 'pointer' }}>
+              <circle cx={p.x} cy={p.y} r={6} fill="#21b6ae" stroke="#fff" strokeWidth={2} />
+              {hover === idx && (
+                <g>
+                  <rect x={p.x - 60} y={tooltipY} width={120} height={36} rx={6} fill="#333" opacity={0.95} />
+                  <text x={p.x - 52} y={textY1} fill="#fff" fontSize="12">{p.label}</text>
+                  <text x={p.x - 52} y={textY2} fill="#21b6ae" fontSize="13">₹{p.value}</text>
+                </g>
+              )}
+              <text x={p.x} y={height - padding.bottom + 18} fontSize="12" fill="#333" textAnchor="middle">{new Date(data[idx].date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}</text>
+            </g>
+          );
+        })}
+      </svg>
+    </div>
+  );
+}
+
 function Analytics() {
   const [totalSales, setTotalSales] = useState(0);
   const [billCount, setBillCount] = useState(0);
@@ -121,22 +201,9 @@ function Analytics() {
       {/* Sales Chart */}
       <div className="chart-section">
         <h3>📈 Sales Trend (Last 7 Days)</h3>
-        <div className="sales-chart">
+        <div className="sales-chart dark-chart">
           {salesData.length > 0 ? (
-            <div className="bar-chart">
-              {salesData.map((data, index) => {
-                const maxSale = Math.max(...salesData.map(d => d.total)) || 1;
-                const percentage = (data.total / maxSale) * 100;
-                return (
-                  <div key={index} className="bar-container">
-                    <div className="bar" style={{ height: `${percentage}%` }}>
-                      <span className="bar-value">₹{(data.total / 1000).toFixed(1)}K</span>
-                    </div>
-                    <span className="bar-label">{new Date(data.date).toLocaleDateString('en-IN')}</span>
-                  </div>
-                );
-              })}
-            </div>
+            <LineChart data={salesData} />
           ) : (
             <p className="no-data">No sales data available yet</p>
           )}

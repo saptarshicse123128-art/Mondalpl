@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { collection, addDoc, getDocs, onSnapshot, serverTimestamp, doc, updateDoc, getDoc } from 'firebase/firestore';
+import { collection, addDoc, getDocs, onSnapshot, serverTimestamp, doc, updateDoc, getDoc, deleteDoc } from 'firebase/firestore';
 import { db } from '../../firebase';
 import jsPDF from 'jspdf';
 import 'jspdf-autotable';
@@ -174,6 +174,20 @@ function BillGeneration() {
       await restoreProductStock(productId, cartItem.quantity);
     }
     setCart(cart.filter(item => item.id !== productId));
+  };
+
+  const handleDeleteBill = async (billId) => {
+    if (!window.confirm('Are you sure you want to delete this bill? This action cannot be undone.')) {
+      return;
+    }
+
+    try {
+      await deleteDoc(doc(db, 'bills', billId));
+      alert('Bill deleted successfully.');
+    } catch (error) {
+      console.error('Error deleting bill:', error);
+      alert('Failed to delete bill. Please try again.');
+    }
   };
 
   const calculateSubtotal = () => {
@@ -408,13 +422,22 @@ function BillGeneration() {
                     )}
                     <p><strong>Items:</strong> {bill.items?.length || 0}</p>
                     <p className="bill-total"><strong>Total:</strong> ₹{bill.total?.toFixed(2)}</p>
-                    <button
-                      className="download-bill-btn"
-                      onClick={() => downloadPDF(bill)}
-                      title="Download PDF"
-                    >
-                      📄 Download PDF
-                    </button>
+                    <div className="bill-actions">
+                      <button
+                        className="download-bill-btn"
+                        onClick={() => downloadPDF(bill)}
+                        title="Download PDF"
+                      >
+                        📄 Download PDF
+                      </button>
+                      <button
+                        className="delete-bill-btn"
+                        onClick={() => handleDeleteBill(bill.id)}
+                        title="Delete Bill"
+                      >
+                        🗑️ Delete
+                      </button>
+                    </div>
                   </div>
                 </div>
               ))}

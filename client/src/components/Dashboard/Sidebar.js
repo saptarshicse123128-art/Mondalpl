@@ -27,6 +27,18 @@ function Sidebar({ onLogout }) {
         >
           🧾 Bill Generation
         </NavLink>
+        <NavLink
+          to="/dashboard/categories"
+          className={({ isActive }) => (isActive ? 'nav-item active' : 'nav-item')}
+        >
+          🏷️ Categories
+        </NavLink>
+        <NavLink
+          to="/dashboard/users"
+          className={({ isActive }) => (isActive ? 'nav-item active' : 'nav-item')}
+        >
+          👥 Users
+        </NavLink>
       </nav>
       <div className="sidebar-footer">
         <button onClick={onLogout} className="logout-button">

@@ -2,6 +2,7 @@ import {
   collection,
   addDoc,
   updateDoc,
+  setDoc,
   deleteDoc,
   doc,
   getDocs,
@@ -11,6 +12,8 @@ import {
   orderBy,
   limit,
   onSnapshot,
+  arrayUnion,
+  arrayRemove,
   serverTimestamp,
   writeBatch,
   runTransaction
@@ -544,6 +547,101 @@ export const batchOperations = {
   }
 };
 
+// ===================== CATEGORY SERVICE =====================
+
+export const categoryService = {
+  // Add new category (with optional initial subcategories array)
+  async addCategory(name, subcategories = []) {
+    try {
+      const docRef = await addDoc(collection(db, 'categories'), {
+        name: name.trim(),
+        subcategories,
+        createdAt: serverTimestamp()
+      });
+      return { id: docRef.id, name: name.trim(), subcategories };
+    } catch (error) {
+      console.error('Error adding category:', error);
+      throw error;
+    }
+  },
+
+  // Add a subcategory to an existing category document
+  async addSubcategory(categoryId, subcategoryName) {
+    try {
+      const categoryRef = doc(db, 'categories', categoryId);
+      await updateDoc(categoryRef, {
+        subcategories: arrayUnion(subcategoryName.trim()),
+        updatedAt: serverTimestamp()
+      });
+      return true;
+    } catch (error) {
+      console.error('Error adding subcategory:', error);
+      throw error;
+    }
+  },
+
+  // Get all categories
+  async getAllCategories() {
+    try {
+      const snapshot = await getDocs(collection(db, 'categories'));
+      const categories = [];
+      snapshot.forEach((doc) => {
+        categories.push({ id: doc.id, ...doc.data() });
+      });
+      return categories;
+    } catch (error) {
+      console.error('Error fetching categories:', error);
+      throw error;
+    }
+  },
+
+  // Real-time listener for categories
+  onCategoriesChange(callback) {
+    try {
+      const q = query(collection(db, 'categories'), orderBy('name', 'asc'));
+      return onSnapshot(q, (snapshot) => {
+        const categories = [];
+        snapshot.forEach((doc) => {
+          categories.push({ id: doc.id, ...doc.data() });
+        });
+        callback(categories);
+      }, (error) => {
+        console.error('Error listening to categories:', error);
+        callback(null, error);
+      });
+    } catch (error) {
+      console.error('Error setting up categories listener:', error);
+      throw error;
+    }
+  }
+  ,
+  // Delete a category document entirely
+  async deleteCategory(categoryId) {
+    try {
+      await deleteDoc(doc(db, 'categories', categoryId));
+      return true;
+    } catch (error) {
+      console.error('Error deleting category:', error);
+      throw error;
+    }
+  },
+
+  // Remove a subcategory string from the category's subcategories array
+  async removeSubcategory(categoryId, subcategoryName) {
+    try {
+      const categoryRef = doc(db, 'categories', categoryId);
+      await updateDoc(categoryRef, {
+        subcategories: arrayRemove(subcategoryName.trim()),
+        updatedAt: serverTimestamp()
+      });
+      return true;
+    } catch (error) {
+      console.error('Error removing subcategory:', error);
+      throw error;
+    }
+  }
+};
+
 export default {
   productService,
   billService,
@@ -551,4 +649,5 @@ export default {
   customerService,
   inventoryLogService,
   batchOperations
+  ,categoryService
 };

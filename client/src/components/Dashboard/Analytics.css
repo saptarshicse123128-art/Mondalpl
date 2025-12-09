@@ -91,8 +91,9 @@
 .chart-section {
   background: white;
   border-radius: 12px;
-  padding: 30px;
-  margin-bottom: 40px;
+  padding: 80px 30px 10px 30px;
+  margin-bottom: 10px;
+  margin-top: 70px;
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
 }
 
@@ -104,12 +105,45 @@
 }
 
 .sales-chart {
-  height: 300px;
+  padding: 0.75rem;
   display: flex;
-  align-items: flex-end;
-  gap: 15px;
-  padding: 20px 0;
+  justify-content: center;
+  align-items: center;
+  width: 100%;
   overflow-x: auto;
+  overflow-y: hidden;
+}
+
+.dark-chart {
+  background: #ffffff;
+  padding: 1rem;
+  border-radius: 0;
+  color: #333;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  width: 100%;
+  min-height: 420px;
+  border: none;
+}
+
+.linechart-wrapper {
+  background: transparent;
+  width: 100%;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+
+.linechart-wrapper svg {
+  max-width: 100%;
+  height: auto;
+}
+
+.no-data {
+  color: #ddd;
+  text-align: center;
+  padding: 40px;
 }
 
 .bar-chart {

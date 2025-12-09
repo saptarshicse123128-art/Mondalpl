@@ -5,6 +5,8 @@ import Sidebar from './Sidebar';
 import StockManagement from './StockManagement';
 import BillGeneration from './BillGeneration';
 import Analytics from './Analytics';
+import CategoryManagement from './CategoryManagement';
+import Users from './Users';
 import './Dashboard.css';
 
 function Dashboard() {
@@ -35,7 +37,9 @@ function Dashboard() {
             <Route path="/" element={<Analytics />} />
             <Route path="analytics" element={<Analytics />} />
             <Route path="stock" element={<StockManagement />} />
+            <Route path="categories" element={<CategoryManagement />} />
             <Route path="bills" element={<BillGeneration />} />
+            <Route path="users" element={<Users />} />
           </Routes>
         </div>
       </div>
