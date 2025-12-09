@@ -245,7 +245,10 @@ function BillGeneration() {
       const docRef = await addDoc(collection(db, 'bills'), billData);
       const billWithId = { id: docRef.id, ...billData };
       
-      setGeneratedBill(billWithId);
+      // Automatically download PDF after generating bill
+      setTimeout(() => {
+        downloadPDF(billWithId);
+      }, 500);
       
       // Note: Stock is already updated when products were added to cart
       // So we just clear the cart and form
@@ -257,8 +260,9 @@ function BillGeneration() {
         gst: '',
         phone: ''
       });
+      setGeneratedBill(null); // Clear generatedBill since PDF is auto-downloaded
       
-      alert('Bill generated successfully! Stock quantities have been updated. You can now download the PDF.');
+      alert('Bill generated successfully! PDF download started automatically. Check your Downloads folder.');
     } catch (error) {
       console.error('Error generating bill:', error);
       alert('Failed to generate bill');
@@ -509,7 +513,7 @@ function BillGeneration() {
                       .filter(p => p.quantity > 0)
                       .map((product) => (
                         <option key={product.id} value={product.id}>
-                          {product.name} - ₹{product.price?.toFixed(2)} (Stock: {product.quantity})
+                          {product.name} {product.category ? `(${product.category}${product.subcategory ? ` - ${product.subcategory}` : ''})` : ''} - ₹{product.price?.toFixed(2)} (Stock: {product.quantity})
                         </option>
                       ))}
                   </select>
@@ -545,6 +549,8 @@ function BillGeneration() {
                     <thead>
                       <tr>
                         <th>Product</th>
+                        <th>Category</th>
+                        <th>Subcategory</th>
                         <th>Price</th>
                         <th>Quantity</th>
                         <th>Subtotal</th>
@@ -555,6 +561,8 @@ function BillGeneration() {
                       {cart.map((item) => (
                         <tr key={item.id}>
                           <td>{item.name}</td>
+                          <td>{item.category || '-'}</td>
+                          <td>{item.subcategory || '-'}</td>
                           <td>₹{item.price?.toFixed(2)}</td>
                           <td>
                             <div className="quantity-controls">
@@ -630,14 +638,6 @@ function BillGeneration() {
               >
                 Generate Bill
               </button>
-              {generatedBill && (
-                <button
-                  className="download-pdf-btn"
-                  onClick={downloadPDF}
-                >
-                  📄 Download PDF
-                </button>
-              )}
             </div>
           </div>
         </>
