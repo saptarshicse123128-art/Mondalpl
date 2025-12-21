@@ -708,28 +708,30 @@ function BillGeneration() {
                 <h3>Add Products</h3>
                 <div className="custom-product-switch">
                   <label className="switch-label">
-                    <span>Add Custom Product</span>
-                    <input
-                      type="checkbox"
-                      checked={customProductMode}
-                      onChange={(e) => {
-                        setCustomProductMode(e.target.checked);
-                        if (e.target.checked) {
-                          // Clear selected product when switching to custom mode
-                          setSelectedProduct('');
-                          setProductSearchQuery('');
-                        } else {
-                          // Clear custom product fields when switching back
-                          setCustomProduct({
-                            name: '',
-                            quantity: 1,
-                            price: ''
-                          });
-                        }
-                      }}
-                      className="switch-input"
-                    />
-                    <span className="switch-slider"></span>
+                    <span className="switch-text">Add Custom Product</span>
+                    <div className="switch-container">
+                      <input
+                        type="checkbox"
+                        checked={customProductMode}
+                        onChange={(e) => {
+                          setCustomProductMode(e.target.checked);
+                          if (e.target.checked) {
+                            // Clear selected product when switching to custom mode
+                            setSelectedProduct('');
+                            setProductSearchQuery('');
+                          } else {
+                            // Clear custom product fields when switching back
+                            setCustomProduct({
+                              name: '',
+                              quantity: 1,
+                              price: ''
+                            });
+                          }
+                        }}
+                        className="switch-input"
+                      />
+                      <span className="switch-slider"></span>
+                    </div>
                   </label>
                 </div>
               </div>

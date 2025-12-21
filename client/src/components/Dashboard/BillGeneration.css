@@ -80,17 +80,25 @@
   font-weight: 500;
   color: #555;
   user-select: none;
+  white-space: nowrap;
 }
 
-.switch-label > div {
+.switch-text {
+  flex-shrink: 0;
+}
+
+.switch-container {
   position: relative;
   display: inline-block;
   width: 50px;
   height: 26px;
+  flex-shrink: 0;
 }
 
 .switch-input {
   position: absolute;
+  top: 0;
+  left: 0;
   width: 50px;
   height: 26px;
   appearance: none;
@@ -101,6 +109,7 @@
   transition: background 0.3s;
   margin: 0;
   z-index: 1;
+  padding: 0;
 }
 
 .switch-input:checked {
@@ -853,6 +862,7 @@
   .section-header-with-switch {
     flex-direction: column;
     align-items: flex-start;
+    gap: 0.75rem;
   }
 
   .custom-product-form .form-row {
@@ -861,6 +871,8 @@
 
   .switch-label {
     font-size: 0.9rem;
+    width: 100%;
+    justify-content: space-between;
   }
 }
 
