@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Routes, Route, useNavigate } from 'react-router-dom';
+import { Routes, Route, useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../../contexts/AuthContext';
 import Sidebar from './Sidebar';
 import StockManagement from './StockManagement';
@@ -12,7 +12,25 @@ import './Dashboard.css';
 function Dashboard() {
   const { currentUser, logout } = useAuth();
   const navigate = useNavigate();
+  const location = useLocation();
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+
+  // Map routes to page names
+  const getPageName = () => {
+    const path = location.pathname;
+    if (path.includes('/analytics') || path === '/dashboard' || path === '/dashboard/') {
+      return 'Analytics';
+    } else if (path.includes('/stock')) {
+      return 'Stock Management';
+    } else if (path.includes('/bills')) {
+      return 'Bill Generation';
+    } else if (path.includes('/categories')) {
+      return 'Categories';
+    } else if (path.includes('/users')) {
+      return 'Users';
+    }
+    return 'Dashboard';
+  };
 
   const handleLogout = async () => {
     try {
@@ -42,8 +60,9 @@ function Dashboard() {
             <span></span>
             <span></span>
           </button>
-          <h1>Dashboard</h1>
-          <div className="user-info">
+          <h1 className="desktop-title">Dashboard</h1>
+          <h1 className="mobile-title">{getPageName()}</h1>
+          <div className="user-info desktop-user-info">
             <span>Welcome, {currentUser?.email}</span>
           </div>
         </div>

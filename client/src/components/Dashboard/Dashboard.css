@@ -70,14 +70,26 @@
 
   .dashboard-header {
     padding: 1rem 1.5rem;
+    justify-content: flex-start;
+    gap: 1rem;
   }
 
-  .dashboard-header h1 {
+  .dashboard-header .desktop-title {
+    display: none !important;
+  }
+
+  .dashboard-header .mobile-title {
+    display: block !important;
     font-size: 1.3rem;
+    margin: 0;
+    color: #2c3e50;
+    flex: 1;
+    text-align: left;
   }
 
-  .user-info {
-    font-size: 0.8rem;
+  .dashboard-header .desktop-user-info,
+  .dashboard-header .user-info {
+    display: none !important;
   }
 
   .dashboard-main {
@@ -85,15 +97,26 @@
   }
 }
 
-.dashboard-header h1 {
+.dashboard-header .desktop-title {
   margin: 0;
   color: #2c3e50;
   font-size: 1.8rem;
+  display: block;
+}
+
+.dashboard-header .mobile-title {
+  display: none;
+  margin: 0;
+  color: #2c3e50;
 }
 
 .user-info {
   color: #666;
   font-size: 0.9rem;
+}
+
+.desktop-user-info {
+  display: block;
 }
 
 .dashboard-main {
