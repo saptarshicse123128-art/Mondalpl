@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { collection, addDoc, getDocs, onSnapshot, serverTimestamp, doc, updateDoc, getDoc, deleteDoc } from 'firebase/firestore';
+import { collection, addDoc, getDocs, onSnapshot, serverTimestamp, doc, updateDoc, getDoc, deleteDoc, writeBatch, query } from 'firebase/firestore';
 import { db } from '../../firebase';
 import jsPDF from 'jspdf';
 import 'jspdf-autotable';
@@ -13,13 +13,24 @@ function BillGeneration() {
     date: new Date().toISOString().split('T')[0],
     address: '',
     gst: '',
-    phone: ''
+    phone: '',
+    discount: '',
+    due: ''
   });
   const [selectedProduct, setSelectedProduct] = useState('');
   const [productQuantity, setProductQuantity] = useState(1);
+  const [productSearchQuery, setProductSearchQuery] = useState('');
+  const [showProductDropdown, setShowProductDropdown] = useState(false);
   const [bills, setBills] = useState([]);
   const [showBills, setShowBills] = useState(false);
   const [generatedBill, setGeneratedBill] = useState(null);
+  const [billSearchQuery, setBillSearchQuery] = useState('');
+  const [customProductMode, setCustomProductMode] = useState(false);
+  const [customProduct, setCustomProduct] = useState({
+    name: '',
+    quantity: 1,
+    price: ''
+  });
 
   useEffect(() => {
     const unsubscribe = onSnapshot(collection(db, 'products'), (snapshot) => {
@@ -39,7 +50,13 @@ function BillGeneration() {
       snapshot.forEach((doc) => {
         billsList.push({ id: doc.id, ...doc.data() });
       });
-      setBills(billsList.sort((a, b) => new Date(b.createdAt?.toDate()) - new Date(a.createdAt?.toDate())));
+      // Sort by bill number value (descending - newest first), or by date if no bill number
+      setBills(billsList.sort((a, b) => {
+        if (a.billNumberValue && b.billNumberValue) {
+          return b.billNumberValue - a.billNumberValue;
+        }
+        return new Date(b.createdAt?.toDate()) - new Date(a.createdAt?.toDate());
+      }));
     });
 
     return () => unsubscribe();
@@ -52,7 +69,64 @@ function BillGeneration() {
     });
   };
 
+  const handleAddCustomProduct = () => {
+    if (!customProduct.name.trim()) {
+      alert('Please enter product name');
+      return;
+    }
+    if (customProduct.quantity <= 0) {
+      alert('Quantity must be greater than 0');
+      return;
+    }
+    if (!customProduct.price || parseFloat(customProduct.price) <= 0) {
+      alert('Please enter a valid price');
+      return;
+    }
+
+    // Create a custom product object (not from stock)
+    const customProductItem = {
+      id: `custom_${Date.now()}`, // Unique ID for custom products
+      name: customProduct.name.trim(),
+      price: parseFloat(customProduct.price),
+      quantity: parseInt(customProduct.quantity),
+      category: '',
+      subcategory: '',
+      isCustomProduct: true // Flag to identify custom products
+    };
+
+    // Check if same custom product already exists in cart
+    const existingCustomItem = cart.find(item => 
+      item.isCustomProduct && 
+      item.name.toLowerCase() === customProductItem.name.toLowerCase()
+    );
+
+    if (existingCustomItem) {
+      // Update quantity if same custom product exists
+      setCart(cart.map(item =>
+        item.id === existingCustomItem.id
+          ? { ...item, quantity: existingCustomItem.quantity + customProductItem.quantity }
+          : item
+      ));
+    } else {
+      // Add new custom product to cart
+      setCart([...cart, customProductItem]);
+    }
+
+    // Reset custom product form and turn off switch
+    setCustomProduct({
+      name: '',
+      quantity: 1,
+      price: ''
+    });
+    setCustomProductMode(false);
+  };
+
   const handleAddProduct = async () => {
+    if (customProductMode) {
+      handleAddCustomProduct();
+      return;
+    }
+
     if (!selectedProduct) {
       alert('Please select a product');
       return;
@@ -102,6 +176,7 @@ function BillGeneration() {
 
       setSelectedProduct('');
       setProductQuantity(1);
+      setProductSearchQuery('');
     } catch (error) {
       console.error('Error updating product quantity:', error);
       alert('Failed to update product stock. Please try again.');
@@ -111,6 +186,18 @@ function BillGeneration() {
   const updateCartQuantity = async (productId, newQuantity) => {
     const cartItem = cart.find(item => item.id === productId);
     if (!cartItem) return;
+
+    // If it's a custom product, just update quantity without stock management
+    if (cartItem.isCustomProduct) {
+      if (newQuantity <= 0) {
+        setCart(cart.filter(item => item.id !== productId));
+      } else {
+        setCart(cart.map(item =>
+          item.id === productId ? { ...item, quantity: newQuantity } : item
+        ));
+      }
+      return;
+    }
 
     if (newQuantity <= 0) {
       // Remove from cart and restore stock
@@ -169,8 +256,8 @@ function BillGeneration() {
 
   const removeFromCart = async (productId) => {
     const cartItem = cart.find(item => item.id === productId);
-    if (cartItem) {
-      // Restore stock when removing from cart
+    if (cartItem && !cartItem.isCustomProduct) {
+      // Restore stock when removing from cart (only for stock products)
       await restoreProductStock(productId, cartItem.quantity);
     }
     setCart(cart.filter(item => item.id !== productId));
@@ -190,18 +277,84 @@ function BillGeneration() {
     }
   };
 
+  const generateBillNumber = (billNumber) => {
+    return `MPS/${String(billNumber).padStart(5, '0')}`;
+  };
+
+  const getNextBillNumber = async () => {
+    try {
+      const billsSnapshot = await getDocs(collection(db, 'bills'));
+      const billsList = [];
+      billsSnapshot.forEach((doc) => {
+        billsList.push({ id: doc.id, ...doc.data() });
+      });
+      
+      if (billsList.length === 0) {
+        return 1;
+      }
+
+      // Extract bill numbers and find the highest
+      const billNumbers = billsList
+        .map(bill => bill.billNumber)
+        .filter(bn => bn && bn.startsWith('MPS/'))
+        .map(bn => {
+          const numStr = bn.replace('MPS/', '');
+          return parseInt(numStr, 10);
+        })
+        .filter(num => !isNaN(num));
+
+      if (billNumbers.length === 0) {
+        return 1;
+      }
+
+      const maxBillNumber = Math.max(...billNumbers);
+      return maxBillNumber + 1;
+    } catch (error) {
+      console.error('Error getting next bill number:', error);
+      return 1;
+    }
+  };
+
+  const handleResetAllBills = async () => {
+    if (!window.confirm('Are you sure you want to delete ALL bills? This action cannot be undone and will reset bill numbers to MPS/00001.')) {
+      return;
+    }
+
+    if (!window.confirm('This will permanently delete all bills. Are you absolutely sure?')) {
+      return;
+    }
+
+    try {
+      const billsSnapshot = await getDocs(collection(db, 'bills'));
+      const batch = writeBatch(db);
+      let count = 0;
+
+      billsSnapshot.forEach((doc) => {
+        batch.delete(doc.ref);
+        count++;
+      });
+
+      await batch.commit();
+      alert(`Successfully deleted ${count} bill(s). New bills will start from MPS/00001.`);
+      setBillSearchQuery('');
+    } catch (error) {
+      console.error('Error deleting all bills:', error);
+      alert('Failed to delete all bills. Please try again.');
+    }
+  };
+
   const calculateSubtotal = () => {
     return cart.reduce((total, item) => total + (item.price * item.quantity), 0);
   };
 
-  const calculateGST = () => {
-    const subtotal = calculateSubtotal();
-    const gstRate = parseFloat(billForm.gst) || 0;
-    return (subtotal * gstRate) / 100;
+  const calculateDiscount = () => {
+    return parseFloat(billForm.discount) || 0;
   };
 
-  const calculateTotal = () => {
-    return calculateSubtotal() + calculateGST();
+  const calculateFinalTotal = () => {
+    const subtotal = calculateSubtotal();
+    const discount = calculateDiscount();
+    return Math.max(0, subtotal - discount);
   };
 
   const handleGenerateBill = async () => {
@@ -220,15 +373,20 @@ function BillGeneration() {
 
     try {
       const subtotal = calculateSubtotal();
-      const gstAmount = calculateGST();
-      const total = calculateTotal();
+      const discount = calculateDiscount();
+      const finalTotal = calculateFinalTotal();
+      const nextBillNumber = await getNextBillNumber();
+      const billNumber = generateBillNumber(nextBillNumber);
 
       const billData = {
         fullName: billForm.fullName,
         date: billForm.date,
         address: billForm.address,
         phone: billForm.phone,
-        gst: parseFloat(billForm.gst) || 0,
+        discount: discount,
+        due: billForm.due.trim() || null,
+        billNumber: billNumber,
+        billNumberValue: nextBillNumber,
         items: cart.map(item => ({
           productId: item.id,
           productName: item.name,
@@ -237,8 +395,7 @@ function BillGeneration() {
           subtotal: item.price * item.quantity
         })),
         subtotal: subtotal,
-        gstAmount: gstAmount,
-        total: total,
+        total: finalTotal,
         createdAt: serverTimestamp()
       };
 
@@ -258,7 +415,9 @@ function BillGeneration() {
         date: new Date().toISOString().split('T')[0],
         address: '',
         gst: '',
-        phone: ''
+        phone: '',
+        discount: '',
+        due: ''
       });
       setGeneratedBill(null); // Clear generatedBill since PDF is auto-downloaded
       
@@ -289,7 +448,7 @@ function BillGeneration() {
       
       pdfDoc.setFontSize(12);
       pdfDoc.setFont('helvetica', 'normal');
-      const billNumber = billToDownload.id?.slice(0, 8).toUpperCase() || 'N/A';
+      const billNumber = billToDownload.billNumber || billToDownload.id?.slice(0, 8).toUpperCase() || 'N/A';
       pdfDoc.text('Bill #: ' + billNumber, 20, 35);
       const billDate = billToDownload.date || (billToDownload.createdAt?.toDate ? billToDownload.createdAt.toDate().toLocaleDateString() : 'N/A');
       pdfDoc.text('Date: ' + billDate, 20, 42);
@@ -354,22 +513,31 @@ function BillGeneration() {
       // Totals - using simple text without special characters
       pdfDoc.setFontSize(11);
       pdfDoc.setFont('helvetica', 'normal');
-      const subtotal = parseFloat(billToDownload.subtotal || (billToDownload.total || 0));
+      const subtotal = parseFloat(billToDownload.subtotal || 0);
       pdfDoc.text('Subtotal: Rs. ' + subtotal.toFixed(2), 150, finalY, { align: 'right' });
       
-      if (billToDownload.gst > 0 && billToDownload.gstAmount) {
-        const gstRate = parseFloat(billToDownload.gst || 0);
-        const gstAmount = parseFloat(billToDownload.gstAmount || 0);
-        pdfDoc.text('GST (' + gstRate.toFixed(2) + '%): Rs. ' + gstAmount.toFixed(2), 150, finalY + 7, { align: 'right' });
-        pdfDoc.setFontSize(12);
-        pdfDoc.setFont('helvetica', 'bold');
-        const total = parseFloat(billToDownload.total || 0);
-        pdfDoc.text('Total: Rs. ' + total.toFixed(2), 150, finalY + 15, { align: 'right' });
-      } else {
-        pdfDoc.setFontSize(12);
-        pdfDoc.setFont('helvetica', 'bold');
-        const total = parseFloat(billToDownload.total || subtotal);
-        pdfDoc.text('Total: Rs. ' + total.toFixed(2), 150, finalY + 7, { align: 'right' });
+      let currentYPos = finalY + 7;
+      
+      // Add Discount if provided
+      const discount = parseFloat(billToDownload.discount || 0);
+      if (discount > 0) {
+        pdfDoc.text('Discount: Rs. -' + discount.toFixed(2), 150, currentYPos, { align: 'right' });
+        currentYPos += 7;
+      }
+      
+      // Total Amount
+      pdfDoc.setFontSize(12);
+      pdfDoc.setFont('helvetica', 'bold');
+      const total = parseFloat(billToDownload.total || subtotal);
+      pdfDoc.text('Total Amount: Rs. ' + total.toFixed(2), 150, currentYPos, { align: 'right' });
+      currentYPos += 7;
+      
+      // Add Due field if provided
+      if (billToDownload.due && billToDownload.due.trim()) {
+        pdfDoc.setFontSize(11);
+        pdfDoc.setFont('helvetica', 'normal');
+        pdfDoc.text('Due: ' + String(billToDownload.due), 150, currentYPos, { align: 'right' });
+        currentYPos += 7;
       }
       
       // Footer
@@ -378,7 +546,8 @@ function BillGeneration() {
       pdfDoc.text('Thank you for your business!', 105, finalY + 25, { align: 'center' });
       
       // Save PDF
-      const fileName = `Invoice_${customerName.replace(/\s+/g, '_')}_${billDate.replace(/\//g, '-')}.pdf`;
+      const billNum = billToDownload.billNumber || 'N/A';
+      const fileName = `Invoice_${billNum}_${customerName.replace(/\s+/g, '_')}_${billDate.replace(/\//g, '-')}.pdf`;
       pdfDoc.save(fileName);
       
       // Show success message
@@ -403,19 +572,52 @@ function BillGeneration() {
 
       {showBills ? (
         <div className="bills-list">
-          <h3>All Bills</h3>
+          <div className="bills-list-header">
+            <h3>All Bills</h3>
+            <div className="bills-controls">
+              <input
+                type="text"
+                placeholder="Search by bill number (e.g., MPS/00001)..."
+                value={billSearchQuery}
+                onChange={(e) => setBillSearchQuery(e.target.value)}
+                className="bill-search-input"
+              />
+              <button
+                className="reset-bills-btn"
+                onClick={handleResetAllBills}
+                title="Delete all bills"
+              >
+                🔄 Reset All Bills
+              </button>
+            </div>
+          </div>
           {bills.length === 0 ? (
             <p className="no-bills">No bills generated yet.</p>
           ) : (
-            <div className="bills-grid">
-              {bills.map((bill) => (
-                <div key={bill.id} className="bill-card">
-                  <div className="bill-card-header">
-                    <h4>Bill #{bill.id.slice(0, 8)}</h4>
-                    <span className="bill-date">
-                      {bill.createdAt?.toDate().toLocaleDateString()}
-                    </span>
-                  </div>
+            <>
+              {(() => {
+                const filteredBills = bills.filter(bill => {
+                  if (!billSearchQuery.trim()) return true;
+                  const searchTerm = billSearchQuery.toLowerCase().trim();
+                  const billNum = (bill.billNumber || '').toLowerCase();
+                  // Also search by customer name and bill ID as fallback
+                  const customerName = (bill.fullName || bill.customerName || '').toLowerCase();
+                  const billId = (bill.id || '').toLowerCase();
+                  return billNum.includes(searchTerm) || customerName.includes(searchTerm) || billId.includes(searchTerm);
+                });
+                
+                return filteredBills.length === 0 ? (
+                  <p className="no-bills">No bills found matching your search.</p>
+                ) : (
+                  <div className="bills-grid">
+                    {filteredBills.map((bill) => (
+                      <div key={bill.id} className="bill-card">
+                        <div className="bill-card-header">
+                          <h4>Bill #{bill.billNumber || bill.id.slice(0, 8)}</h4>
+                          <span className="bill-date">
+                            {bill.createdAt?.toDate().toLocaleDateString()}
+                          </span>
+                        </div>
                   <div className="bill-card-body">
                     <p><strong>Customer:</strong> {bill.fullName || bill.customerName}</p>
                     {bill.phone && (
@@ -444,8 +646,11 @@ function BillGeneration() {
                     </div>
                   </div>
                 </div>
-              ))}
-            </div>
+                    ))}
+                  </div>
+                );
+              })()}
+            </>
           )}
         </div>
       ) : (
@@ -499,44 +704,185 @@ function BillGeneration() {
             </div>
 
             <div className="form-section">
-              <h3>Add Products</h3>
-              <div className="product-selector">
-                <div className="form-group">
-                  <label>Select Product *</label>
-                  <select
-                    value={selectedProduct}
-                    onChange={(e) => setSelectedProduct(e.target.value)}
-                    className="product-select"
-                  >
-                    <option value="">Choose a product...</option>
-                    {products
-                      .filter(p => p.quantity > 0)
-                      .map((product) => (
-                        <option key={product.id} value={product.id}>
-                          {product.name} {product.category ? `(${product.category}${product.subcategory ? ` - ${product.subcategory}` : ''})` : ''} - ₹{product.price?.toFixed(2)} (Stock: {product.quantity})
-                        </option>
-                      ))}
-                  </select>
+              <div className="section-header-with-switch">
+                <h3>Add Products</h3>
+                <div className="custom-product-switch">
+                  <label className="switch-label">
+                    <span>Add Custom Product</span>
+                    <input
+                      type="checkbox"
+                      checked={customProductMode}
+                      onChange={(e) => {
+                        setCustomProductMode(e.target.checked);
+                        if (e.target.checked) {
+                          // Clear selected product when switching to custom mode
+                          setSelectedProduct('');
+                          setProductSearchQuery('');
+                        } else {
+                          // Clear custom product fields when switching back
+                          setCustomProduct({
+                            name: '',
+                            quantity: 1,
+                            price: ''
+                          });
+                        }
+                      }}
+                      className="switch-input"
+                    />
+                    <span className="switch-slider"></span>
+                  </label>
                 </div>
-                <div className="form-group">
-                  <label>Quantity *</label>
-                  <input
-                    type="number"
-                    min="1"
-                    value={productQuantity}
-                    onChange={(e) => setProductQuantity(parseInt(e.target.value) || 1)}
-                    className="quantity-input"
-                  />
-                </div>
-                <button
-                  type="button"
-                  className="add-product-btn"
-                  onClick={handleAddProduct}
-                  disabled={!selectedProduct}
-                >
-                  Add Product
-                </button>
               </div>
+              {customProductMode ? (
+                <div className="custom-product-form">
+                  <div className="form-row">
+                    <div className="form-group">
+                      <label>Product Name *</label>
+                      <input
+                        type="text"
+                        value={customProduct.name}
+                        onChange={(e) => setCustomProduct({ ...customProduct, name: e.target.value })}
+                        placeholder="Enter product name"
+                        className="product-search-input"
+                      />
+                    </div>
+                    <div className="form-group">
+                      <label>Quantity *</label>
+                      <input
+                        type="number"
+                        min="1"
+                        value={customProduct.quantity}
+                        onChange={(e) => {
+                          const value = e.target.value;
+                          if (value === '' || value === '0') {
+                            setCustomProduct({ ...customProduct, quantity: '' });
+                          } else {
+                            const numValue = parseInt(value);
+                            if (!isNaN(numValue) && numValue >= 1) {
+                              setCustomProduct({ ...customProduct, quantity: numValue });
+                            }
+                          }
+                        }}
+                        onBlur={(e) => {
+                          if (e.target.value === '' || parseInt(e.target.value) < 1) {
+                            setCustomProduct({ ...customProduct, quantity: 1 });
+                          }
+                        }}
+                        className="quantity-input"
+                        placeholder="Enter quantity"
+                      />
+                    </div>
+                    <div className="form-group">
+                      <label>Price (₹) *</label>
+                      <input
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        value={customProduct.price}
+                        onChange={(e) => setCustomProduct({ ...customProduct, price: e.target.value })}
+                        placeholder="Enter price"
+                        className="quantity-input"
+                      />
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    className="add-product-btn"
+                    onClick={handleAddCustomProduct}
+                    disabled={!customProduct.name.trim() || !customProduct.price || customProduct.quantity < 1}
+                  >
+                    Add Custom Product
+                  </button>
+                </div>
+              ) : (
+                <div className="product-selector">
+                  <div className="form-group product-search-group">
+                    <label>Select Product *</label>
+                    <div className="product-search-container">
+                      <input
+                        type="text"
+                        value={productSearchQuery}
+                        onChange={(e) => {
+                          setProductSearchQuery(e.target.value);
+                          setShowProductDropdown(true);
+                          if (!e.target.value) {
+                            setSelectedProduct('');
+                          }
+                        }}
+                        onFocus={() => setShowProductDropdown(true)}
+                        onBlur={() => {
+                          // Delay hiding dropdown to allow click
+                          setTimeout(() => setShowProductDropdown(false), 200);
+                        }}
+                        className="product-search-input"
+                      />
+                      {showProductDropdown && (
+                        <div className="product-dropdown">
+                          {products
+                            .filter(p => p.quantity > 0 && (!productSearchQuery || p.name.toLowerCase().startsWith(productSearchQuery.toLowerCase())))
+                            .slice(0, 10)
+                            .map((product) => (
+                              <div
+                                key={product.id}
+                                className="product-dropdown-item"
+                                onMouseDown={(e) => {
+                                  e.preventDefault(); // Prevent input blur
+                                  setSelectedProduct(product.id);
+                                  setProductSearchQuery(product.name);
+                                  setShowProductDropdown(false);
+                                }}
+                              >
+                                <span className="product-name">{product.name}</span>
+                                {product.category && (
+                                  <span className="product-category">({product.category}{product.subcategory ? ` - ${product.subcategory}` : ''})</span>
+                                )}
+                                <span className="product-price">₹{product.price?.toFixed(2)}</span>
+                                <span className="product-stock">Stock: {product.quantity}</span>
+                              </div>
+                            ))}
+                          {products.filter(p => p.quantity > 0 && (!productSearchQuery || p.name.toLowerCase().startsWith(productSearchQuery.toLowerCase()))).length === 0 && (
+                            <div className="product-dropdown-item no-results">No products found</div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                  <div className="form-group">
+                    <label>Quantity *</label>
+                    <input
+                      type="number"
+                      min="1"
+                      value={productQuantity}
+                      onChange={(e) => {
+                        const value = e.target.value;
+                        if (value === '' || value === '0') {
+                          setProductQuantity('');
+                        } else {
+                          const numValue = parseInt(value);
+                          if (!isNaN(numValue) && numValue >= 1) {
+                            setProductQuantity(numValue);
+                          }
+                        }
+                      }}
+                      onBlur={(e) => {
+                        if (e.target.value === '' || parseInt(e.target.value) < 1) {
+                          setProductQuantity(1);
+                        }
+                      }}
+                      className="quantity-input"
+                      placeholder="Enter quantity"
+                    />
+                  </div>
+                  <button
+                    type="button"
+                    className="add-product-btn"
+                    onClick={handleAddProduct}
+                    disabled={!selectedProduct}
+                  >
+                    Add Product
+                  </button>
+                </div>
+              )}
             </div>
 
             <div className="form-section">
@@ -560,29 +906,34 @@ function BillGeneration() {
                     <tbody>
                       {cart.map((item) => (
                         <tr key={item.id}>
-                          <td>{item.name}</td>
-                          <td>{item.category || '-'}</td>
-                          <td>{item.subcategory || '-'}</td>
-                          <td>₹{item.price?.toFixed(2)}</td>
-                          <td>
-                            <div className="quantity-controls">
-                              <button
-                                onClick={() => updateCartQuantity(item.id, item.quantity - 1)}
-                                className="qty-btn"
-                              >
-                                -
-                              </button>
-                              <span>{item.quantity}</span>
-                              <button
-                                onClick={() => updateCartQuantity(item.id, item.quantity + 1)}
-                                className="qty-btn"
-                              >
-                                +
-                              </button>
-                            </div>
+                          <td data-label="Product">{item.name}</td>
+                          <td data-label="Category">{item.category || '-'}</td>
+                          <td data-label="Subcategory">{item.subcategory || '-'}</td>
+                          <td data-label="Price">₹{item.price?.toFixed(2)}</td>
+                          <td data-label="Quantity">
+                            <input
+                              type="number"
+                              min="1"
+                              value={item.quantity}
+                              onChange={(e) => {
+                                const newQty = parseInt(e.target.value) || 1;
+                                if (newQty > 0) {
+                                  updateCartQuantity(item.id, newQty);
+                                }
+                              }}
+                              className="quantity-input-edit"
+                              style={{
+                                width: '80px',
+                                padding: '0.5rem',
+                                border: '1px solid #ddd',
+                                borderRadius: '5px',
+                                textAlign: 'center',
+                                fontSize: '1rem'
+                              }}
+                            />
                           </td>
-                          <td>₹{(item.price * item.quantity).toFixed(2)}</td>
-                          <td>
+                          <td data-label="Subtotal">₹{(item.price * item.quantity).toFixed(2)}</td>
+                          <td data-label="Action">
                             <button
                               className="remove-btn"
                               onClick={() => removeFromCart(item.id)}
@@ -605,27 +956,37 @@ function BillGeneration() {
                   <span>Subtotal:</span>
                   <span>₹{calculateSubtotal().toFixed(2)}</span>
                 </div>
-                <div className="form-group gst-field">
-                  <label>GST (%)</label>
+                <div className="form-group discount-field">
+                  <label>Discount (₹)</label>
                   <input
                     type="number"
-                    name="gst"
-                    value={billForm.gst}
+                    name="discount"
+                    value={billForm.discount}
                     onChange={handleFormChange}
-                    placeholder="Enter GST percentage (e.g., 18)"
+                    placeholder="Enter discount amount"
                     min="0"
                     step="0.01"
                   />
                 </div>
-                {billForm.gst > 0 && (
+                {billForm.discount && parseFloat(billForm.discount) > 0 && (
                   <div className="summary-row">
-                    <span>GST ({billForm.gst}%):</span>
-                    <span>₹{calculateGST().toFixed(2)}</span>
+                    <span>Discount:</span>
+                    <span>-₹{calculateDiscount().toFixed(2)}</span>
                   </div>
                 )}
                 <div className="summary-row total-row">
-                  <span><strong>Total Price:</strong></span>
-                  <span><strong>₹{calculateTotal().toFixed(2)}</strong></span>
+                  <span><strong>Total Amount:</strong></span>
+                  <span><strong>₹{calculateFinalTotal().toFixed(2)}</strong></span>
+                </div>
+                <div className="form-group due-field">
+                  <label>Due</label>
+                  <input
+                    type="text"
+                    name="due"
+                    value={billForm.due}
+                    onChange={handleFormChange}
+                    placeholder="Enter due amount or description (optional)"
+                  />
                 </div>
               </div>
             </div>

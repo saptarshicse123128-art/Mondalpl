@@ -19,11 +19,59 @@ export function AuthProvider({ children }) {
   const [loading, setLoading] = useState(true);
 
   function signup(email, password) {
-    return createUserWithEmailAndPassword(auth, email, password);
+    // Check if email is in the allowed list
+    const normalizedEmail = email.toLowerCase().trim();
+    if (!ALLOWED_EMAILS.includes(normalizedEmail)) {
+      return Promise.reject(new Error('Access denied. This email is not authorized to create an account.'));
+    }
+
+    return createUserWithEmailAndPassword(auth, email, password).then(async (userCredential) => {
+      // Double check email after account creation
+      const userEmail = userCredential.user.email?.toLowerCase().trim();
+      if (!ALLOWED_EMAILS.includes(userEmail)) {
+        // Delete the account if email is not allowed
+        await userCredential.user.delete();
+        throw new Error('Access denied. This email is not authorized to create an account.');
+      }
+
+      // Create user document in Firestore
+      try {
+        await setDoc(doc(db, 'users', userCredential.user.uid), {
+          email: userCredential.user.email,
+          lastLogin: serverTimestamp(),
+          isOnline: true,
+          role: 'User',
+          createdAt: serverTimestamp()
+        });
+      } catch (error) {
+        console.error('Error creating user document:', error);
+      }
+      return userCredential;
+    });
   }
 
+  // Allowed email addresses
+  const ALLOWED_EMAILS = [
+    'sunitamondal1809@gmail.com',
+    'mondalplumbingsanitation@gmail.com',
+    'ghoshsaptarshiofficial@gmail.com'
+  ];
+
   function login(email, password) {
+    // Check if email is in the allowed list
+    const normalizedEmail = email.toLowerCase().trim();
+    if (!ALLOWED_EMAILS.includes(normalizedEmail)) {
+      return Promise.reject(new Error('Access denied. This email is not authorized to login.'));
+    }
+
     return signInWithEmailAndPassword(auth, email, password).then(async (userCredential) => {
+      // Double check email after authentication
+      const userEmail = userCredential.user.email?.toLowerCase().trim();
+      if (!ALLOWED_EMAILS.includes(userEmail)) {
+        await signOut(auth);
+        throw new Error('Access denied. This email is not authorized to login.');
+      }
+
       // Save login info to Firestore
       try {
         await updateDoc(doc(db, 'users', userCredential.user.uid), {

@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { Routes, Route, useNavigate } from 'react-router-dom';
 import { useAuth } from '../../contexts/AuthContext';
 import Sidebar from './Sidebar';
@@ -12,6 +12,7 @@ import './Dashboard.css';
 function Dashboard() {
   const { currentUser, logout } = useAuth();
   const navigate = useNavigate();
+  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
 
   const handleLogout = async () => {
     try {
@@ -22,11 +23,25 @@ function Dashboard() {
     }
   };
 
+  const toggleSidebar = () => {
+    setIsSidebarOpen(!isSidebarOpen);
+  };
+
+  const closeSidebar = () => {
+    setIsSidebarOpen(false);
+  };
+
   return (
     <div className="dashboard-container">
-      <Sidebar onLogout={handleLogout} />
+      <Sidebar onLogout={handleLogout} isOpen={isSidebarOpen} onClose={closeSidebar} />
+      {isSidebarOpen && <div className="sidebar-overlay" onClick={closeSidebar}></div>}
       <div className="dashboard-content">
         <div className="dashboard-header">
+          <button className="hamburger-menu" onClick={toggleSidebar} aria-label="Toggle menu">
+            <span></span>
+            <span></span>
+            <span></span>
+          </button>
           <h1>Dashboard</h1>
           <div className="user-info">
             <span>Welcome, {currentUser?.email}</span>

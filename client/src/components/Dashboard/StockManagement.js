@@ -304,6 +304,26 @@ function StockManagement() {
     }
   };
 
+  const handleQuantityChange = async (productId, newQuantity) => {
+    const quantityValue = parseInt(newQuantity) || 0;
+    if (quantityValue < 0) {
+      setMessage({ type: 'error', text: 'Quantity cannot be negative' });
+      setTimeout(() => setMessage({ type: '', text: '' }), 2000);
+      return;
+    }
+    
+    try {
+      const productRef = doc(db, 'products', productId);
+      await updateDoc(productRef, {
+        quantity: quantityValue,
+        updatedAt: serverTimestamp()
+      });
+    } catch (error) {
+      console.error('Error updating quantity:', error);
+      setMessage({ type: 'error', text: `Failed to update quantity: ${error.message}` });
+    }
+  };
+
   // Filter products based on search query
   const filteredProducts = products.filter(product => {
     if (!searchQuery.trim()) return true;
@@ -357,13 +377,12 @@ function StockManagement() {
                 />
               </div>
               <div className="form-group">
-                <label>Category *</label>
+                <label>Category</label>
                 <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
                   <select
                     name="categoryId"
                     value={selectedCategoryId}
                     onChange={handleCategorySelect}
-                    required
                   >
                     <option value="">Select category</option>
                     {categories.map((c) => (
@@ -520,30 +539,28 @@ function StockManagement() {
             <tbody>
               {filteredProducts.map((product) => (
                 <tr key={product.id}>
-                  <td>{product.name}</td>
-                  <td>{product.category}{product.subcategory ? ' / ' + product.subcategory : ''}</td>
-                  <td>{product.description || '-'}</td>
-                  <td>₹{product.price?.toFixed(2) || '0.00'}</td>
-                  <td>
-                    <div className="quantity-controls">
-                      <button
-                        className="qty-btn qty-decrease"
-                        onClick={() => handleDecrementQuantity(product.id, product.quantity || 0)}
-                        title="Decrease quantity"
-                      >
-                        -
-                      </button>
-                      <span className="quantity-value">{product.quantity || 0}</span>
-                      <button
-                        className="qty-btn qty-increase"
-                        onClick={() => handleIncrementQuantity(product.id, product.quantity || 0)}
-                        title="Increase quantity"
-                      >
-                        +
-                      </button>
-                    </div>
+                  <td data-label="Name">{product.name}</td>
+                  <td data-label="Category">{product.category}{product.subcategory ? ' / ' + product.subcategory : ''}</td>
+                  <td data-label="Description">{product.description || '-'}</td>
+                  <td data-label="Price">₹{product.price?.toFixed(2) || '0.00'}</td>
+                  <td data-label="Quantity">
+                    <input
+                      type="number"
+                      min="0"
+                      value={product.quantity || 0}
+                      onChange={(e) => handleQuantityChange(product.id, e.target.value)}
+                      className="quantity-input-edit"
+                      style={{
+                        width: '80px',
+                        padding: '0.5rem',
+                        border: '1px solid #ddd',
+                        borderRadius: '5px',
+                        textAlign: 'center',
+                        fontSize: '1rem'
+                      }}
+                    />
                   </td>
-                  <td>
+                  <td data-label="Actions">
                     <div className="action-buttons">
                       <button
                         className="edit-btn"

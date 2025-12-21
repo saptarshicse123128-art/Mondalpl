@@ -3,6 +3,13 @@ import { useNavigate, Link } from 'react-router-dom';
 import { useAuth } from '../../contexts/AuthContext';
 import './Auth.css';
 
+// Allowed email addresses
+const ALLOWED_EMAILS = [
+  'sunitamondal1809@gmail.com',
+  'mondalplumbingsanitation@gmail.com',
+  'ghoshsaptarshiofficial@gmail.com'
+];
+
 function Login() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -16,6 +23,15 @@ function Login() {
     try {
       setError('');
       setLoading(true);
+      
+      // Check if email is in the allowed list
+      const normalizedEmail = email.toLowerCase().trim();
+      if (!ALLOWED_EMAILS.includes(normalizedEmail)) {
+        setError('Access denied. This email is not authorized to login.');
+        setLoading(false);
+        return;
+      }
+      
       await login(email, password);
       navigate('/dashboard');
     } catch (err) {

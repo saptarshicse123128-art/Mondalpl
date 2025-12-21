@@ -301,17 +301,90 @@ tr:hover {
   padding: 0 0.5rem;
 }
 
+.quantity-input-edit {
+  width: 80px;
+  padding: 0.5rem;
+  border: 1px solid #ddd;
+  border-radius: 5px;
+  text-align: center;
+  font-size: 1rem;
+  font-weight: 500;
+  transition: border-color 0.3s;
+}
+
+.quantity-input-edit:focus {
+  outline: none;
+  border-color: #667eea;
+  box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+}
+
+.quantity-input-edit:hover {
+  border-color: #bbb;
+}
+
 @media (max-width: 768px) {
+  .stock-management {
+    padding: 1rem;
+  }
+
+  .stock-header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 1rem;
+  }
+
+  .stock-header h2 {
+    font-size: 1.3rem;
+  }
+
+  .add-product-btn {
+    width: 100%;
+    font-size: 0.9rem;
+    padding: 0.6rem 1rem;
+  }
+
   .form-row {
     grid-template-columns: 1fr;
   }
   
-  table {
+  .add-product-form {
+    padding: 1rem;
+  }
+
+  .form-group label {
     font-size: 0.9rem;
   }
-  
+
+  .products-table {
+    overflow-x: auto;
+  }
+
+  table {
+    font-size: 0.85rem;
+    min-width: 600px;
+  }
+
   th, td {
-    padding: 0.5rem;
+    padding: 0.5rem 0.3rem;
+    font-size: 0.8rem;
+  }
+
+  .search-input {
+    font-size: 0.9rem;
+  }
+
+  .quantity-input-edit {
+    width: 100%;
+    max-width: 120px;
+  }
+
+  .action-buttons {
+    flex-direction: column;
+    gap: 0.5rem;
+  }
+
+  .edit-btn, .delete-btn {
+    width: 100%;
   }
 }
 
