@@ -457,9 +457,9 @@ function BillGeneration() {
       // Horizontal line from left that passes through the middle of CASH MEMO text
       // Font size 24: text baseline is at y=20, text extends upward ~18-20pt
       // Moving line lower to pass through middle of text
-      const lineY = cashMemoY - 2; // Line passes through middle of text (lower position)
+      const lineY = cashMemoY - 2.5; // Line passes through middle of text (decreased height slightly more)
       pdfDoc.setDrawColor(200, 200, 200);
-      pdfDoc.line(20, lineY, 130, lineY); // Shortened from right side
+      pdfDoc.line(20, lineY, 135, lineY); // Decreased length from right
       
       // Company Name - Right aligned
       pdfDoc.setFontSize(16);
@@ -475,9 +475,9 @@ function BillGeneration() {
       pdfDoc.text('Email - ' + companyEmail, 190, 48, { align: 'right' });
       pdfDoc.text('Phone - ' + companyPhone, 190, 54, { align: 'right' });
       
-      // Horizontal line
+      // Horizontal line (moved down to increase height from top, shortened from both sides)
       pdfDoc.setDrawColor(200, 200, 200);
-      pdfDoc.line(20, 60, 190, 60);
+      pdfDoc.line(45, 68, 190, 68);
       
       // Reset text color to black
       pdfDoc.setTextColor(0, 0, 0);
@@ -488,10 +488,6 @@ function BillGeneration() {
       pdfDoc.setFont('helvetica', 'bold');
       pdfDoc.setTextColor(100, 100, 100);
       pdfDoc.text('BILL TO', 20, startY);
-      
-      // Line under BILL TO
-      pdfDoc.setDrawColor(200, 200, 200);
-      pdfDoc.line(20, startY + 2, 100, startY + 2);
       
       // Customer details
       pdfDoc.setFontSize(10);
@@ -508,20 +504,20 @@ function BillGeneration() {
         currentY += (addressLines.length * 5);
       }
       
-      if (billToDownload.phone || billToDownload.customerPhone) {
-        pdfDoc.text('Phone - ' + String(billToDownload.phone || billToDownload.customerPhone), 20, currentY);
-        currentY += 7;
-      }
+      // Always show phone number field
+      const phoneNumber = billToDownload.phone || billToDownload.customerPhone || '';
+      pdfDoc.text('Phone - ' + phoneNumber, 20, currentY);
+      currentY += 7;
       
-      // BILL NO and DATE on right
+      // BILL NO and DATE on right (lowered)
       const billNumber = billToDownload.billNumber || billToDownload.id?.slice(0, 8).toUpperCase() || 'MPS/0001';
       const billDate = billToDownload.date || (billToDownload.createdAt?.toDate ? billToDownload.createdAt.toDate().toLocaleDateString('en-GB') : new Date().toLocaleDateString('en-GB'));
       
       pdfDoc.setFontSize(10);
       pdfDoc.setFont('helvetica', 'normal');
       pdfDoc.setTextColor(120, 120, 120);
-      pdfDoc.text('BILL NO. : ' + billNumber, 190, startY, { align: 'right' });
-      pdfDoc.text('DATE : ' + billDate, 190, startY + 7, { align: 'right' });
+      pdfDoc.text('BILL NO. : ' + billNumber, 190, startY + 5, { align: 'right' });
+      pdfDoc.text('DATE : ' + billDate, 190, startY + 12, { align: 'right' });
       
       // Items Table
       if (!billToDownload.items || billToDownload.items.length === 0) {
@@ -544,8 +540,8 @@ function BillGeneration() {
         ];
       });
       
-      // Calculate table start Y (after customer info)
-      const tableStartY = Math.max(currentY + 10, startY + 30);
+      // Calculate table start Y (after customer info) - decreased height from top
+      const tableStartY = Math.max(currentY, startY + 1);
       
       pdfDoc.autoTable({
         startY: tableStartY,
