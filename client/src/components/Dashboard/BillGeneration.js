@@ -438,41 +438,90 @@ function BillGeneration() {
 
       const pdfDoc = new jsPDF();
       
-      // Set default font to avoid encoding issues
+      // Set default font
       pdfDoc.setFont('helvetica');
       
-      // Bill Header
-      pdfDoc.setFontSize(20);
-      pdfDoc.setFont('helvetica', 'bold');
-      pdfDoc.text('INVOICE', 105, 20, { align: 'center' });
+      // Company Information
+      const companyName = 'MONDAL PLUMBING & SANITATION';
+      const companyAddress = '89, COLLEGE ROAD, DIAMOND HARBOUR';
+      const companyEmail = 'mondalplumbingsanitation@gmail.com';
+      const companyPhone = '9434504491';
       
-      pdfDoc.setFontSize(12);
-      pdfDoc.setFont('helvetica', 'normal');
-      const billNumber = billToDownload.billNumber || billToDownload.id?.slice(0, 8).toUpperCase() || 'N/A';
-      pdfDoc.text('Bill #: ' + billNumber, 20, 35);
-      const billDate = billToDownload.date || (billToDownload.createdAt?.toDate ? billToDownload.createdAt.toDate().toLocaleDateString() : 'N/A');
-      pdfDoc.text('Date: ' + billDate, 20, 42);
-      
-      // Customer Information
-      pdfDoc.setFontSize(14);
+      // CASH MEMO at top right
+      pdfDoc.setFontSize(24);
       pdfDoc.setFont('helvetica', 'bold');
-      pdfDoc.text('Bill To:', 20, 55);
-      pdfDoc.setFontSize(11);
+      pdfDoc.setTextColor(100, 100, 100); // Grey color
+      const cashMemoY = 20;
+      pdfDoc.text('CASH MEMO', 190, cashMemoY, { align: 'right' });
+      
+      // Horizontal line from left that passes through the middle of CASH MEMO text
+      // Font size 24: text baseline is at y=20, text extends upward ~18-20pt
+      // Moving line lower to pass through middle of text
+      const lineY = cashMemoY - 2; // Line passes through middle of text (lower position)
+      pdfDoc.setDrawColor(200, 200, 200);
+      pdfDoc.line(20, lineY, 130, lineY); // Shortened from right side
+      
+      // Company Name - Right aligned
+      pdfDoc.setFontSize(16);
+      pdfDoc.setFont('helvetica', 'bold');
+      pdfDoc.setTextColor(100, 100, 100);
+      pdfDoc.text(companyName, 190, 35, { align: 'right' });
+      
+      // Company Details - Right aligned
+      pdfDoc.setFontSize(10);
       pdfDoc.setFont('helvetica', 'normal');
+      pdfDoc.setTextColor(120, 120, 120);
+      pdfDoc.text(companyAddress, 190, 42, { align: 'right' });
+      pdfDoc.text('Email - ' + companyEmail, 190, 48, { align: 'right' });
+      pdfDoc.text('Phone - ' + companyPhone, 190, 54, { align: 'right' });
+      
+      // Horizontal line
+      pdfDoc.setDrawColor(200, 200, 200);
+      pdfDoc.line(20, 60, 190, 60);
+      
+      // Reset text color to black
+      pdfDoc.setTextColor(0, 0, 0);
+      
+      // BILL TO section on left
+      let startY = 70;
+      pdfDoc.setFontSize(16);
+      pdfDoc.setFont('helvetica', 'bold');
+      pdfDoc.setTextColor(100, 100, 100);
+      pdfDoc.text('BILL TO', 20, startY);
+      
+      // Line under BILL TO
+      pdfDoc.setDrawColor(200, 200, 200);
+      pdfDoc.line(20, startY + 2, 100, startY + 2);
+      
+      // Customer details
+      pdfDoc.setFontSize(10);
+      pdfDoc.setFont('helvetica', 'normal');
+      pdfDoc.setTextColor(0, 0, 0);
       const customerName = String(billToDownload.fullName || billToDownload.customerName || 'N/A');
-      pdfDoc.text('Name: ' + customerName, 20, 62);
+      pdfDoc.text(customerName, 20, startY + 10);
       
-      let currentY = 69;
+      let currentY = startY + 17;
+      if (billToDownload.address) {
+        const addressText = String(billToDownload.address);
+        const addressLines = pdfDoc.splitTextToSize(addressText, 80);
+        pdfDoc.text(addressLines, 20, currentY);
+        currentY += (addressLines.length * 5);
+      }
+      
       if (billToDownload.phone || billToDownload.customerPhone) {
-        pdfDoc.text('Phone: ' + String(billToDownload.phone || billToDownload.customerPhone), 20, currentY);
+        pdfDoc.text('Phone - ' + String(billToDownload.phone || billToDownload.customerPhone), 20, currentY);
         currentY += 7;
       }
-      if (billToDownload.address) {
-        const addressText = 'Address: ' + String(billToDownload.address);
-        const addressLines = pdfDoc.splitTextToSize(addressText, 170);
-        pdfDoc.text(addressLines, 20, currentY);
-        currentY += (addressLines.length * 7);
-      }
+      
+      // BILL NO and DATE on right
+      const billNumber = billToDownload.billNumber || billToDownload.id?.slice(0, 8).toUpperCase() || 'MPS/0001';
+      const billDate = billToDownload.date || (billToDownload.createdAt?.toDate ? billToDownload.createdAt.toDate().toLocaleDateString('en-GB') : new Date().toLocaleDateString('en-GB'));
+      
+      pdfDoc.setFontSize(10);
+      pdfDoc.setFont('helvetica', 'normal');
+      pdfDoc.setTextColor(120, 120, 120);
+      pdfDoc.text('BILL NO. : ' + billNumber, 190, startY, { align: 'right' });
+      pdfDoc.text('DATE : ' + billDate, 190, startY + 7, { align: 'right' });
       
       // Items Table
       if (!billToDownload.items || billToDownload.items.length === 0) {
@@ -480,74 +529,94 @@ function BillGeneration() {
         return;
       }
       
-      // Prepare table data with proper formatting
-      const tableData = billToDownload.items.map(item => {
+      // Prepare table data with SL No.
+      const tableData = billToDownload.items.map((item, index) => {
         const price = parseFloat(item.price || 0);
         const quantity = parseInt(item.quantity || 0);
-        const subtotal = parseFloat(item.subtotal || (price * quantity));
+        const amount = parseFloat(item.subtotal || (price * quantity));
         
         return [
-          String(item.productName || 'N/A'),
-          'Rs. ' + price.toFixed(2),
-          String(quantity),
-          'Rs. ' + subtotal.toFixed(2)
+          String(index + 1), // SL No.
+          String(item.productName || 'N/A'), // Product
+          String(quantity), // Qty.
+          'Rs. ' + price.toFixed(2), // Price
+          'Rs. ' + amount.toFixed(2) // Amount
         ];
       });
       
+      // Calculate table start Y (after customer info)
+      const tableStartY = Math.max(currentY + 10, startY + 30);
+      
       pdfDoc.autoTable({
-        startY: currentY + 5,
-        head: [['Product', 'Price', 'Quantity', 'Subtotal']],
+        startY: tableStartY,
+        head: [['SL No.', 'Product', 'Qty.', 'Price', 'Amount']],
         body: tableData,
         theme: 'striped',
-        headStyles: { fillColor: [102, 126, 234] },
-        styles: { 
-          fontSize: 10,
-          font: 'helvetica'
+        headStyles: { 
+          fillColor: [100, 100, 100], // Grey header
+          textColor: [255, 255, 255], // White text
+          fontStyle: 'bold',
+          fontSize: 10
         },
-        margin: { left: 20, right: 20 }
+        styles: { 
+          fontSize: 9,
+          font: 'helvetica',
+          textColor: [0, 0, 0]
+        },
+        alternateRowStyles: {
+          fillColor: [245, 245, 245] // Light grey for alternating rows
+        },
+        margin: { left: 20, right: 20 },
+        columnStyles: {
+          0: { cellWidth: 20 }, // SL No.
+          1: { cellWidth: 70 }, // Product
+          2: { cellWidth: 20 }, // Qty.
+          3: { cellWidth: 30 }, // Price
+          4: { cellWidth: 30 }  // Amount
+        }
       });
       
-      // Calculate final Y position
+      // Calculate final Y position after table
       const finalY = pdfDoc.lastAutoTable.finalY + 10;
       
-      // Totals - using simple text without special characters
-      pdfDoc.setFontSize(11);
-      pdfDoc.setFont('helvetica', 'normal');
-      const subtotal = parseFloat(billToDownload.subtotal || 0);
-      pdfDoc.text('Subtotal: Rs. ' + subtotal.toFixed(2), 150, finalY, { align: 'right' });
-      
-      let currentYPos = finalY + 7;
-      
-      // Add Discount if provided
-      const discount = parseFloat(billToDownload.discount || 0);
-      if (discount > 0) {
-        pdfDoc.text('Discount: Rs. -' + discount.toFixed(2), 150, currentYPos, { align: 'right' });
-        currentYPos += 7;
-      }
-      
-      // Total Amount
-      pdfDoc.setFontSize(12);
-      pdfDoc.setFont('helvetica', 'bold');
-      const total = parseFloat(billToDownload.total || subtotal);
-      pdfDoc.text('Total Amount: Rs. ' + total.toFixed(2), 150, currentYPos, { align: 'right' });
-      currentYPos += 7;
-      
-      // Add Due field if provided
-      if (billToDownload.due && billToDownload.due.trim()) {
-        pdfDoc.setFontSize(11);
-        pdfDoc.setFont('helvetica', 'normal');
-        pdfDoc.text('Due: ' + String(billToDownload.due), 150, currentYPos, { align: 'right' });
-        currentYPos += 7;
-      }
-      
-      // Footer
-      pdfDoc.setFont('helvetica', 'normal');
+      // Summary section at bottom right
       pdfDoc.setFontSize(10);
-      pdfDoc.text('Thank you for your business!', 105, finalY + 25, { align: 'center' });
+      pdfDoc.setFont('helvetica', 'normal');
+      pdfDoc.setTextColor(0, 0, 0);
+      
+      const subtotal = parseFloat(billToDownload.subtotal || 0);
+      const discount = parseFloat(billToDownload.discount || 0);
+      const due = parseFloat(billToDownload.due || 0);
+      const total = parseFloat(billToDownload.total || subtotal);
+      
+      let summaryY = finalY;
+      
+      // SUBTOTAL
+      pdfDoc.text('SUBTOTAL Rs.', 150, summaryY, { align: 'right' });
+      pdfDoc.text(subtotal.toFixed(2), 190, summaryY, { align: 'right' });
+      summaryY += 7;
+      
+      // DISCOUNT
+      if (discount > 0) {
+        pdfDoc.text('DISCOUNT Rs.', 150, summaryY, { align: 'right' });
+        pdfDoc.text(discount.toFixed(2), 190, summaryY, { align: 'right' });
+        summaryY += 7;
+      }
+      
+      // DUE AMOUNT
+      if (due > 0) {
+        pdfDoc.text('DUE AMOUNT Rs.', 150, summaryY, { align: 'right' });
+        pdfDoc.text(due.toFixed(2), 190, summaryY, { align: 'right' });
+        summaryY += 7;
+      }
+      
+      // TOTAL (bold)
+      pdfDoc.setFont('helvetica', 'bold');
+      pdfDoc.text('TOTAL Rs.', 150, summaryY, { align: 'right' });
+      pdfDoc.text(total.toFixed(2), 190, summaryY, { align: 'right' });
       
       // Save PDF
-      const billNum = billToDownload.billNumber || 'N/A';
-      const fileName = `Invoice_${billNum}_${customerName.replace(/\s+/g, '_')}_${billDate.replace(/\//g, '-')}.pdf`;
+      const fileName = `CashMemo_${billNumber}_${customerName.replace(/\s+/g, '_')}_${billDate.replace(/\//g, '-')}.pdf`;
       pdfDoc.save(fileName);
       
       // Show success message
