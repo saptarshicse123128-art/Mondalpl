@@ -401,12 +401,12 @@ function BillGeneration() {
 
       const docRef = await addDoc(collection(db, 'bills'), billData);
       const billWithId = { id: docRef.id, ...billData };
-      
-      // Automatically download PDF after generating bill
+
+      // Automatically open print dialog for the newly generated bill
       setTimeout(() => {
-        downloadPDF(billWithId);
+        printPDF(billWithId);
       }, 500);
-      
+       
       // Note: Stock is already updated when products were added to cart
       // So we just clear the cart and form
       setCart([]);
@@ -419,9 +419,9 @@ function BillGeneration() {
         discount: '',
         due: ''
       });
-      setGeneratedBill(null); // Clear generatedBill since PDF is auto-downloaded
+      setGeneratedBill(null); // Clear generatedBill since we directly trigger print
       
-      alert('Bill generated successfully! PDF download started automatically. Check your Downloads folder.');
+      alert('Bill generated successfully! Print dialog will open automatically.');
     } catch (error) {
       console.error('Error generating bill:', error);
       alert('Failed to generate bill');
@@ -623,6 +623,242 @@ function BillGeneration() {
     }
   };
 
+  const printPDF = (bill = null) => {
+    try {
+      const billToPrint = bill || generatedBill;
+      if (!billToPrint) {
+        alert('Please generate a bill first');
+        return;
+      }
+
+      const pdfDoc = new jsPDF();
+      
+      // Set default font
+      pdfDoc.setFont('helvetica');
+      
+      // Company Information
+      const companyName = 'MONDAL PLUMBING & SANITATION';
+      const companyAddress = '89, COLLEGE ROAD, DIAMOND HARBOUR';
+      const companyEmail = 'mondalplumbingsanitation@gmail.com';
+      const companyPhone = '9434504491';
+      
+      // CASH MEMO at top right
+      pdfDoc.setFontSize(24);
+      pdfDoc.setFont('helvetica', 'bold');
+      pdfDoc.setTextColor(100, 100, 100); // Grey color
+      const cashMemoY = 20;
+      pdfDoc.text('CASH MEMO', 190, cashMemoY, { align: 'right' });
+      
+      // Horizontal line from left that passes through the middle of CASH MEMO text
+      // Font size 24: text baseline is at y=20, text extends upward ~18-20pt
+      // Moving line lower to pass through middle of text
+      const lineY = cashMemoY - 2.5; // Line passes through middle of text (decreased height slightly more)
+      pdfDoc.setDrawColor(200, 200, 200);
+      pdfDoc.line(20, lineY, 135, lineY); // Decreased length from right
+      
+      // Company Name - Right aligned
+      pdfDoc.setFontSize(16);
+      pdfDoc.setFont('helvetica', 'bold');
+      pdfDoc.setTextColor(100, 100, 100);
+      pdfDoc.text(companyName, 190, 35, { align: 'right' });
+      
+      // Company Details - Right aligned
+      pdfDoc.setFontSize(10);
+      pdfDoc.setFont('helvetica', 'normal');
+      pdfDoc.setTextColor(120, 120, 120);
+      pdfDoc.text(companyAddress, 190, 42, { align: 'right' });
+      pdfDoc.text('Email - ' + companyEmail, 190, 48, { align: 'right' });
+      pdfDoc.text('Phone - ' + companyPhone, 190, 54, { align: 'right' });
+      
+      // Horizontal line (moved down to increase height from top, shortened from both sides)
+      pdfDoc.setDrawColor(200, 200, 200);
+      pdfDoc.line(45, 68, 190, 68);
+      
+      // Reset text color to black
+      pdfDoc.setTextColor(0, 0, 0);
+      
+      // BILL TO section on left
+      let startY = 70;
+      pdfDoc.setFontSize(16);
+      pdfDoc.setFont('helvetica', 'bold');
+      pdfDoc.setTextColor(100, 100, 100);
+      pdfDoc.text('BILL TO', 20, startY);
+      
+      // Customer details
+      pdfDoc.setFontSize(10);
+      pdfDoc.setFont('helvetica', 'normal');
+      pdfDoc.setTextColor(0, 0, 0);
+      const customerName = String(billToPrint.fullName || billToPrint.customerName || 'N/A');
+      pdfDoc.text(customerName, 20, startY + 10);
+      
+      let currentY = startY + 17;
+      if (billToPrint.address) {
+        const addressText = String(billToPrint.address);
+        const addressLines = pdfDoc.splitTextToSize(addressText, 80);
+        pdfDoc.text(addressLines, 20, currentY);
+        currentY += (addressLines.length * 5);
+      }
+      
+      // Always show phone number field
+      const phoneNumber = billToPrint.phone || billToPrint.customerPhone || '';
+      pdfDoc.text('Phone - ' + phoneNumber, 20, currentY);
+      currentY += 7;
+      
+      // BILL NO and DATE on right (lowered)
+      const billNumber = billToPrint.billNumber || billToPrint.id?.slice(0, 8).toUpperCase() || 'MPS/0001';
+      const billDate = billToPrint.date || (billToPrint.createdAt?.toDate ? billToPrint.createdAt.toDate().toLocaleDateString('en-GB') : new Date().toLocaleDateString('en-GB'));
+      
+      pdfDoc.setFontSize(10);
+      pdfDoc.setFont('helvetica', 'normal');
+      pdfDoc.setTextColor(120, 120, 120);
+      pdfDoc.text('BILL NO. : ' + billNumber, 190, startY + 5, { align: 'right' });
+      pdfDoc.text('DATE : ' + billDate, 190, startY + 12, { align: 'right' });
+      
+      // Items Table
+      if (!billToPrint.items || billToPrint.items.length === 0) {
+        alert('No items found in this bill');
+        return;
+      }
+      
+      // Prepare table data with SL No.
+      const tableData = billToPrint.items.map((item, index) => {
+        const price = parseFloat(item.price || 0);
+        const quantity = parseInt(item.quantity || 0);
+        const amount = parseFloat(item.subtotal || (price * quantity));
+        
+        return [
+          String(index + 1), // SL No.
+          String(item.productName || 'N/A'), // Product
+          String(quantity), // Qty.
+          'Rs. ' + price.toFixed(2), // Price
+          'Rs. ' + amount.toFixed(2) // Amount
+        ];
+      });
+      
+      // Calculate table start Y (after customer info) - decreased height from top
+      const tableStartY = Math.max(currentY, startY + 1);
+      
+      pdfDoc.autoTable({
+        startY: tableStartY,
+        head: [['SL No.', 'Product', 'Qty.', 'Price', 'Amount']],
+        body: tableData,
+        theme: 'striped',
+        headStyles: { 
+          fillColor: [100, 100, 100], // Grey header
+          textColor: [255, 255, 255], // White text
+          fontStyle: 'bold',
+          fontSize: 10
+        },
+        styles: { 
+          fontSize: 9,
+          font: 'helvetica',
+          textColor: [0, 0, 0]
+        },
+        alternateRowStyles: {
+          fillColor: [245, 245, 245] // Light grey for alternating rows
+        },
+        margin: { left: 20, right: 20 },
+        columnStyles: {
+          0: { cellWidth: 20 }, // SL No.
+          1: { cellWidth: 70 }, // Product
+          2: { cellWidth: 20 }, // Qty.
+          3: { cellWidth: 30 }, // Price
+          4: { cellWidth: 30 }  // Amount
+        }
+      });
+      
+      // Calculate final Y position after table
+      const finalY = pdfDoc.lastAutoTable.finalY + 10;
+      
+      // Summary section at bottom right
+      pdfDoc.setFontSize(10);
+      pdfDoc.setFont('helvetica', 'normal');
+      pdfDoc.setTextColor(0, 0, 0);
+      
+      const subtotal = parseFloat(billToPrint.subtotal || 0);
+      const discount = parseFloat(billToPrint.discount || 0);
+      const due = parseFloat(billToPrint.due || 0);
+      const total = parseFloat(billToPrint.total || subtotal);
+      
+      let summaryY = finalY;
+      
+      // SUBTOTAL
+      pdfDoc.text('SUBTOTAL Rs.', 150, summaryY, { align: 'right' });
+      pdfDoc.text(subtotal.toFixed(2), 190, summaryY, { align: 'right' });
+      summaryY += 7;
+      
+      // DISCOUNT
+      if (discount > 0) {
+        pdfDoc.text('DISCOUNT Rs.', 150, summaryY, { align: 'right' });
+        pdfDoc.text(discount.toFixed(2), 190, summaryY, { align: 'right' });
+        summaryY += 7;
+      }
+      
+      // DUE AMOUNT
+      if (due > 0) {
+        pdfDoc.text('DUE AMOUNT Rs.', 150, summaryY, { align: 'right' });
+        pdfDoc.text(due.toFixed(2), 190, summaryY, { align: 'right' });
+        summaryY += 7;
+      }
+      
+      // TOTAL (bold)
+      pdfDoc.setFont('helvetica', 'bold');
+      pdfDoc.text('TOTAL Rs.', 150, summaryY, { align: 'right' });
+      pdfDoc.text(total.toFixed(2), 190, summaryY, { align: 'right' });
+      
+      // Open a lightweight print window we fully control to avoid PDF viewer cross-origin restrictions
+      const pdfBlob = pdfDoc.output('blob');
+      const pdfUrl = URL.createObjectURL(pdfBlob);
+      const printWindow = window.open('', '_blank', 'width=900,height=650');
+
+      if (!printWindow) {
+        alert('Popup blocked. Please allow popups to print the bill.');
+        return;
+      }
+
+      // Minimal HTML to render the PDF and trigger print, then auto-close
+      printWindow.document.write(`
+        <!DOCTYPE html>
+        <html>
+          <head>
+            <title>Print Bill</title>
+            <style>
+              html, body {
+                margin: 0;
+                padding: 0;
+                width: 100%;
+                height: 100%;
+              }
+              embed, iframe, object {
+                width: 100%;
+                height: 100%;
+              }
+            </style>
+          </head>
+          <body>
+            <embed src="${pdfUrl}" type="application/pdf" />
+            <script>
+              const invokePrint = () => {
+                try {
+                  window.focus();
+                  window.print();
+                } catch (err) {
+                  console.error('Print invocation failed', err);
+                }
+              };
+              // Give the PDF a moment to load before printing
+              setTimeout(invokePrint, 400);
+            <\/script>
+          </body>
+        </html>
+      `);
+      printWindow.document.close();
+    } catch (error) {
+      console.error('Error printing PDF:', error);
+      alert('Error printing PDF. Please try again.');
+    }
+  };
+
   return (
     <div className="bill-generation">
       <div className="bill-header">
@@ -700,6 +936,13 @@ function BillGeneration() {
                         title="Download PDF"
                       >
                         📄 Download PDF
+                      </button>
+                      <button
+                        className="print-bill-btn"
+                        onClick={() => printPDF(bill)}
+                        title="Print Bill"
+                      >
+                        🖨️ Print
                       </button>
                       <button
                         className="delete-bill-btn"

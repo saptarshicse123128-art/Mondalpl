@@ -653,7 +653,7 @@
 
 .reset-bills-btn {
   padding: 0.75rem 1.5rem;
-  background: #e74c3c;
+  background: #f39c12;
   color: white;
   border: none;
   border-radius: 5px;
@@ -665,9 +665,9 @@
 }
 
 .reset-bills-btn:hover {
-  background: #c0392b;
+  background: #e67e22;
   transform: translateY(-2px);
-  box-shadow: 0 4px 8px rgba(231, 76, 60, 0.3);
+  box-shadow: 0 4px 8px rgba(243, 156, 18, 0.3);
 }
 
 .bills-grid {
@@ -715,11 +715,19 @@
   color: #27ae60;
 }
 
-.download-bill-btn {
-  width: 100%;
+.bill-actions {
+  display: flex;
+  gap: 0.5rem;
   margin-top: 1rem;
+  flex-wrap: wrap;
+}
+
+.download-bill-btn,
+.print-bill-btn,
+.delete-bill-btn {
+  flex: 1;
+  min-width: 100px;
   padding: 0.75rem;
-  background: #e74c3c;
   color: white;
   border: none;
   border-radius: 5px;
@@ -729,8 +737,30 @@
   transition: background 0.3s, transform 0.2s;
 }
 
+.download-bill-btn {
+  background: #e74c3c;
+}
+
 .download-bill-btn:hover {
   background: #c0392b;
+  transform: translateY(-2px);
+}
+
+.print-bill-btn {
+  background: #3498db;
+}
+
+.print-bill-btn:hover {
+  background: #2980b9;
+  transform: translateY(-2px);
+}
+
+.delete-bill-btn {
+  background: #95a5a6;
+}
+
+.delete-bill-btn:hover {
+  background: #7f8c8d;
   transform: translateY(-2px);
 }
 
