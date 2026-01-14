@@ -580,6 +580,21 @@ export const categoryService = {
     }
   },
 
+  // Update category name
+  async updateCategoryName(categoryId, newName) {
+    try {
+      const categoryRef = doc(db, 'categories', categoryId);
+      await updateDoc(categoryRef, {
+        name: newName.trim(),
+        updatedAt: serverTimestamp()
+      });
+      return true;
+    } catch (error) {
+      console.error('Error updating category name:', error);
+      throw error;
+    }
+  },
+
   // Get all categories
   async getAllCategories() {
     try {
@@ -637,6 +652,29 @@ export const categoryService = {
       return true;
     } catch (error) {
       console.error('Error removing subcategory:', error);
+      throw error;
+    }
+  },
+
+  // Rename a subcategory within a category's subcategories array
+  async renameSubcategory(categoryId, oldName, newName) {
+    try {
+      const categoryRef = doc(db, 'categories', categoryId);
+      const snap = await getDoc(categoryRef);
+      if (!snap.exists()) {
+        throw new Error('Category not found');
+      }
+      const data = snap.data();
+      const currentSubs = Array.isArray(data.subcategories) ? data.subcategories : [];
+      const trimmedNew = newName.trim();
+      const updatedSubs = currentSubs.map((s) => (s === oldName ? trimmedNew : s));
+      await updateDoc(categoryRef, {
+        subcategories: updatedSubs,
+        updatedAt: serverTimestamp()
+      });
+      return true;
+    } catch (error) {
+      console.error('Error renaming subcategory:', error);
       throw error;
     }
   }

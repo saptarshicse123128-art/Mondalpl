@@ -268,62 +268,6 @@ function StockManagement() {
     }
   };
 
-  const handleIncrementQuantity = async (productId, currentQuantity) => {
-    try {
-      const productRef = doc(db, 'products', productId);
-      await updateDoc(productRef, {
-        quantity: (currentQuantity || 0) + 1,
-        updatedAt: serverTimestamp()
-      });
-      setMessage({ type: 'success', text: 'Quantity increased!' });
-      setTimeout(() => setMessage({ type: '', text: '' }), 2000);
-    } catch (error) {
-      console.error('Error updating quantity:', error);
-      setMessage({ type: 'error', text: `Failed to update quantity: ${error.message}` });
-    }
-  };
-
-  const handleDecrementQuantity = async (productId, currentQuantity) => {
-    if (currentQuantity <= 0) {
-      setMessage({ type: 'error', text: 'Quantity cannot be negative' });
-      setTimeout(() => setMessage({ type: '', text: '' }), 2000);
-      return;
-    }
-    
-    try {
-      const productRef = doc(db, 'products', productId);
-      await updateDoc(productRef, {
-        quantity: Math.max(0, (currentQuantity || 0) - 1),
-        updatedAt: serverTimestamp()
-      });
-      setMessage({ type: 'success', text: 'Quantity decreased!' });
-      setTimeout(() => setMessage({ type: '', text: '' }), 2000);
-    } catch (error) {
-      console.error('Error updating quantity:', error);
-      setMessage({ type: 'error', text: `Failed to update quantity: ${error.message}` });
-    }
-  };
-
-  const handleQuantityChange = async (productId, newQuantity) => {
-    const quantityValue = parseInt(newQuantity) || 0;
-    if (quantityValue < 0) {
-      setMessage({ type: 'error', text: 'Quantity cannot be negative' });
-      setTimeout(() => setMessage({ type: '', text: '' }), 2000);
-      return;
-    }
-    
-    try {
-      const productRef = doc(db, 'products', productId);
-      await updateDoc(productRef, {
-        quantity: quantityValue,
-        updatedAt: serverTimestamp()
-      });
-    } catch (error) {
-      console.error('Error updating quantity:', error);
-      setMessage({ type: 'error', text: `Failed to update quantity: ${error.message}` });
-    }
-  };
-
   // Filter products based on search query
   const filteredProducts = products.filter(product => {
     if (!searchQuery.trim()) return true;
@@ -544,21 +488,7 @@ function StockManagement() {
                   <td data-label="Description">{product.description || '-'}</td>
                   <td data-label="Price">₹{product.price?.toFixed(2) || '0.00'}</td>
                   <td data-label="Quantity">
-                    <input
-                      type="number"
-                      min="0"
-                      value={product.quantity || 0}
-                      onChange={(e) => handleQuantityChange(product.id, e.target.value)}
-                      className="quantity-input-edit"
-                      style={{
-                        width: '80px',
-                        padding: '0.5rem',
-                        border: '1px solid #ddd',
-                        borderRadius: '5px',
-                        textAlign: 'center',
-                        fontSize: '1rem'
-                      }}
-                    />
+                    {product.quantity || 0}
                   </td>
                   <td data-label="Actions">
                     <div className="action-buttons">

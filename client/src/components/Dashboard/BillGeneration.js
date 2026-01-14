@@ -25,12 +25,14 @@ function BillGeneration() {
   const [showBills, setShowBills] = useState(false);
   const [generatedBill, setGeneratedBill] = useState(null);
   const [billSearchQuery, setBillSearchQuery] = useState('');
+  const [showDueOnly, setShowDueOnly] = useState(false);
   const [customProductMode, setCustomProductMode] = useState(false);
   const [customProduct, setCustomProduct] = useState({
     name: '',
     quantity: 1,
     price: ''
   });
+  const [editingCustomItem, setEditingCustomItem] = useState(null);
 
   useEffect(() => {
     const unsubscribe = onSnapshot(collection(db, 'products'), (snapshot) => {
@@ -189,11 +191,12 @@ function BillGeneration() {
 
     // If it's a custom product, just update quantity without stock management
     if (cartItem.isCustomProduct) {
-      if (newQuantity <= 0) {
+      const safeQuantity = parseInt(newQuantity, 10) || 0;
+      if (safeQuantity <= 0) {
         setCart(cart.filter(item => item.id !== productId));
       } else {
         setCart(cart.map(item =>
-          item.id === productId ? { ...item, quantity: newQuantity } : item
+          item.id === productId ? { ...item, quantity: safeQuantity } : item
         ));
       }
       return;
@@ -371,6 +374,52 @@ function BillGeneration() {
       return;
     }
 
+    // Basic numeric validations
+    const subtotal = calculateSubtotal();
+    const discountValue = calculateDiscount();
+    if (discountValue < 0) {
+      alert('Discount cannot be negative');
+      return;
+    }
+    if (discountValue > subtotal) {
+      alert('Discount cannot be greater than subtotal');
+      return;
+    }
+
+    // Parse due (treat non-numeric due as free text, only validate numeric values)
+    let dueNumeric = null;
+    if (billForm.due.trim()) {
+      const cleanedDue = billForm.due.replace(/[^0-9.-]/g, '');
+      const parsed = parseFloat(cleanedDue);
+      if (!isNaN(parsed)) {
+        dueNumeric = parsed;
+      }
+    }
+    const finalTotal = Math.max(0, subtotal - discountValue);
+    if (dueNumeric != null) {
+      if (dueNumeric < 0) {
+        alert('Due amount cannot be negative');
+        return;
+      }
+      if (dueNumeric > finalTotal) {
+        alert('Due amount cannot be greater than final total');
+        return;
+      }
+    }
+
+    // If there is a due amount, phone number becomes mandatory (ask via popup if missing)
+    let ensuredPhone = (billForm.phone || '').trim();
+    if (billForm.due.trim() && !ensuredPhone) {
+      const entered = window.prompt('Due amount entered. Please enter customer phone number:', '');
+      ensuredPhone = (entered || '').trim();
+      if (!ensuredPhone) {
+        alert('Phone number is required when there is a due amount.');
+        return;
+      }
+      // Update form so the UI also reflects the phone number we just collected
+      setBillForm(prev => ({ ...prev, phone: ensuredPhone }));
+    }
+
     try {
       const subtotal = calculateSubtotal();
       const discount = calculateDiscount();
@@ -382,7 +431,7 @@ function BillGeneration() {
         fullName: billForm.fullName,
         date: billForm.date,
         address: billForm.address,
-        phone: billForm.phone,
+        phone: ensuredPhone || billForm.phone,
         discount: discount,
         due: billForm.due.trim() || null,
         billNumber: billNumber,
@@ -863,12 +912,24 @@ function BillGeneration() {
     <div className="bill-generation">
       <div className="bill-header">
         <h2>Bill Generation</h2>
-        <button
-          className="toggle-bills-btn"
-          onClick={() => setShowBills(!showBills)}
-        >
-          {showBills ? 'Hide Bills' : 'View All Bills'}
-        </button>
+        <div className="bill-header-right">
+          <button
+            className="toggle-bills-btn"
+            onClick={() => setShowBills(!showBills)}
+          >
+            {showBills ? 'Hide Bills' : 'View All Bills'}
+          </button>
+          {showBills && (
+            <label className="bill-due-toggle">
+              <input
+                type="checkbox"
+                checked={showDueOnly}
+                onChange={(e) => setShowDueOnly(e.target.checked)}
+              />
+              <span>Show due bills only</span>
+            </label>
+          )}
+        </div>
       </div>
 
       {showBills ? (
@@ -878,7 +939,7 @@ function BillGeneration() {
             <div className="bills-controls">
               <input
                 type="text"
-                placeholder="Search by bill number (e.g., MPS/00001)..."
+                placeholder="Search by bill no, customer name, or phone..."
                 value={billSearchQuery}
                 onChange={(e) => setBillSearchQuery(e.target.value)}
                 className="bill-search-input"
@@ -898,13 +959,32 @@ function BillGeneration() {
             <>
               {(() => {
                 const filteredBills = bills.filter(bill => {
-                  if (!billSearchQuery.trim()) return true;
                   const searchTerm = billSearchQuery.toLowerCase().trim();
                   const billNum = (bill.billNumber || '').toLowerCase();
-                  // Also search by customer name and bill ID as fallback
                   const customerName = (bill.fullName || bill.customerName || '').toLowerCase();
                   const billId = (bill.id || '').toLowerCase();
-                  return billNum.includes(searchTerm) || customerName.includes(searchTerm) || billId.includes(searchTerm);
+                  const phone = (bill.phone || bill.customerPhone || '').toLowerCase();
+
+                  // Match search (if empty, everything matches)
+                  const matchesSearch =
+                    !searchTerm ||
+                    billNum.includes(searchTerm) ||
+                    customerName.includes(searchTerm) ||
+                    phone.includes(searchTerm) ||
+                    billId.includes(searchTerm);
+
+                  if (!matchesSearch) return false;
+
+                  // If not filtering by due, we're done
+                  if (!showDueOnly) return true;
+
+                  // Only keep bills with a positive numeric due
+                  const rawDue = bill.due;
+                  if (rawDue == null || rawDue === '') return false;
+                  if (typeof rawDue === 'number') return rawDue > 0;
+                  const cleaned = String(rawDue).replace(/[^0-9.-]/g, '');
+                  const num = parseFloat(cleaned);
+                  return !isNaN(num) && num > 0;
                 });
                 
                 return filteredBills.length === 0 ? (
@@ -1214,45 +1294,159 @@ function BillGeneration() {
                       </tr>
                     </thead>
                     <tbody>
-                      {cart.map((item) => (
-                        <tr key={item.id}>
-                          <td data-label="Product">{item.name}</td>
-                          <td data-label="Category">{item.category || '-'}</td>
-                          <td data-label="Subcategory">{item.subcategory || '-'}</td>
-                          <td data-label="Price">₹{item.price?.toFixed(2)}</td>
-                          <td data-label="Quantity">
-                            <input
-                              type="number"
-                              min="1"
-                              value={item.quantity}
-                              onChange={(e) => {
-                                const newQty = parseInt(e.target.value) || 1;
-                                if (newQty > 0) {
-                                  updateCartQuantity(item.id, newQty);
-                                }
-                              }}
-                              className="quantity-input-edit"
-                              style={{
-                                width: '80px',
-                                padding: '0.5rem',
-                                border: '1px solid #ddd',
-                                borderRadius: '5px',
-                                textAlign: 'center',
-                                fontSize: '1rem'
-                              }}
-                            />
-                          </td>
-                          <td data-label="Subtotal">₹{(item.price * item.quantity).toFixed(2)}</td>
-                          <td data-label="Action">
-                            <button
-                              className="remove-btn"
-                              onClick={() => removeFromCart(item.id)}
-                            >
-                              Remove
-                            </button>
-                          </td>
-                        </tr>
-                      ))}
+                      {cart.map((item) => {
+                        const isEditingCustom = editingCustomItem && editingCustomItem.id === item.id && item.isCustomProduct;
+                        return (
+                          <tr key={item.id}>
+                            <td data-label="Product">{item.name}</td>
+                            <td data-label="Category">{item.category || '-'}</td>
+                            <td data-label="Subcategory">{item.subcategory || '-'}</td>
+                            <td data-label="Price">
+                              {item.isCustomProduct && isEditingCustom ? (
+                                <input
+                                  type="number"
+                                  min="0"
+                                  step="0.01"
+                                  value={editingCustomItem.price}
+                                  onChange={(e) =>
+                                    setEditingCustomItem({
+                                      ...editingCustomItem,
+                                      price: e.target.value
+                                    })
+                                  }
+                                  className="quantity-input-edit"
+                                  style={{
+                                    width: '100px',
+                                    padding: '0.5rem',
+                                    border: '1px solid #ddd',
+                                    borderRadius: '5px',
+                                    textAlign: 'center',
+                                    fontSize: '1rem'
+                                  }}
+                                />
+                              ) : (
+                                <>₹{item.price?.toFixed(2)}</>
+                              )}
+                            </td>
+                            <td data-label="Quantity">
+                              {item.isCustomProduct && isEditingCustom ? (
+                                <input
+                                  type="number"
+                                  min="1"
+                                  value={editingCustomItem.quantity}
+                                  onChange={(e) =>
+                                    setEditingCustomItem({
+                                      ...editingCustomItem,
+                                      quantity: e.target.value
+                                    })
+                                  }
+                                  className="quantity-input-edit"
+                                  style={{
+                                    width: '80px',
+                                    padding: '0.5rem',
+                                    border: '1px solid #ddd',
+                                    borderRadius: '5px',
+                                    textAlign: 'center',
+                                    fontSize: '1rem'
+                                  }}
+                                />
+                              ) : (
+                                <input
+                                  type="number"
+                                  min="1"
+                                  value={item.quantity}
+                                  onChange={(e) => {
+                                    const newQty = parseInt(e.target.value) || 1;
+                                    if (newQty > 0) {
+                                      updateCartQuantity(item.id, newQty);
+                                    }
+                                  }}
+                                  className="quantity-input-edit"
+                                  style={{
+                                    width: '80px',
+                                    padding: '0.5rem',
+                                    border: '1px solid #ddd',
+                                    borderRadius: '5px',
+                                    textAlign: 'center',
+                                    fontSize: '1rem'
+                                  }}
+                                />
+                              )}
+                            </td>
+                            <td data-label="Subtotal">₹{(item.price * item.quantity).toFixed(2)}</td>
+                            <td data-label="Action">
+                              {item.isCustomProduct ? (
+                                isEditingCustom ? (
+                                  <>
+                                    <button
+                                      className="add-product-btn"
+                                      type="button"
+                                      onClick={() => {
+                                        const newPrice = parseFloat(editingCustomItem.price);
+                                        const newQty = parseInt(editingCustomItem.quantity, 10);
+                                        if (isNaN(newPrice) || newPrice <= 0) {
+                                          alert('Please enter a valid price');
+                                          return;
+                                        }
+                                        if (isNaN(newQty) || newQty <= 0) {
+                                          alert('Quantity must be greater than 0');
+                                          return;
+                                        }
+                                        setCart(cart.map(ci =>
+                                          ci.id === item.id
+                                            ? { ...ci, price: newPrice, quantity: newQty }
+                                            : ci
+                                        ));
+                                        setEditingCustomItem(null);
+                                      }}
+                                      style={{ marginRight: '0.5rem' }}
+                                    >
+                                      Save
+                                    </button>
+                                    <button
+                                      className="remove-btn"
+                                      type="button"
+                                      onClick={() => setEditingCustomItem(null)}
+                                    >
+                                      Cancel
+                                    </button>
+                                  </>
+                                ) : (
+                                  <>
+                                    <button
+                                      className="add-product-btn"
+                                      type="button"
+                                      onClick={() =>
+                                        setEditingCustomItem({
+                                          id: item.id,
+                                          price: item.price.toString(),
+                                          quantity: item.quantity.toString()
+                                        })
+                                      }
+                                      style={{ marginRight: '0.5rem' }}
+                                    >
+                                      Edit
+                                    </button>
+                                    <button
+                                      className="remove-btn"
+                                      onClick={() => removeFromCart(item.id)}
+                                    >
+                                      Remove
+                                    </button>
+                                  </>
+                                )
+                              ) : (
+                                <button
+                                  className="remove-btn"
+                                  onClick={() => removeFromCart(item.id)}
+                                >
+                                  Remove
+                                </button>
+                              )}
+                            </td>
+                          </tr>
+                        );
+                      })}
                     </tbody>
                   </table>
                 </div>

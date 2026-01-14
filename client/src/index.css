@@ -19,3 +19,14 @@ code {
     monospace;
 }
 
+/* Hide up/down arrows (spinners) on all number inputs across the app */
+input[type="number"] {
+  -moz-appearance: textfield; /* Firefox */
+}
+
+input[type="number"]::-webkit-outer-spin-button,
+input[type="number"]::-webkit-inner-spin-button {
+  -webkit-appearance: none; /* Chrome, Safari, Edge (Chromium) */
+  margin: 0;
+}
+

@@ -12,6 +12,12 @@
   margin-bottom: 2rem;
 }
 
+.bill-header-right {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+}
+
 .bill-header h2 {
   color: #2c3e50;
   margin: 0;
@@ -634,6 +640,20 @@
   gap: 1rem;
   align-items: center;
   flex-wrap: wrap;
+}
+
+.bill-due-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.9rem;
+  color: #555;
+  cursor: pointer;
+}
+
+.bill-due-toggle input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
 }
 
 .bill-search-input {

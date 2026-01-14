@@ -100,8 +100,47 @@
 .chart-section h3 {
   font-size: 20px;
   color: #2c3e50;
-  margin-bottom: 25px;
+  margin-bottom: 0;
   font-weight: 600;
+}
+
+.chart-header-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 25px;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.time-filter {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.time-btn {
+  padding: 6px 14px;
+  border-radius: 20px;
+  border: 1px solid #ccc;
+  background: #f5f5f5;
+  color: #555;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.time-btn:hover {
+  background: #e4e7f5;
+  border-color: #667eea;
+  color: #333;
+}
+
+.time-btn.active {
+  background: #667eea;
+  border-color: #667eea;
+  color: #fff;
+  box-shadow: 0 2px 6px rgba(102, 126, 234, 0.4);
 }
 
 .sales-chart {
@@ -225,6 +264,51 @@
   width: 100%;
   border-collapse: collapse;
   font-size: 14px;
+}
+
+.low-stock-search-row {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 10px;
+}
+
+.low-stock-search-input {
+  padding: 8px 12px;
+  border-radius: 20px;
+  border: 1px solid #ccc;
+  font-size: 13px;
+  min-width: 260px;
+  outline: none;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.low-stock-search-input:focus {
+  border-color: #667eea;
+  box-shadow: 0 0 0 2px rgba(102, 126, 234, 0.2);
+}
+
+.low-stock-more-row {
+  display: flex;
+  justify-content: center;
+  margin-top: 10px;
+}
+
+.low-stock-more-btn {
+  padding: 8px 18px;
+  border-radius: 20px;
+  border: 1px solid #667eea;
+  background: #667eea;
+  color: #fff;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.2s ease, box-shadow 0.2s ease, transform 0.1s ease;
+}
+
+.low-stock-more-btn:hover {
+  background: #5563d6;
+  box-shadow: 0 2px 6px rgba(102, 126, 234, 0.4);
+  transform: translateY(-1px);
 }
 
 .products-table thead {

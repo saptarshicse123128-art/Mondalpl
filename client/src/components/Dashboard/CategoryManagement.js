@@ -9,6 +9,9 @@ function CategoryManagement() {
   const [newSubcategory, setNewSubcategory] = useState('');
   const [selectedCategoryId, setSelectedCategoryId] = useState('');
   const [message, setMessage] = useState({ type: '', text: '' });
+  const [editingCategoryId, setEditingCategoryId] = useState('');
+  const [editingCategoryName, setEditingCategoryName] = useState('');
+  const [editingSub, setEditingSub] = useState(null); // { categoryId, originalName, name }
 
   useEffect(() => {
     const unsubscribe = categoryService.onCategoriesChange((cats, err) => {
@@ -76,6 +79,66 @@ function CategoryManagement() {
     }
   };
 
+  const handleStartEditCategory = (category) => {
+    setEditingCategoryId(category.id);
+    setEditingCategoryName(category.name);
+  };
+
+  const handleSaveCategoryEdit = async () => {
+    const name = editingCategoryName.trim();
+    if (!editingCategoryId || !name) {
+      setMessage({ type: 'error', text: 'Category name cannot be empty' });
+      setTimeout(() => setMessage({ type: '', text: '' }), 2000);
+      return;
+    }
+    try {
+      await categoryService.updateCategoryName(editingCategoryId, name);
+      setMessage({ type: 'success', text: 'Category name updated' });
+      setTimeout(() => setMessage({ type: '', text: '' }), 2000);
+      setEditingCategoryId('');
+      setEditingCategoryName('');
+    } catch (err) {
+      console.error(err);
+      setMessage({ type: 'error', text: 'Failed to update category name' });
+    }
+  };
+
+  const handleCancelCategoryEdit = () => {
+    setEditingCategoryId('');
+    setEditingCategoryName('');
+  };
+
+  const handleStartEditSub = (categoryId, subName) => {
+    setEditingSub({
+      categoryId,
+      originalName: subName,
+      name: subName
+    });
+  };
+
+  const handleSaveSubEdit = async () => {
+    if (!editingSub) return;
+    const newName = (editingSub.name || '').trim();
+    if (!newName) {
+      setMessage({ type: 'error', text: 'Subcategory name cannot be empty' });
+      setTimeout(() => setMessage({ type: '', text: '' }), 2000);
+      return;
+    }
+    try {
+      await categoryService.renameSubcategory(editingSub.categoryId, editingSub.originalName, newName);
+      setMessage({ type: 'success', text: 'Subcategory name updated' });
+      setTimeout(() => setMessage({ type: '', text: '' }), 2000);
+      setEditingSub(null);
+    } catch (err) {
+      console.error(err);
+      setMessage({ type: 'error', text: 'Failed to update subcategory name' });
+    }
+  };
+
+  const handleCancelSubEdit = () => {
+    setEditingSub(null);
+  };
+
   return (
     <div className="category-management">
       <h2>Categories</h2>
@@ -119,7 +182,23 @@ function CategoryManagement() {
                 .map((c) => (
                   <li key={c.id} style={{ marginBottom: 10 }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                      <strong>{c.name}</strong>
+                      {editingCategoryId === c.id ? (
+                        <>
+                          <input
+                            type="text"
+                            value={editingCategoryName}
+                            onChange={(e) => setEditingCategoryName(e.target.value)}
+                            style={{ padding: '4px 8px', minWidth: 160 }}
+                          />
+                          <button type="button" className="small-btn" onClick={handleSaveCategoryEdit}>Save</button>
+                          <button type="button" className="small-btn danger" onClick={handleCancelCategoryEdit}>Cancel</button>
+                        </>
+                      ) : (
+                        <>
+                          <strong>{c.name}</strong>
+                          <button type="button" className="small-btn" onClick={() => handleStartEditCategory(c)}>Edit</button>
+                        </>
+                      )}
                       <small className="muted">{Array.isArray(c.subcategories) ? `${c.subcategories.length} sub` : '0 sub'}</small>
                       <button type="button" className="small-btn danger" onClick={() => handleDeleteCategory(c.id, c.name)}>Delete</button>
                     </div>
@@ -127,8 +206,24 @@ function CategoryManagement() {
                       <div className="sub-list" style={{ marginTop: 6 }}>
                         {c.subcategories.map((s) => (
                           <span key={s} className="chip" style={{ marginRight: 6 }}>
-                            {s}
-                            <button type="button" className="chip-remove" onClick={() => handleRemoveSubcategory(c.id, s)}>×</button>
+                            {editingSub && editingSub.categoryId === c.id && editingSub.originalName === s ? (
+                              <>
+                                <input
+                                  type="text"
+                                  value={editingSub.name}
+                                  onChange={(e) => setEditingSub({ ...editingSub, name: e.target.value })}
+                                  style={{ padding: '2px 6px', minWidth: 100 }}
+                                />
+                                <button type="button" className="chip-remove" onClick={handleSaveSubEdit}>✔</button>
+                                <button type="button" className="chip-remove" onClick={handleCancelSubEdit}>✕</button>
+                              </>
+                            ) : (
+                              <>
+                                {s}
+                                <button type="button" className="chip-remove" onClick={() => handleStartEditSub(c.id, s)}>✎</button>
+                                <button type="button" className="chip-remove" onClick={() => handleRemoveSubcategory(c.id, s)}>×</button>
+                              </>
+                            )}
                           </span>
                         ))}
                       </div>

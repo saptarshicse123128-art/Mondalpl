@@ -90,18 +90,19 @@ function Analytics() {
   const [topProducts, setTopProducts] = useState([]);
   const [lowStockProducts, setLowStockProducts] = useState([]);
   const [inventoryValue, setInventoryValue] = useState(0);
+  const [totalDue, setTotalDue] = useState(0);
   const [salesData, setSalesData] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [timeRange, setTimeRange] = useState('weekly'); // weekly, monthly, yearly
+  const [bills, setBills] = useState([]);
+  const [lowStockSearch, setLowStockSearch] = useState('');
+  const [showAllLowStock, setShowAllLowStock] = useState(false);
 
   // Fetch analytics data
   useEffect(() => {
     const fetchAnalytics = async () => {
       try {
         setLoading(true);
-
-        // Get top selling products
-        const topSellers = await analyticsUtils.getTopSellingProducts(5);
-        setTopProducts(topSellers);
 
         // Get low stock products
         const lowStock = await searchUtils.getLowStockProducts(20);
@@ -110,10 +111,6 @@ function Analytics() {
         // Get inventory value
         const inventory = await analyticsUtils.getInventoryValue();
         setInventoryValue(inventory.totalValue);
-
-        // Get total sales
-        const total = await analyticsUtils.getTotalSalesAmount();
-        setTotalSales(total);
       } catch (error) {
         console.error('Error fetching analytics:', error);
       } finally {
@@ -124,32 +121,119 @@ function Analytics() {
     fetchAnalytics();
   }, []);
 
-  // Real-time bills listener for bill count
+  // Real-time bills listener for raw bill data
   useEffect(() => {
     const q = query(collection(db, 'bills'), orderBy('createdAt', 'desc'));
     const unsubscribe = onSnapshot(q, (snapshot) => {
-      setBillCount(snapshot.size);
-      
-      // Build daily sales data
-      const dailySales = {};
-      snapshot.forEach((doc) => {
-        const date = doc.data().date;
-        if (date) {
-          dailySales[date] = (dailySales[date] || 0) + (doc.data().total || 0);
+      const billsList = [];
+      snapshot.forEach((docSnap) => {
+        const data = docSnap.data();
+        let billDateStr = data.date;
+
+        // Fallback to createdAt if date is missing
+        if (!billDateStr && data.createdAt?.toDate) {
+          billDateStr = data.createdAt.toDate().toISOString().split('T')[0];
         }
+
+        if (!billDateStr) return;
+
+        billsList.push({
+          id: docSnap.id,
+          date: billDateStr,
+          total: data.total || 0,
+          due: data.due ?? null,
+          items: Array.isArray(data.items) ? data.items : []
+        });
       });
 
-      // Convert to sorted array
-      const salesArray = Object.entries(dailySales)
-        .map(([date, total]) => ({ date, total }))
-        .sort((a, b) => new Date(a.date) - new Date(b.date))
-        .slice(-7); // Last 7 days
-
-      setSalesData(salesArray);
+      setBills(billsList);
     });
 
     return () => unsubscribe();
   }, []);
+
+  // Recompute analytics based on selected time range
+  useEffect(() => {
+    if (!bills.length) {
+      setSalesData([]);
+      setTotalSales(0);
+      setBillCount(0);
+      setTotalDue(0);
+      setTopProducts([]);
+      return;
+    }
+
+    const now = new Date();
+    const rangeDays =
+      timeRange === 'weekly' ? 7 : timeRange === 'monthly' ? 30 : 365;
+
+    // Helper: filter bills in range
+    const filteredBills = bills.filter((bill) => {
+      const billDate = new Date(bill.date);
+      if (isNaN(billDate)) return false;
+      const diffDays = (now - billDate) / (1000 * 60 * 60 * 24);
+      return diffDays >= 0 && diffDays <= rangeDays;
+    });
+
+    // Total sales & bill count for range
+    const total = filteredBills.reduce((sum, bill) => sum + (bill.total || 0), 0);
+    setTotalSales(total);
+    setBillCount(filteredBills.length);
+
+    // Total due amount for range
+    const dueTotal = filteredBills.reduce((sum, bill) => {
+      if (bill.due == null || bill.due === '') return sum;
+      if (typeof bill.due === 'number') {
+        return sum + bill.due;
+      }
+      const cleaned = String(bill.due).replace(/[^0-9.-]/g, '');
+      const num = parseFloat(cleaned);
+      if (isNaN(num)) return sum;
+      return sum + num;
+    }, 0);
+    setTotalDue(dueTotal);
+
+    // Daily sales for chart
+    const dailySales = {};
+
+    filteredBills.forEach((bill) => {
+      const key = bill.date; // group by day (YYYY-MM-DD)
+      dailySales[key] = (dailySales[key] || 0) + bill.total;
+    });
+
+    const salesArray = Object.entries(dailySales)
+      .map(([date, total]) => ({ date, total }))
+      .sort((a, b) => new Date(a.date) - new Date(b.date));
+
+    setSalesData(salesArray);
+
+    // Top products within range
+    const productMap = {};
+    filteredBills.forEach((bill) => {
+      bill.items.forEach((item) => {
+        const key = item.productId || item.productName || 'unknown';
+        if (!productMap[key]) {
+          productMap[key] = {
+            productId: item.productId || key,
+            productName: item.productName || 'Unknown',
+            quantity: 0,
+            totalRevenue: 0,
+            billCount: 0
+          };
+        }
+        productMap[key].quantity += item.quantity || 0;
+        const revenue = item.subtotal != null ? item.subtotal : (item.price || 0) * (item.quantity || 0);
+        productMap[key].totalRevenue += revenue;
+        productMap[key].billCount += 1;
+      });
+    });
+
+    const topList = Object.values(productMap)
+      .sort((a, b) => b.quantity - a.quantity)
+      .slice(0, 5);
+
+    setTopProducts(topList);
+  }, [bills, timeRange]);
 
   if (loading) {
     return <div className="analytics-container"><p className="loading">Loading analytics...</p></div>;
@@ -157,7 +241,32 @@ function Analytics() {
 
   return (
     <div className="analytics-container">
-      <h2>📊 Sales Analytics & Overview</h2>
+      <div className="chart-header-row">
+        <h2>📊 Sales Analytics & Overview</h2>
+        <div className="time-filter">
+          <button
+            type="button"
+            className={timeRange === 'weekly' ? 'time-btn active' : 'time-btn'}
+            onClick={() => setTimeRange('weekly')}
+          >
+            Weekly
+          </button>
+          <button
+            type="button"
+            className={timeRange === 'monthly' ? 'time-btn active' : 'time-btn'}
+            onClick={() => setTimeRange('monthly')}
+          >
+            Monthly
+          </button>
+          <button
+            type="button"
+            className={timeRange === 'yearly' ? 'time-btn active' : 'time-btn'}
+            onClick={() => setTimeRange('yearly')}
+          >
+            Yearly
+          </button>
+        </div>
+      </div>
 
       {/* Key Metrics */}
       <div className="metrics-grid">
@@ -166,7 +275,13 @@ function Analytics() {
           <div className="metric-content">
             <h3>Total Sales</h3>
             <p className="metric-value">₹{totalSales.toFixed(2)}</p>
-            <span className="metric-label">All time</span>
+            <span className="metric-label">
+              {timeRange === 'weekly'
+                ? 'Last 7 days'
+                : timeRange === 'monthly'
+                ? 'Last 30 days'
+                : 'Last 365 days'}
+            </span>
           </div>
         </div>
 
@@ -175,7 +290,28 @@ function Analytics() {
           <div className="metric-content">
             <h3>Total Bills</h3>
             <p className="metric-value">{billCount}</p>
-            <span className="metric-label">Generated</span>
+            <span className="metric-label">
+              {timeRange === 'weekly'
+                ? 'Bills in last 7 days'
+                : timeRange === 'monthly'
+                ? 'Bills in last 30 days'
+                : 'Bills in last 365 days'}
+            </span>
+          </div>
+        </div>
+
+        <div className="metric-card">
+          <div className="metric-icon">🧾</div>
+          <div className="metric-content">
+            <h3>Total Due Amount</h3>
+            <p className="metric-value">₹{totalDue.toFixed(2)}</p>
+            <span className="metric-label">
+              {timeRange === 'weekly'
+                ? 'Due in last 7 days'
+                : timeRange === 'monthly'
+                ? 'Due in last 30 days'
+                : 'Due in last 365 days'}
+            </span>
           </div>
         </div>
 
@@ -198,9 +334,36 @@ function Analytics() {
         </div>
       </div>
 
+      {/* Summary Stats */}
+      <div className="summary-section">
+        <h3>📊 Quick Summary</h3>
+        <div className="summary-grid">
+          <div className="summary-item">
+            <span className="summary-label">Avg. Sale Per Bill:</span>
+            <span className="summary-value">₹{billCount > 0 ? (totalSales / billCount).toFixed(2) : '0.00'}</span>
+          </div>
+          <div className="summary-item">
+            <span className="summary-label">Total Products:</span>
+            <span className="summary-value">{topProducts.reduce((acc, p) => acc + 1, 0)}</span>
+          </div>
+          <div className="summary-item">
+            <span className="summary-label">Out of Stock:</span>
+            <span className="summary-value" style={{ color: lowStockProducts.filter(p => p.quantity === 0).length > 0 ? '#dc3545' : '#28a745' }}>
+              {lowStockProducts.filter(p => p.quantity === 0).length}
+            </span>
+          </div>
+          <div className="summary-item">
+            <span className="summary-label">Low Stock Count:</span>
+            <span className="summary-value" style={{ color: lowStockProducts.filter(p => p.quantity > 0).length > 0 ? '#ffc107' : '#28a745' }}>
+              {lowStockProducts.filter(p => p.quantity > 0).length}
+            </span>
+          </div>
+        </div>
+      </div>
+
       {/* Sales Chart */}
       <div className="chart-section">
-        <h3>📈 Sales Trend (Last 7 Days)</h3>
+        <h3>📈 Sales Trend</h3>
         <div className="sales-chart dark-chart">
           {salesData.length > 0 ? (
             <LineChart data={salesData} />
@@ -248,6 +411,15 @@ function Analytics() {
         <h3>⚠️ Low Stock Items (≤20 units)</h3>
         {lowStockProducts.length > 0 ? (
           <div className="products-table">
+            <div className="low-stock-search-row">
+              <input
+                type="text"
+                placeholder="Search low stock by name or category..."
+                value={lowStockSearch}
+                onChange={(e) => setLowStockSearch(e.target.value)}
+                className="low-stock-search-input"
+              />
+            </div>
             <table>
               <thead>
                 <tr>
@@ -259,7 +431,29 @@ function Analytics() {
                 </tr>
               </thead>
               <tbody>
-                {lowStockProducts.map((product) => (
+                {(() => {
+                  const filtered = lowStockProducts.filter((product) => {
+                    if (!lowStockSearch.trim()) return true;
+                    const q = lowStockSearch.toLowerCase().trim();
+                    return (
+                      (product.name || '').toLowerCase().includes(q) ||
+                      (product.category || '').toLowerCase().includes(q)
+                    );
+                  });
+
+                  const visible = showAllLowStock ? filtered : filtered.slice(0, 6);
+
+                  if (visible.length === 0) {
+                    return (
+                      <tr>
+                        <td colSpan="5" className="no-data">
+                          No low stock items match your search.
+                        </td>
+                      </tr>
+                    );
+                  }
+
+                  return visible.map((product) => (
                   <tr key={product.id} className={`status-${product.quantity === 0 ? 'critical' : 'warning'}`}>
                     <td className="product-name">{product.name}</td>
                     <td>{product.category}</td>
@@ -277,40 +471,24 @@ function Analytics() {
                       )}
                     </td>
                   </tr>
-                ))}
+                ));})()}
               </tbody>
             </table>
+            {lowStockProducts.length > 6 && (
+              <div className="low-stock-more-row">
+                <button
+                  type="button"
+                  className="low-stock-more-btn"
+                  onClick={() => setShowAllLowStock((prev) => !prev)}
+                >
+                  {showAllLowStock ? 'Show Less' : 'See More'}
+                </button>
+              </div>
+            )}
           </div>
         ) : (
           <p className="no-data">All products have sufficient stock! ✅</p>
         )}
-      </div>
-
-      {/* Summary Stats */}
-      <div className="summary-section">
-        <h3>📊 Quick Summary</h3>
-        <div className="summary-grid">
-          <div className="summary-item">
-            <span className="summary-label">Avg. Sale Per Bill:</span>
-            <span className="summary-value">₹{billCount > 0 ? (totalSales / billCount).toFixed(2) : '0.00'}</span>
-          </div>
-          <div className="summary-item">
-            <span className="summary-label">Total Products:</span>
-            <span className="summary-value">{topProducts.reduce((acc, p) => acc + 1, 0)}</span>
-          </div>
-          <div className="summary-item">
-            <span className="summary-label">Critical Alerts:</span>
-            <span className="summary-value" style={{ color: lowStockProducts.filter(p => p.quantity === 0).length > 0 ? '#dc3545' : '#28a745' }}>
-              {lowStockProducts.filter(p => p.quantity === 0).length}
-            </span>
-          </div>
-          <div className="summary-item">
-            <span className="summary-label">Warning Count:</span>
-            <span className="summary-value" style={{ color: lowStockProducts.filter(p => p.quantity > 0).length > 0 ? '#ffc107' : '#28a745' }}>
-              {lowStockProducts.filter(p => p.quantity > 0).length}
-            </span>
-          </div>
-        </div>
       </div>
     </div>
   );
