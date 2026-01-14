@@ -735,6 +735,129 @@
   color: #27ae60;
 }
 
+.bill-due-indicator {
+  margin-top: 0.75rem;
+  margin-bottom: 0.5rem;
+}
+
+.due-badge {
+  display: inline-block;
+  background: #dc3545;
+  color: white;
+  padding: 0.4rem 0.8rem;
+  border-radius: 4px;
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+.edit-due-form {
+  margin-top: 1rem;
+  padding: 1rem;
+  background: #f8f9fa;
+  border-radius: 5px;
+  border: 1px solid #dee2e6;
+}
+
+.edit-due-label {
+  display: block;
+  font-weight: 600;
+  color: #2c3e50;
+  margin-bottom: 0.5rem;
+  font-size: 1rem;
+}
+
+.due-info-display {
+  margin-bottom: 0.75rem;
+  padding: 0.5rem;
+  background: #e8f4f8;
+  border-radius: 4px;
+}
+
+.due-info-item {
+  font-size: 0.9rem;
+  color: #2c3e50;
+  font-weight: 500;
+}
+
+.due-calculation {
+  margin-top: 0.75rem;
+  margin-bottom: 0.75rem;
+  padding: 0.75rem;
+  background: #d4edda;
+  border-radius: 4px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.due-calculation-label {
+  font-size: 0.9rem;
+  color: #155724;
+  font-weight: 500;
+}
+
+.due-calculation-value {
+  font-size: 1rem;
+  color: #155724;
+  font-weight: 700;
+}
+
+.edit-due-input {
+  width: 100%;
+  padding: 0.75rem;
+  border: 1px solid #ddd;
+  border-radius: 5px;
+  font-size: 1rem;
+  margin-bottom: 0.75rem;
+}
+
+.edit-due-input:focus {
+  outline: none;
+  border-color: #667eea;
+  box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+}
+
+.edit-due-buttons {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.save-due-btn,
+.cancel-due-btn {
+  flex: 1;
+  padding: 0.6rem;
+  border: none;
+  border-radius: 5px;
+  font-size: 0.9rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.3s;
+}
+
+.save-due-btn {
+  background: #27ae60;
+  color: white;
+}
+
+.save-due-btn:hover:not(:disabled) {
+  background: #229954;
+}
+
+.save-due-btn:disabled {
+  background: #ccc;
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.cancel-due-btn {
+  background: #95a5a6;
+  color: white;
+}
+
+.cancel-due-btn:hover {
+  background: #7f8c8d;
+}
+
 .bill-actions {
   display: flex;
   gap: 0.5rem;
@@ -744,6 +867,7 @@
 
 .download-bill-btn,
 .print-bill-btn,
+.edit-due-btn,
 .delete-bill-btn {
   flex: 1;
   min-width: 100px;
@@ -772,6 +896,15 @@
 
 .print-bill-btn:hover {
   background: #2980b9;
+  transform: translateY(-2px);
+}
+
+.edit-due-btn {
+  background: #f39c12;
+}
+
+.edit-due-btn:hover {
+  background: #e67e22;
   transform: translateY(-2px);
 }
 

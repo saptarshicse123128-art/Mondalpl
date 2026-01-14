@@ -33,6 +33,9 @@ function BillGeneration() {
     price: ''
   });
   const [editingCustomItem, setEditingCustomItem] = useState(null);
+  const [editingDueBillId, setEditingDueBillId] = useState(null);
+  const [editingDueAmount, setEditingDueAmount] = useState('');
+  const [currentDueAmount, setCurrentDueAmount] = useState(0);
 
   useEffect(() => {
     const unsubscribe = onSnapshot(collection(db, 'products'), (snapshot) => {
@@ -280,6 +283,83 @@ function BillGeneration() {
     }
   };
 
+  const handleEditDueAmount = (bill) => {
+    const currentDue = bill.due || '';
+    const cleanedDue = currentDue.replace(/[^0-9.-]/g, '');
+    const currentDueNumeric = cleanedDue ? parseFloat(cleanedDue) : 0;
+    setEditingDueBillId(bill.id);
+    setCurrentDueAmount(currentDueNumeric);
+    setEditingDueAmount(''); // This will be the "amount paid"
+  };
+
+  const handleSaveDueAmount = async (billId) => {
+    if (!editingDueAmount.trim()) {
+      alert('Please enter amount paid');
+      return;
+    }
+
+    const cleanedPaid = editingDueAmount.replace(/[^0-9.-]/g, '');
+    const amountPaid = parseFloat(cleanedPaid);
+    
+    if (isNaN(amountPaid) || amountPaid < 0) {
+      alert('Please enter a valid amount paid');
+      return;
+    }
+
+    if (amountPaid > currentDueAmount) {
+      alert(`Amount paid (₹${amountPaid.toFixed(2)}) cannot be greater than current due amount (₹${currentDueAmount.toFixed(2)})`);
+      return;
+    }
+
+    try {
+      const billRef = doc(db, 'bills', billId);
+      const billDoc = await getDoc(billRef);
+      
+      if (!billDoc.exists()) {
+        alert('Bill not found');
+        return;
+      }
+
+      // Calculate new due amount
+      const newDueAmount = Math.max(0, currentDueAmount - amountPaid);
+
+      // Get existing due history or initialize
+      const existingHistory = billDoc.data().dueHistory || [];
+      const today = new Date().toISOString().split('T')[0];
+      
+      // Add new entry to history with amount paid
+      const newHistoryEntry = {
+        amountPaid: amountPaid,
+        previousDue: currentDueAmount,
+        newDue: newDueAmount,
+        date: today
+      };
+      
+      const updatedHistory = [...existingHistory, newHistoryEntry];
+
+      // Update bill with new due amount and history
+      await updateDoc(billRef, {
+        due: newDueAmount > 0 ? newDueAmount.toString() : null,
+        dueHistory: updatedHistory,
+        updatedAt: serverTimestamp()
+      });
+
+      setEditingDueBillId(null);
+      setEditingDueAmount('');
+      setCurrentDueAmount(0);
+      alert(`Amount paid: ₹${amountPaid.toFixed(2)}\nNew due amount: ₹${newDueAmount.toFixed(2)}`);
+    } catch (error) {
+      console.error('Error updating due amount:', error);
+      alert('Failed to update due amount. Please try again.');
+    }
+  };
+
+  const handleCancelEditDue = () => {
+    setEditingDueBillId(null);
+    setEditingDueAmount('');
+    setCurrentDueAmount(0);
+  };
+
   const generateBillNumber = (billNumber) => {
     return `MPS/${String(billNumber).padStart(5, '0')}`;
   };
@@ -427,6 +507,19 @@ function BillGeneration() {
       const nextBillNumber = await getNextBillNumber();
       const billNumber = generateBillNumber(nextBillNumber);
 
+      // Initialize due history if there's a due amount
+      let dueHistory = [];
+      if (billForm.due.trim()) {
+        const cleanedDue = billForm.due.replace(/[^0-9.-]/g, '');
+        const parsedDue = parseFloat(cleanedDue);
+        if (!isNaN(parsedDue) && parsedDue > 0) {
+          dueHistory = [{
+            amount: parsedDue,
+            date: new Date().toISOString().split('T')[0]
+          }];
+        }
+      }
+
       const billData = {
         fullName: billForm.fullName,
         date: billForm.date,
@@ -434,6 +527,7 @@ function BillGeneration() {
         phone: ensuredPhone || billForm.phone,
         discount: discount,
         due: billForm.due.trim() || null,
+        dueHistory: dueHistory,
         billNumber: billNumber,
         billNumberValue: nextBillNumber,
         items: cart.map(item => ({
@@ -648,17 +742,46 @@ function BillGeneration() {
         summaryY += 7;
       }
       
-      // DUE AMOUNT
-      if (due > 0) {
-        pdfDoc.text('DUE AMOUNT Rs.', 150, summaryY, { align: 'right' });
-        pdfDoc.text(due.toFixed(2), 190, summaryY, { align: 'right' });
-        summaryY += 7;
-      }
-      
       // TOTAL (bold)
       pdfDoc.setFont('helvetica', 'bold');
       pdfDoc.text('TOTAL Rs.', 150, summaryY, { align: 'right' });
       pdfDoc.text(total.toFixed(2), 190, summaryY, { align: 'right' });
+      summaryY += 7;
+      
+      // DUE AMOUNT (in red, below total)
+      const dueHistory = billToDownload.dueHistory || [];
+      if (due > 0) {
+        pdfDoc.setFont('helvetica', 'normal');
+        pdfDoc.setTextColor(200, 0, 0); // Red color
+        pdfDoc.text('DUE AMOUNT Rs.', 150, summaryY, { align: 'right' });
+        pdfDoc.text(due.toFixed(2), 190, summaryY, { align: 'right' });
+        summaryY += 7;
+        
+        // DUE HISTORY entries (in red, no heading, right-aligned under due amount)
+        if (dueHistory.length > 0) {
+          pdfDoc.setFontSize(9);
+          dueHistory.forEach((entry, idx) => {
+            const entryDate = entry.date || (entry.timestamp?.toDate ? entry.timestamp.toDate().toLocaleDateString('en-GB') : 'N/A');
+            // Handle both old format (amount) and new format (amountPaid, previousDue, newDue)
+            if (entry.amountPaid !== undefined) {
+              // New format: show payment details
+              const amountPaid = parseFloat(entry.amountPaid || 0);
+              const newDue = parseFloat(entry.newDue || 0);
+              pdfDoc.setTextColor(200, 0, 0); // Red color for date and new due
+              pdfDoc.text(`${entryDate} - Paid: Rs. ${amountPaid.toFixed(2)}, New Due: Rs. ${newDue.toFixed(2)}`, 190, summaryY, { align: 'right' });
+            } else {
+              // Old format: just show amount
+              const entryAmount = parseFloat(entry.amount || 0);
+              pdfDoc.setTextColor(200, 0, 0); // Red color
+              pdfDoc.text(`${entryDate} - Rs. ${entryAmount.toFixed(2)}`, 190, summaryY, { align: 'right' });
+            }
+            summaryY += 6;
+          });
+        }
+      }
+      
+      // Reset text color to black for any remaining content
+      pdfDoc.setTextColor(0, 0, 0);
       
       // Save PDF
       const fileName = `CashMemo_${billNumber}_${customerName.replace(/\s+/g, '_')}_${billDate.replace(/\//g, '-')}.pdf`;
@@ -843,17 +966,46 @@ function BillGeneration() {
         summaryY += 7;
       }
       
-      // DUE AMOUNT
-      if (due > 0) {
-        pdfDoc.text('DUE AMOUNT Rs.', 150, summaryY, { align: 'right' });
-        pdfDoc.text(due.toFixed(2), 190, summaryY, { align: 'right' });
-        summaryY += 7;
-      }
-      
       // TOTAL (bold)
       pdfDoc.setFont('helvetica', 'bold');
       pdfDoc.text('TOTAL Rs.', 150, summaryY, { align: 'right' });
       pdfDoc.text(total.toFixed(2), 190, summaryY, { align: 'right' });
+      summaryY += 7;
+      
+      // DUE AMOUNT (in red, below total)
+      const dueHistory = billToPrint.dueHistory || [];
+      if (due > 0) {
+        pdfDoc.setFont('helvetica', 'normal');
+        pdfDoc.setTextColor(200, 0, 0); // Red color
+        pdfDoc.text('DUE AMOUNT Rs.', 150, summaryY, { align: 'right' });
+        pdfDoc.text(due.toFixed(2), 190, summaryY, { align: 'right' });
+        summaryY += 7;
+        
+        // DUE HISTORY entries (in red, no heading, right-aligned under due amount)
+        if (dueHistory.length > 0) {
+          pdfDoc.setFontSize(9);
+          dueHistory.forEach((entry, idx) => {
+            const entryDate = entry.date || (entry.timestamp?.toDate ? entry.timestamp.toDate().toLocaleDateString('en-GB') : 'N/A');
+            // Handle both old format (amount) and new format (amountPaid, previousDue, newDue)
+            if (entry.amountPaid !== undefined) {
+              // New format: show payment details
+              const amountPaid = parseFloat(entry.amountPaid || 0);
+              const newDue = parseFloat(entry.newDue || 0);
+              pdfDoc.setTextColor(200, 0, 0); // Red color for date and new due
+              pdfDoc.text(`${entryDate} - Paid: Rs. ${amountPaid.toFixed(2)}, New Due: Rs. ${newDue.toFixed(2)}`, 190, summaryY, { align: 'right' });
+            } else {
+              // Old format: just show amount
+              const entryAmount = parseFloat(entry.amount || 0);
+              pdfDoc.setTextColor(200, 0, 0); // Red color
+              pdfDoc.text(`${entryDate} - Rs. ${entryAmount.toFixed(2)}`, 190, summaryY, { align: 'right' });
+            }
+            summaryY += 6;
+          });
+        }
+      }
+      
+      // Reset text color to black for any remaining content
+      pdfDoc.setTextColor(0, 0, 0);
       
       // Open a lightweight print window we fully control to avoid PDF viewer cross-origin restrictions
       const pdfBlob = pdfDoc.output('blob');
@@ -1009,6 +1161,66 @@ function BillGeneration() {
                     )}
                     <p><strong>Items:</strong> {bill.items?.length || 0}</p>
                     <p className="bill-total"><strong>Total:</strong> ₹{bill.total?.toFixed(2)}</p>
+                    {(() => {
+                      const rawDue = bill.due;
+                      let dueNumeric = 0;
+                      if (rawDue != null && rawDue !== '') {
+                        if (typeof rawDue === 'number') {
+                          dueNumeric = rawDue;
+                        } else {
+                          const cleaned = String(rawDue).replace(/[^0-9.-]/g, '');
+                          const num = parseFloat(cleaned);
+                          if (!isNaN(num)) dueNumeric = num;
+                        }
+                      }
+                      const hasDue = dueNumeric > 0;
+                      return hasDue ? (
+                        <div className="bill-due-indicator">
+                          <span className="due-badge">Due: ₹{dueNumeric.toFixed(2)}</span>
+                        </div>
+                      ) : null;
+                    })()}
+                    {editingDueBillId === bill.id ? (
+                      <div className="edit-due-form">
+                        <label className="edit-due-label">Amount Paid</label>
+                        <div className="due-info-display">
+                          <span className="due-info-item">Current Due: ₹{currentDueAmount.toFixed(2)}</span>
+                        </div>
+                        <input
+                          type="number"
+                          min="0"
+                          step="0.01"
+                          max={currentDueAmount}
+                          value={editingDueAmount}
+                          onChange={(e) => setEditingDueAmount(e.target.value)}
+                          placeholder="Enter amount paid"
+                          className="edit-due-input"
+                        />
+                        {editingDueAmount && !isNaN(parseFloat(editingDueAmount.replace(/[^0-9.-]/g, ''))) && (
+                          <div className="due-calculation">
+                            <span className="due-calculation-label">New Due Amount:</span>
+                            <span className="due-calculation-value">
+                              ₹{Math.max(0, currentDueAmount - parseFloat(editingDueAmount.replace(/[^0-9.-]/g, '') || 0)).toFixed(2)}
+                            </span>
+                          </div>
+                        )}
+                        <div className="edit-due-buttons">
+                          <button
+                            className="save-due-btn"
+                            onClick={() => handleSaveDueAmount(bill.id)}
+                            disabled={!editingDueAmount.trim() || parseFloat(editingDueAmount.replace(/[^0-9.-]/g, '') || 0) <= 0}
+                          >
+                            Save
+                          </button>
+                          <button
+                            className="cancel-due-btn"
+                            onClick={handleCancelEditDue}
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                      </div>
+                    ) : null}
                     <div className="bill-actions">
                       <button
                         className="download-bill-btn"
@@ -1024,6 +1236,28 @@ function BillGeneration() {
                       >
                         🖨️ Print
                       </button>
+                      {(() => {
+                        const rawDue = bill.due;
+                        let dueNumeric = 0;
+                        if (rawDue != null && rawDue !== '') {
+                          if (typeof rawDue === 'number') {
+                            dueNumeric = rawDue;
+                          } else {
+                            const cleaned = String(rawDue).replace(/[^0-9.-]/g, '');
+                            const num = parseFloat(cleaned);
+                            if (!isNaN(num)) dueNumeric = num;
+                          }
+                        }
+                        return dueNumeric > 0 ? (
+                          <button
+                            className="edit-due-btn"
+                            onClick={() => handleEditDueAmount(bill)}
+                            title="Edit Due Amount"
+                          >
+                            ✏️ Edit Due
+                          </button>
+                        ) : null;
+                      })()}
                       <button
                         className="delete-bill-btn"
                         onClick={() => handleDeleteBill(bill.id)}
