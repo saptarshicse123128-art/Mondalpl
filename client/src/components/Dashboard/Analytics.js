@@ -94,9 +94,18 @@ function Analytics() {
   const [salesData, setSalesData] = useState([]);
   const [loading, setLoading] = useState(true);
   const [timeRange, setTimeRange] = useState('weekly'); // weekly, monthly, yearly
+  const [selectedWeekStart, setSelectedWeekStart] = useState(() => {
+    const today = new Date();
+    today.setDate(today.getDate() - 6); // Default to 7 days ago
+    return today.toISOString().split('T')[0];
+  });
+  const [selectedWeekEnd, setSelectedWeekEnd] = useState(new Date().toISOString().split('T')[0]); // Default to today
+  const [selectedMonth, setSelectedMonth] = useState(new Date().toISOString().slice(0, 7)); // YYYY-MM format
+  const [selectedYear, setSelectedYear] = useState(new Date().getFullYear().toString());
   const [bills, setBills] = useState([]);
   const [lowStockSearch, setLowStockSearch] = useState('');
   const [showAllLowStock, setShowAllLowStock] = useState(false);
+  const [allProducts, setAllProducts] = useState([]);
 
   // Fetch analytics data
   useEffect(() => {
@@ -119,6 +128,22 @@ function Analytics() {
     };
 
     fetchAnalytics();
+  }, []);
+
+  // Real-time listener for all products
+  useEffect(() => {
+    const productsCollection = collection(db, 'products');
+    const unsubscribe = onSnapshot(productsCollection, (snapshot) => {
+      const productsList = [];
+      snapshot.forEach((doc) => {
+        productsList.push({ id: doc.id, ...doc.data() });
+      });
+      setAllProducts(productsList);
+    }, (error) => {
+      console.error('Error fetching products:', error);
+    });
+
+    return () => unsubscribe();
   }, []);
 
   // Real-time bills listener for raw bill data
@@ -152,6 +177,55 @@ function Analytics() {
     return () => unsubscribe();
   }, []);
 
+  // Helper function to get week range from selected start and end dates
+  const getWeekRange = (startStr, endStr) => {
+    // Parse the date strings (YYYY-MM-DD)
+    const [startYear, startMonth, startDay] = startStr.split('-').map(Number);
+    const [endYear, endMonth, endDay] = endStr.split('-').map(Number);
+    const start = new Date(startYear, startMonth - 1, startDay);
+    start.setHours(0, 0, 0, 0);
+    const end = new Date(endYear, endMonth - 1, endDay);
+    end.setHours(23, 59, 59, 999);
+    return { start, end };
+  };
+
+  // Helper function to get month start and end
+  const getMonthRange = (monthStr) => {
+    const [year, month] = monthStr.split('-').map(Number);
+    const start = new Date(year, month - 1, 1);
+    start.setHours(0, 0, 0, 0);
+    const end = new Date(year, month, 0);
+    end.setHours(23, 59, 59, 999);
+    return { start, end };
+  };
+
+  // Helper function to get year start and end
+  const getYearRange = (yearStr) => {
+    const year = parseInt(yearStr);
+    const start = new Date(year, 0, 1);
+    start.setHours(0, 0, 0, 0);
+    const end = new Date(year, 11, 31);
+    end.setHours(23, 59, 59, 999);
+    return { start, end };
+  };
+
+  // Helper function to format period label
+  const getPeriodLabel = () => {
+    if (timeRange === 'weekly') {
+      const startDate = new Date(selectedWeekStart + 'T00:00:00');
+      const endDate = new Date(selectedWeekEnd + 'T00:00:00');
+      const startStr = startDate.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
+      const endStr = endDate.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
+      return `${startStr} - ${endStr}`;
+    } else if (timeRange === 'monthly') {
+      const [year, month] = selectedMonth.split('-');
+      const monthName = new Date(year, month - 1).toLocaleDateString('en-GB', { month: 'long', year: 'numeric' });
+      return monthName;
+    } else {
+      return selectedYear;
+    }
+  };
+
   // Recompute analytics based on selected time range
   useEffect(() => {
     if (!bills.length) {
@@ -163,16 +237,29 @@ function Analytics() {
       return;
     }
 
-    const now = new Date();
-    const rangeDays =
-      timeRange === 'weekly' ? 7 : timeRange === 'monthly' ? 30 : 365;
+    // Get date range based on selected period
+    let dateRange;
+    if (timeRange === 'weekly') {
+      dateRange = getWeekRange(selectedWeekStart, selectedWeekEnd);
+    } else if (timeRange === 'monthly') {
+      dateRange = getMonthRange(selectedMonth);
+    } else {
+      dateRange = getYearRange(selectedYear);
+    }
 
     // Helper: filter bills in range
     const filteredBills = bills.filter((bill) => {
-      const billDate = new Date(bill.date);
-      if (isNaN(billDate)) return false;
-      const diffDays = (now - billDate) / (1000 * 60 * 60 * 24);
-      return diffDays >= 0 && diffDays <= rangeDays;
+      if (!bill.date) return false;
+      // Parse bill date (format: YYYY-MM-DD)
+      const billDate = new Date(bill.date + 'T00:00:00');
+      if (isNaN(billDate.getTime())) return false;
+      
+      // Compare dates using getTime() for accurate comparison
+      const billTime = billDate.getTime();
+      const startTime = dateRange.start.getTime();
+      const endTime = dateRange.end.getTime();
+      
+      return billTime >= startTime && billTime <= endTime;
     });
 
     // Total sales & bill count for range
@@ -233,7 +320,7 @@ function Analytics() {
       .slice(0, 5);
 
     setTopProducts(topList);
-  }, [bills, timeRange]);
+  }, [bills, timeRange, selectedWeekStart, selectedWeekEnd, selectedMonth, selectedYear]);
 
   if (loading) {
     return <div className="analytics-container"><p className="loading">Loading analytics...</p></div>;
@@ -265,6 +352,54 @@ function Analytics() {
           >
             Yearly
           </button>
+          {timeRange === 'weekly' && (
+            <>
+              <input
+                type="date"
+                value={selectedWeekStart}
+                onChange={(e) => {
+                  const startDate = e.target.value;
+                  setSelectedWeekStart(startDate);
+                  // Automatically set end date to 6 days after start (7 days total)
+                  const endDate = new Date(startDate);
+                  endDate.setDate(endDate.getDate() + 6);
+                  setSelectedWeekEnd(endDate.toISOString().split('T')[0]);
+                }}
+                className="date-picker"
+                title="Select start date"
+              />
+              <span className="date-separator">to</span>
+              <input
+                type="date"
+                value={selectedWeekEnd}
+                onChange={(e) => setSelectedWeekEnd(e.target.value)}
+                min={selectedWeekStart}
+                className="date-picker"
+                title="Select end date"
+              />
+            </>
+          )}
+          {timeRange === 'monthly' && (
+            <input
+              type="month"
+              value={selectedMonth}
+              onChange={(e) => setSelectedMonth(e.target.value)}
+              className="date-picker"
+              title="Select month and year"
+            />
+          )}
+          {timeRange === 'yearly' && (
+            <input
+              type="number"
+              min="2020"
+              max={new Date().getFullYear() + 1}
+              value={selectedYear}
+              onChange={(e) => setSelectedYear(e.target.value)}
+              className="year-picker"
+              placeholder="Year"
+              title="Select year"
+            />
+          )}
         </div>
       </div>
 
@@ -275,13 +410,7 @@ function Analytics() {
           <div className="metric-content">
             <h3>Total Sales</h3>
             <p className="metric-value">₹{totalSales.toFixed(2)}</p>
-            <span className="metric-label">
-              {timeRange === 'weekly'
-                ? 'Last 7 days'
-                : timeRange === 'monthly'
-                ? 'Last 30 days'
-                : 'Last 365 days'}
-            </span>
+            <span className="metric-label">{getPeriodLabel()}</span>
           </div>
         </div>
 
@@ -290,13 +419,7 @@ function Analytics() {
           <div className="metric-content">
             <h3>Total Bills</h3>
             <p className="metric-value">{billCount}</p>
-            <span className="metric-label">
-              {timeRange === 'weekly'
-                ? 'Bills in last 7 days'
-                : timeRange === 'monthly'
-                ? 'Bills in last 30 days'
-                : 'Bills in last 365 days'}
-            </span>
+            <span className="metric-label">Bills in {getPeriodLabel()}</span>
           </div>
         </div>
 
@@ -305,13 +428,7 @@ function Analytics() {
           <div className="metric-content">
             <h3>Total Due Amount</h3>
             <p className="metric-value">₹{totalDue.toFixed(2)}</p>
-            <span className="metric-label">
-              {timeRange === 'weekly'
-                ? 'Due in last 7 days'
-                : timeRange === 'monthly'
-                ? 'Due in last 30 days'
-                : 'Due in last 365 days'}
-            </span>
+            <span className="metric-label">Due in {getPeriodLabel()}</span>
           </div>
         </div>
 
@@ -328,7 +445,7 @@ function Analytics() {
           <div className="metric-icon">⚠️</div>
           <div className="metric-content">
             <h3>Low Stock</h3>
-            <p className="metric-value">{lowStockProducts.length}</p>
+            <p className="metric-value">{lowStockProducts.filter(p => p.quantity > 0).length}</p>
             <span className="metric-label">Items</span>
           </div>
         </div>
@@ -344,7 +461,7 @@ function Analytics() {
           </div>
           <div className="summary-item">
             <span className="summary-label">Total Products:</span>
-            <span className="summary-value">{topProducts.reduce((acc, p) => acc + 1, 0)}</span>
+            <span className="summary-value">{allProducts.length}</span>
           </div>
           <div className="summary-item">
             <span className="summary-label">Out of Stock:</span>

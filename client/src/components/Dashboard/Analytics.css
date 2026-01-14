@@ -143,6 +143,45 @@
   box-shadow: 0 2px 6px rgba(102, 126, 234, 0.4);
 }
 
+.date-picker,
+.year-picker {
+  padding: 6px 14px;
+  border-radius: 20px;
+  border: 1px solid #ccc;
+  background: #fff;
+  color: #555;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  margin-left: 0.5rem;
+}
+
+.date-picker:hover,
+.year-picker:hover {
+  border-color: #667eea;
+  box-shadow: 0 2px 6px rgba(102, 126, 234, 0.2);
+}
+
+.date-picker:focus,
+.year-picker:focus {
+  outline: none;
+  border-color: #667eea;
+  box-shadow: 0 2px 6px rgba(102, 126, 234, 0.4);
+}
+
+.year-picker {
+  width: 80px;
+  text-align: center;
+}
+
+.date-separator {
+  padding: 0 0.5rem;
+  color: #555;
+  font-size: 13px;
+  font-weight: 500;
+}
+
 .sales-chart {
   padding: 0.75rem;
   display: flex;
