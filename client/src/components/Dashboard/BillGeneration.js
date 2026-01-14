@@ -748,9 +748,11 @@ function BillGeneration() {
       pdfDoc.text(total.toFixed(2), 190, summaryY, { align: 'right' });
       summaryY += 7;
       
-      // DUE AMOUNT (in red, below total)
+      // DUE AMOUNT (in red, below total) - show even if 0
       const dueHistory = billToDownload.dueHistory || [];
-      if (due > 0) {
+      const hasDueOrHistory = due > 0 || dueHistory.length > 0;
+      
+      if (hasDueOrHistory) {
         pdfDoc.setFont('helvetica', 'normal');
         pdfDoc.setTextColor(200, 0, 0); // Red color
         pdfDoc.text('DUE AMOUNT Rs.', 150, summaryY, { align: 'right' });
@@ -758,6 +760,7 @@ function BillGeneration() {
         summaryY += 7;
         
         // DUE HISTORY entries (in red, no heading, right-aligned under due amount)
+        // Show history even if current due is 0
         if (dueHistory.length > 0) {
           pdfDoc.setFontSize(9);
           dueHistory.forEach((entry, idx) => {
@@ -972,9 +975,11 @@ function BillGeneration() {
       pdfDoc.text(total.toFixed(2), 190, summaryY, { align: 'right' });
       summaryY += 7;
       
-      // DUE AMOUNT (in red, below total)
+      // DUE AMOUNT (in red, below total) - show even if 0
       const dueHistory = billToPrint.dueHistory || [];
-      if (due > 0) {
+      const hasDueOrHistory = due > 0 || dueHistory.length > 0;
+      
+      if (hasDueOrHistory) {
         pdfDoc.setFont('helvetica', 'normal');
         pdfDoc.setTextColor(200, 0, 0); // Red color
         pdfDoc.text('DUE AMOUNT Rs.', 150, summaryY, { align: 'right' });
@@ -982,6 +987,7 @@ function BillGeneration() {
         summaryY += 7;
         
         // DUE HISTORY entries (in red, no heading, right-aligned under due amount)
+        // Show history even if current due is 0
         if (dueHistory.length > 0) {
           pdfDoc.setFontSize(9);
           dueHistory.forEach((entry, idx) => {
@@ -1518,6 +1524,7 @@ function BillGeneration() {
                   <table>
                     <thead>
                       <tr>
+                        <th>SL No.</th>
                         <th>Product</th>
                         <th>Category</th>
                         <th>Subcategory</th>
@@ -1528,10 +1535,11 @@ function BillGeneration() {
                       </tr>
                     </thead>
                     <tbody>
-                      {cart.map((item) => {
+                      {cart.map((item, index) => {
                         const isEditingCustom = editingCustomItem && editingCustomItem.id === item.id && item.isCustomProduct;
                         return (
                           <tr key={item.id}>
+                            <td data-label="SL No.">{index + 1}</td>
                             <td data-label="Product">{item.name}</td>
                             <td data-label="Category">{item.category || '-'}</td>
                             <td data-label="Subcategory">{item.subcategory || '-'}</td>
