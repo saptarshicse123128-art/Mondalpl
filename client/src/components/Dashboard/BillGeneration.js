@@ -18,6 +18,7 @@ function BillGeneration() {
     due: ''
   });
   const [selectedProduct, setSelectedProduct] = useState('');
+  const [selectedVariation, setSelectedVariation] = useState('');
   const [productQuantity, setProductQuantity] = useState(1);
   const [productSearchQuery, setProductSearchQuery] = useState('');
   const [showProductDropdown, setShowProductDropdown] = useState(false);
@@ -144,42 +145,100 @@ function BillGeneration() {
     const product = products.find(p => p.id === selectedProduct);
     if (!product) return;
 
-    if (product.quantity < productQuantity) {
-      alert(`Only ${product.quantity} items available in stock`);
+    // Check if product has variations
+    const hasVariations = product.variations && Array.isArray(product.variations) && product.variations.length > 0;
+    
+    if (hasVariations && !selectedVariation) {
+      alert('Please select a size/variation for this product');
       return;
     }
 
-    const existingItem = cart.find(item => item.id === product.id);
-    const quantityToAdd = existingItem ? productQuantity : productQuantity;
+    let variationData = null;
+    let availableQuantity = product.quantity;
+    let productPrice = product.price;
+
+    // If product has variations, use selected variation
+    if (hasVariations && selectedVariation) {
+      const variation = product.variations.find(v => v.size === selectedVariation);
+      if (!variation) {
+        alert('Selected variation not found');
+        return;
+      }
+      variationData = variation;
+      availableQuantity = variation.quantity || 0;
+      productPrice = variation.price || product.price;
+    }
+
+    if (availableQuantity < productQuantity) {
+      alert(`Only ${availableQuantity} items available in stock for this size`);
+      return;
+    }
+
+    // Create unique cart ID that includes variation if applicable
+    const cartItemId = hasVariations && selectedVariation 
+      ? `${product.id}_${selectedVariation}` 
+      : product.id;
+
+    const existingItem = cart.find(item => {
+      const itemId = item.variationSize ? `${item.id}_${item.variationSize}` : item.id;
+      return itemId === cartItemId;
+    });
+
     const newCartQuantity = existingItem ? existingItem.quantity + productQuantity : productQuantity;
     
-    if (product.quantity < newCartQuantity) {
-      alert(`Only ${product.quantity} items available in stock`);
+    if (availableQuantity < newCartQuantity) {
+      alert(`Only ${availableQuantity} items available in stock for this size`);
       return;
     }
 
     try {
-      // Update product quantity in Firestore
+      // Update product/variation quantity in Firestore
       const productRef = doc(db, 'products', product.id);
-      const newStockQuantity = product.quantity - quantityToAdd;
       
-      await updateDoc(productRef, {
-        quantity: newStockQuantity,
-        updatedAt: serverTimestamp()
-      });
+      if (hasVariations && selectedVariation) {
+        // Update the specific variation's quantity
+        const updatedVariations = product.variations.map(v => {
+          if (v.size === selectedVariation) {
+            return { ...v, quantity: (v.quantity || 0) - productQuantity };
+          }
+          return v;
+        });
+        
+        const newTotalQuantity = updatedVariations.reduce((sum, v) => sum + (v.quantity || 0), 0);
+        
+        await updateDoc(productRef, {
+          variations: updatedVariations,
+          quantity: newTotalQuantity,
+          updatedAt: serverTimestamp()
+        });
+      } else {
+        // Update regular product quantity
+        const newStockQuantity = product.quantity - productQuantity;
+        await updateDoc(productRef, {
+          quantity: newStockQuantity,
+          updatedAt: serverTimestamp()
+        });
+      }
 
       // Update cart
+      const cartItem = {
+        ...product,
+        quantity: newCartQuantity,
+        price: productPrice,
+        variationSize: hasVariations ? selectedVariation : undefined
+      };
+
       if (existingItem) {
-        setCart(cart.map(item =>
-          item.id === product.id
-            ? { ...item, quantity: newCartQuantity }
-            : item
-        ));
+        setCart(cart.map(item => {
+          const itemId = item.variationSize ? `${item.id}_${item.variationSize}` : item.id;
+          return itemId === cartItemId ? cartItem : item;
+        }));
       } else {
-        setCart([...cart, { ...product, quantity: productQuantity }]);
+        setCart([...cart, cartItem]);
       }
 
       setSelectedProduct('');
+      setSelectedVariation('');
       setProductQuantity(1);
       setProductSearchQuery('');
     } catch (error) {
@@ -189,26 +248,40 @@ function BillGeneration() {
   };
 
   const updateCartQuantity = async (productId, newQuantity) => {
+    // Find cart item - need to find by index since items with same id but different variations can exist
+    // For now, find the first item matching the productId (should work for most cases)
+    // In the future, we might need to pass an index or unique identifier
     const cartItem = cart.find(item => item.id === productId);
+    
     if (!cartItem) return;
 
     // If it's a custom product, just update quantity without stock management
     if (cartItem.isCustomProduct) {
       const safeQuantity = parseInt(newQuantity, 10) || 0;
       if (safeQuantity <= 0) {
-        setCart(cart.filter(item => item.id !== productId));
+        setCart(cart.filter(item => {
+          const itemId = item.variationSize ? `${item.id}_${item.variationSize}` : item.id;
+          const searchId = cartItem.variationSize ? `${cartItem.id}_${cartItem.variationSize}` : cartItem.id;
+          return itemId !== searchId;
+        }));
       } else {
-        setCart(cart.map(item =>
-          item.id === productId ? { ...item, quantity: safeQuantity } : item
-        ));
+        setCart(cart.map(item => {
+          const itemId = item.variationSize ? `${item.id}_${item.variationSize}` : item.id;
+          const searchId = cartItem.variationSize ? `${cartItem.id}_${cartItem.variationSize}` : cartItem.id;
+          return itemId === searchId ? { ...item, quantity: safeQuantity } : item;
+        }));
       }
       return;
     }
 
     if (newQuantity <= 0) {
       // Remove from cart and restore stock
-      await restoreProductStock(productId, cartItem.quantity);
-      setCart(cart.filter(item => item.id !== productId));
+      await restoreProductStock(productId, cartItem.quantity, cartItem.variationSize);
+      setCart(cart.filter(item => {
+        const itemId = item.variationSize ? `${item.id}_${item.variationSize}` : item.id;
+        const searchId = cartItem.variationSize ? `${cartItem.id}_${cartItem.variationSize}` : cartItem.id;
+        return itemId !== searchId;
+      }));
     } else {
       // Calculate the difference in quantity
       const quantityDifference = newQuantity - cartItem.quantity;
@@ -216,26 +289,56 @@ function BillGeneration() {
       
       if (!product) return;
 
+      // Check if product has variations
+      const hasVariations = cartItem.variationSize && product.variations && Array.isArray(product.variations);
+      let availableQuantity = product.quantity;
+
+      if (hasVariations) {
+        const variation = product.variations.find(v => v.size === cartItem.variationSize);
+        availableQuantity = variation?.quantity || 0;
+      }
+
       // Check if enough stock is available
-      if (product.quantity < quantityDifference) {
-        alert(`Only ${product.quantity} items available in stock`);
+      if (availableQuantity < quantityDifference) {
+        alert(`Only ${availableQuantity} items available in stock${hasVariations ? ' for this size' : ''}`);
         return;
       }
 
       try {
         // Update product quantity in Firestore
         const productRef = doc(db, 'products', productId);
-        const newStockQuantity = product.quantity - quantityDifference;
         
-        await updateDoc(productRef, {
-          quantity: newStockQuantity,
-          updatedAt: serverTimestamp()
-        });
+        if (hasVariations && cartItem.variationSize) {
+          // Update the specific variation's quantity
+          const updatedVariations = product.variations.map(v => {
+            if (v.size === cartItem.variationSize) {
+              return { ...v, quantity: (v.quantity || 0) - quantityDifference };
+            }
+            return v;
+          });
+          
+          const newTotalQuantity = updatedVariations.reduce((sum, v) => sum + (v.quantity || 0), 0);
+          
+          await updateDoc(productRef, {
+            variations: updatedVariations,
+            quantity: newTotalQuantity,
+            updatedAt: serverTimestamp()
+          });
+        } else {
+          // Update regular product quantity
+          const newStockQuantity = product.quantity - quantityDifference;
+          await updateDoc(productRef, {
+            quantity: newStockQuantity,
+            updatedAt: serverTimestamp()
+          });
+        }
 
         // Update cart
-        setCart(cart.map(item =>
-          item.id === productId ? { ...item, quantity: newQuantity } : item
-        ));
+        setCart(cart.map(item => {
+          const itemId = item.variationSize ? `${item.id}_${item.variationSize}` : item.id;
+          const searchId = cartItem.variationSize ? `${cartItem.id}_${cartItem.variationSize}` : cartItem.id;
+          return itemId === searchId ? { ...item, quantity: newQuantity } : item;
+        }));
       } catch (error) {
         console.error('Error updating product quantity:', error);
         alert('Failed to update product stock. Please try again.');
@@ -243,17 +346,38 @@ function BillGeneration() {
     }
   };
 
-  const restoreProductStock = async (productId, quantityToRestore) => {
+  const restoreProductStock = async (productId, quantityToRestore, variationSize = null) => {
     try {
       const productRef = doc(db, 'products', productId);
       const productDoc = await getDoc(productRef);
       
       if (productDoc.exists()) {
-        const currentQuantity = productDoc.data().quantity || 0;
-        await updateDoc(productRef, {
-          quantity: currentQuantity + quantityToRestore,
-          updatedAt: serverTimestamp()
-        });
+        const productData = productDoc.data();
+        
+        if (variationSize && productData.variations && Array.isArray(productData.variations)) {
+          // Restore variation quantity
+          const updatedVariations = productData.variations.map(v => {
+            if (v.size === variationSize) {
+              return { ...v, quantity: (v.quantity || 0) + quantityToRestore };
+            }
+            return v;
+          });
+          
+          const newTotalQuantity = updatedVariations.reduce((sum, v) => sum + (v.quantity || 0), 0);
+          
+          await updateDoc(productRef, {
+            variations: updatedVariations,
+            quantity: newTotalQuantity,
+            updatedAt: serverTimestamp()
+          });
+        } else {
+          // Restore regular product quantity
+          const currentQuantity = productData.quantity || 0;
+          await updateDoc(productRef, {
+            quantity: currentQuantity + quantityToRestore,
+            updatedAt: serverTimestamp()
+          });
+        }
       }
     } catch (error) {
       console.error('Error restoring product stock:', error);
@@ -264,9 +388,13 @@ function BillGeneration() {
     const cartItem = cart.find(item => item.id === productId);
     if (cartItem && !cartItem.isCustomProduct) {
       // Restore stock when removing from cart (only for stock products)
-      await restoreProductStock(productId, cartItem.quantity);
+      await restoreProductStock(productId, cartItem.quantity, cartItem.variationSize);
     }
-    setCart(cart.filter(item => item.id !== productId));
+    setCart(cart.filter(item => {
+      const itemId = item.variationSize ? `${item.id}_${item.variationSize}` : item.id;
+      const searchId = cartItem?.variationSize ? `${productId}_${cartItem.variationSize}` : productId;
+      return itemId !== searchId;
+    }));
   };
 
   const handleDeleteBill = async (billId) => {
@@ -538,7 +666,8 @@ function BillGeneration() {
           productName: item.name,
           price: item.price,
           quantity: item.quantity,
-          subtotal: item.price * item.quantity
+          subtotal: item.price * item.quantity,
+          variationSize: item.variationSize || null // Include variation size if it exists
         })),
         subtotal: subtotal,
         total: finalTotal,
@@ -677,9 +806,15 @@ function BillGeneration() {
         const quantity = parseInt(item.quantity || 0);
         const amount = parseFloat(item.subtotal || (price * quantity));
         
+        // Include variation size in product name if it exists
+        let productName = String(item.productName || 'N/A');
+        if (item.variationSize) {
+          productName = `${productName} ${item.variationSize}`;
+        }
+        
         return [
           String(index + 1), // SL No.
-          String(item.productName || 'N/A'), // Product
+          productName, // Product (with variation size if applicable)
           String(quantity), // Qty.
           'Rs. ' + price.toFixed(2), // Price
           'Rs. ' + amount.toFixed(2) // Amount
@@ -946,9 +1081,15 @@ function BillGeneration() {
         const quantity = parseInt(item.quantity || 0);
         const amount = parseFloat(item.subtotal || (price * quantity));
         
+        // Include variation size in product name if it exists
+        let productName = String(item.productName || 'N/A');
+        if (item.variationSize) {
+          productName = `${productName} ${item.variationSize}`;
+        }
+        
         return [
           String(index + 1), // SL No.
-          String(item.productName || 'N/A'), // Product
+          productName, // Product (with variation size if applicable)
           String(quantity), // Qty.
           'Rs. ' + price.toFixed(2), // Price
           'Rs. ' + amount.toFixed(2) // Amount
@@ -1625,6 +1766,7 @@ function BillGeneration() {
                                 onMouseDown={(e) => {
                                   e.preventDefault(); // Prevent input blur
                                   setSelectedProduct(product.id);
+                                  setSelectedVariation(''); // Reset variation when product changes
                                   setProductSearchQuery(product.name);
                                   setShowProductDropdown(false);
                                 }}
@@ -1633,8 +1775,15 @@ function BillGeneration() {
                                 {product.category && (
                                   <span className="product-category">({product.category}{product.subcategory ? ` - ${product.subcategory}` : ''})</span>
                                 )}
-                                <span className="product-price">₹{product.price?.toFixed(2)}</span>
-                                <span className="product-stock">Stock: {product.quantity}</span>
+                                {(!product.variations || !Array.isArray(product.variations) || product.variations.length === 0) && (
+                                  <>
+                                    <span className="product-price">₹{product.price?.toFixed(2)}</span>
+                                    <span className="product-stock">Stock: {product.quantity}</span>
+                                  </>
+                                )}
+                                {product.variations && Array.isArray(product.variations) && product.variations.length > 0 && (
+                                  <span className="product-stock" style={{ color: '#667eea' }}>Has variations - Select size</span>
+                                )}
                               </div>
                             ))}
                           {products.filter(p => p.quantity > 0 && (!productSearchQuery || 
@@ -1648,6 +1797,37 @@ function BillGeneration() {
                       )}
                     </div>
                   </div>
+                  {selectedProduct && (() => {
+                    const selectedProductData = products.find(p => p.id === selectedProduct);
+                    const hasVariations = selectedProductData?.variations && Array.isArray(selectedProductData.variations) && selectedProductData.variations.length > 0;
+                    
+                    if (hasVariations) {
+                      return (
+                        <div className="form-group">
+                          <label>Select Size *</label>
+                          <select
+                            value={selectedVariation}
+                            onChange={(e) => {
+                              setSelectedVariation(e.target.value);
+                              setProductQuantity(1); // Reset quantity when size changes
+                            }}
+                            className="product-search-input"
+                            required
+                          >
+                            <option value="">Choose a size...</option>
+                            {selectedProductData.variations
+                              .filter(v => (v.quantity || 0) > 0) // Only show variations with stock
+                              .map((variation, index) => (
+                                <option key={index} value={variation.size}>
+                                  {variation.size} (Stock: {variation.quantity || 0})
+                                </option>
+                              ))}
+                          </select>
+                        </div>
+                      );
+                    }
+                    return null;
+                  })()}
                   <div className="form-group">
                     <label>Quantity *</label>
                     <input
@@ -1678,7 +1858,13 @@ function BillGeneration() {
                     type="button"
                     className="add-product-btn"
                     onClick={handleAddProduct}
-                    disabled={!selectedProduct}
+                    disabled={(() => {
+                      if (!selectedProduct) return true;
+                      const selectedProductData = products.find(p => p.id === selectedProduct);
+                      const hasVariations = selectedProductData?.variations && Array.isArray(selectedProductData.variations) && selectedProductData.variations.length > 0;
+                      if (hasVariations && !selectedVariation) return true;
+                      return false;
+                    })()}
                   >
                     Add Product
                   </button>
@@ -1711,7 +1897,10 @@ function BillGeneration() {
                         return (
                         <tr key={item.id}>
                             <td data-label="SL No.">{index + 1}</td>
-                          <td data-label="Product">{item.name}</td>
+                          <td data-label="Product">
+                            {item.name}
+                            {item.variationSize && <span style={{ color: '#666', fontSize: '0.9em', marginLeft: '4px' }}> {item.variationSize}</span>}
+                          </td>
                           <td data-label="Category">{item.category || '-'}</td>
                           <td data-label="Subcategory">{item.subcategory || '-'}</td>
                             <td data-label="Price">

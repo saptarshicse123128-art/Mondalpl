@@ -34,6 +34,9 @@ function StockManagement() {
   const [showCategoryPanel, setShowCategoryPanel] = useState(false);
   const [newCategoryName, setNewCategoryName] = useState('');
   const [newSubcategoryName, setNewSubcategoryName] = useState('');
+  const [variationEnabled, setVariationEnabled] = useState(false);
+  const [variations, setVariations] = useState([]);
+  const [openVariationProductId, setOpenVariationProductId] = useState(null);
 
   useEffect(() => {
     // Subscribe to categories collection so form can show category/subcategory options
@@ -117,16 +120,44 @@ function StockManagement() {
         return cat ? cat.name : formData.category.trim();
       })();
 
-      await addDoc(collection(db, 'products'), {
+      const productData = {
         name: formData.name.trim(),
         description: formData.description.trim(),
-        price: parseFloat(formData.price),
-        quantity: parseInt(formData.quantity),
         category: categoryName,
         subcategory: formData.subcategory?.trim() || '',
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp()
-      });
+      };
+
+      // If variations are enabled, save variations instead of single price/quantity
+      if (variationEnabled && variations.length > 0) {
+        // Validate variations
+        const validVariations = variations
+          .filter(v => v.size && v.price && v.quantity)
+          .map(v => ({
+            size: v.size.trim(),
+            price: parseFloat(v.price),
+            quantity: parseInt(v.quantity)
+          }));
+        
+        if (validVariations.length === 0) {
+          setMessage({ type: 'error', text: 'Please add at least one valid variation with size, price, and quantity' });
+          setLoading(false);
+          return;
+        }
+        
+        productData.variations = validVariations;
+        // Calculate total quantity from all variations
+        productData.quantity = validVariations.reduce((sum, v) => sum + (v.quantity || 0), 0);
+        // Use first variation's price as base price (or calculate average)
+        productData.price = validVariations[0].price;
+      } else {
+        // Single product without variations
+        productData.price = parseFloat(formData.price);
+        productData.quantity = parseInt(formData.quantity);
+      }
+
+      await addDoc(collection(db, 'products'), productData);
       
       setFormData({
         name: '',
@@ -137,6 +168,8 @@ function StockManagement() {
         subcategory: ''
       });
       setSelectedCategoryId('');
+      setVariationEnabled(false);
+      setVariations([]);
       setShowAddForm(false);
       setMessage({ type: 'success', text: 'Product added successfully!' });
       
@@ -172,6 +205,18 @@ function StockManagement() {
       category: product.category || '',
       subcategory: product.subcategory || ''
     });
+    // Load variations if they exist
+    if (product.variations && Array.isArray(product.variations) && product.variations.length > 0) {
+      setVariationEnabled(true);
+      setVariations(product.variations.map(v => ({
+        size: v.size || '',
+        price: v.price?.toString() || '',
+        quantity: v.quantity?.toString() || ''
+      })));
+    } else {
+      setVariationEnabled(false);
+      setVariations([]);
+    }
     // try to find category id by name
     const matched = categories.find((c) => c.name === (product.category || ''));
     if (matched) {
@@ -196,15 +241,45 @@ function StockManagement() {
         return cat ? cat.name : formData.category.trim();
       })();
 
-      await updateDoc(productRef, {
+      const updateData = {
         name: formData.name.trim(),
         description: formData.description.trim(),
-        price: parseFloat(formData.price),
-        quantity: parseInt(formData.quantity),
         category: categoryName,
         subcategory: formData.subcategory?.trim() || '',
         updatedAt: serverTimestamp()
-      });
+      };
+
+      // If variations are enabled, save variations instead of single price/quantity
+      if (variationEnabled && variations.length > 0) {
+        // Validate variations
+        const validVariations = variations
+          .filter(v => v.size && v.price && v.quantity)
+          .map(v => ({
+            size: v.size.trim(),
+            price: parseFloat(v.price),
+            quantity: parseInt(v.quantity)
+          }));
+        
+        if (validVariations.length === 0) {
+          setMessage({ type: 'error', text: 'Please add at least one valid variation with size, price, and quantity' });
+          setLoading(false);
+          return;
+        }
+        
+        updateData.variations = validVariations;
+        // Calculate total quantity from all variations
+        updateData.quantity = validVariations.reduce((sum, v) => sum + (v.quantity || 0), 0);
+        // Use first variation's price as base price
+        updateData.price = validVariations[0].price;
+      } else {
+        // Single product without variations
+        updateData.price = parseFloat(formData.price);
+        updateData.quantity = parseInt(formData.quantity);
+        // Remove variations if switching from variations to single product
+        updateData.variations = null;
+      }
+
+      await updateDoc(productRef, updateData);
       
       setFormData({
         name: '',
@@ -215,6 +290,8 @@ function StockManagement() {
         subcategory: ''
       });
       setSelectedCategoryId('');
+      setVariationEnabled(false);
+      setVariations([]);
       setShowAddForm(false);
       setEditingProduct(null);
       setMessage({ type: 'success', text: 'Product updated successfully!' });
@@ -238,6 +315,26 @@ function StockManagement() {
     setShowAddForm(false);
     setEditingProduct(null);
     setMessage({ type: '', text: '' });
+    setVariationEnabled(false);
+    setVariations([]);
+  };
+
+  // Variation management helpers
+  const handleAddVariation = () => {
+    setVariations([...variations, { size: '', price: '', quantity: '' }]);
+  };
+
+  const handleRemoveVariation = (index) => {
+    setVariations(variations.filter((_, i) => i !== index));
+  };
+
+  const handleVariationChange = (index, field, value) => {
+    const updatedVariations = [...variations];
+    updatedVariations[index] = {
+      ...updatedVariations[index],
+      [field]: value
+    };
+    setVariations(updatedVariations);
   };
 
   // Category management helpers
@@ -387,7 +484,7 @@ function StockManagement() {
 
       {showAddForm && (
         <div className="add-product-form">
-          <h3>{editingProduct ? 'Edit Product' : 'Add New Productt'}</h3>
+          <h3>{editingProduct ? 'Edit Product' : 'Add New Product'}</h3>
           <form onSubmit={editingProduct ? handleUpdateProduct : handleAddProduct}>
             <div className="form-row">
               <div className="form-group">
@@ -450,30 +547,147 @@ function StockManagement() {
               />
             </div>
             <div className="form-row">
-              <div className="form-group">
-                <label>Price *</label>
-                <input
-                  type="number"
-                  name="price"
-                  value={formData.price}
-                  onChange={handleInputChange}
-                  step="0.01"
-                  min="0"
-                  required
-                />
-              </div>
-              <div className="form-group">
-                <label>Quantity *</label>
-                <input
-                  type="number"
-                  name="quantity"
-                  value={formData.quantity}
-                  onChange={handleInputChange}
-                  min="0"
-                  required
-                />
+              <div className="form-group" style={{ width: '100%' }}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                  <input
+                    type="checkbox"
+                    checked={variationEnabled}
+                    onChange={(e) => {
+                      setVariationEnabled(e.target.checked);
+                      if (!e.target.checked) {
+                        setVariations([]);
+                      } else if (variations.length === 0) {
+                        setVariations([{ size: '', price: '', quantity: '' }]);
+                      }
+                    }}
+                    style={{ width: 'auto', margin: 0 }}
+                  />
+                  <span>Enable Variations</span>
+                </label>
               </div>
             </div>
+            
+            {!variationEnabled ? (
+              <div className="form-row">
+                <div className="form-group">
+                  <label>Price *</label>
+                  <input
+                    type="number"
+                    name="price"
+                    value={formData.price}
+                    onChange={handleInputChange}
+                    step="0.01"
+                    min="0"
+                    required={!variationEnabled}
+                  />
+                </div>
+                <div className="form-group">
+                  <label>Quantity *</label>
+                  <input
+                    type="number"
+                    name="quantity"
+                    value={formData.quantity}
+                    onChange={handleInputChange}
+                    min="0"
+                    required={!variationEnabled}
+                  />
+                </div>
+              </div>
+            ) : (
+              <div className="variations-section" style={{ marginTop: '15px', marginBottom: '15px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
+                  <label style={{ fontWeight: 'bold' }}>Product Variations</label>
+                  <button
+                    type="button"
+                    onClick={handleAddVariation}
+                    style={{
+                      padding: '6px 12px',
+                      backgroundColor: '#4CAF50',
+                      color: 'white',
+                      border: 'none',
+                      borderRadius: '4px',
+                      cursor: 'pointer',
+                      fontSize: '14px'
+                    }}
+                  >
+                    + Add New Variation
+                  </button>
+                </div>
+                
+                {variations.length === 0 ? (
+                  <p style={{ color: '#666', fontStyle: 'italic' }}>No variations added. Click "Add New Variation" to add one.</p>
+                ) : (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '15px' }}>
+                    {variations.map((variation, index) => (
+                      <div
+                        key={index}
+                        style={{
+                          border: '1px solid #ddd',
+                          borderRadius: '6px',
+                          padding: '15px',
+                          backgroundColor: '#f9f9f9'
+                        }}
+                      >
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
+                          <strong>Variation {index + 1}</strong>
+                          <button
+                            type="button"
+                            onClick={() => handleRemoveVariation(index)}
+                            style={{
+                              padding: '4px 8px',
+                              backgroundColor: '#f44336',
+                              color: 'white',
+                              border: 'none',
+                              borderRadius: '4px',
+                              cursor: 'pointer',
+                              fontSize: '12px'
+                            }}
+                          >
+                            Remove
+                          </button>
+                        </div>
+                        <div className="form-row">
+                          <div className="form-group">
+                            <label>Size *</label>
+                            <input
+                              type="text"
+                              value={variation.size}
+                              onChange={(e) => handleVariationChange(index, 'size', e.target.value)}
+                              placeholder="e.g., Small, Medium, Large, 1/2 inch, etc."
+                              required
+                            />
+                          </div>
+                          <div className="form-group">
+                            <label>Price *</label>
+                            <input
+                              type="number"
+                              value={variation.price}
+                              onChange={(e) => handleVariationChange(index, 'price', e.target.value)}
+                              step="0.01"
+                              min="0"
+                              placeholder="0.00"
+                              required
+                            />
+                          </div>
+                          <div className="form-group">
+                            <label>Quantity *</label>
+                            <input
+                              type="number"
+                              value={variation.quantity}
+                              onChange={(e) => handleVariationChange(index, 'quantity', e.target.value)}
+                              min="0"
+                              placeholder="0"
+                              required
+                            />
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+            
             <button type="submit" disabled={loading} className="submit-btn">
               {loading 
                 ? (editingProduct ? 'Updating...' : 'Adding...') 
@@ -561,33 +775,108 @@ function StockManagement() {
               </tr>
             </thead>
             <tbody>
-              {filteredProducts.map((product) => (
-                <tr key={product.id}>
-                  <td data-label="Name">{product.name}</td>
-                  <td data-label="Category">{product.category}{product.subcategory ? ' / ' + product.subcategory : ''}</td>
-                  <td data-label="Description">{product.description || '-'}</td>
-                  <td data-label="Price">₹{product.price?.toFixed(2) || '0.00'}</td>
-                  <td data-label="Quantity">
-                    {product.quantity || 0}
-                  </td>
-                  <td data-label="Actions">
-                    <div className="action-buttons">
-                      <button
-                        className="edit-btn"
-                        onClick={() => handleEditProduct(product)}
-                      >
-                        Edit
-                      </button>
-                      <button
-                        className="delete-btn"
-                        onClick={() => handleDeleteProduct(product.id)}
-                      >
-                        Delete
-                      </button>
-                    </div>
-                  </td>
-                </tr>
-              ))}
+              {filteredProducts.map((product) => {
+                const hasVariations = product.variations && Array.isArray(product.variations) && product.variations.length > 0;
+                const isVariationOpen = openVariationProductId === product.id;
+                
+                return (
+                  <React.Fragment key={product.id}>
+                    <tr>
+                      <td data-label="Name" style={{ position: 'relative' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                          {hasVariations && (
+                            <button
+                              type="button"
+                              onClick={() => setOpenVariationProductId(isVariationOpen ? null : product.id)}
+                              style={{
+                                background: 'none',
+                                border: 'none',
+                                cursor: 'pointer',
+                                padding: '4px',
+                                display: 'flex',
+                                alignItems: 'center',
+                                fontSize: '16px',
+                                color: '#667eea',
+                                transition: 'transform 0.2s'
+                              }}
+                              title={isVariationOpen ? 'Hide variations' : 'Show variations'}
+                            >
+                              <span style={{ 
+                                transform: isVariationOpen ? 'rotate(90deg)' : 'rotate(0deg)',
+                                transition: 'transform 0.2s'
+                              }}>
+                                ▶
+                              </span>
+                            </button>
+                          )}
+                          <span>{product.name}</span>
+                        </div>
+                      </td>
+                      <td data-label="Category">{product.category}{product.subcategory ? ' / ' + product.subcategory : ''}</td>
+                      <td data-label="Description">{product.description || '-'}</td>
+                      <td data-label="Price">
+                        {hasVariations ? (
+                          <span style={{ color: '#999', fontStyle: 'italic' }}>See variations</span>
+                        ) : (
+                          <>₹{product.price?.toFixed(2) || '0.00'}</>
+                        )}
+                      </td>
+                      <td data-label="Quantity">
+                        {hasVariations ? (
+                          <span style={{ color: '#999', fontStyle: 'italic' }}>See variations</span>
+                        ) : (
+                          <>{product.quantity || 0}</>
+                        )}
+                      </td>
+                      <td data-label="Actions">
+                        <div className="action-buttons">
+                          <button
+                            className="edit-btn"
+                            onClick={() => handleEditProduct(product)}
+                          >
+                            Edit
+                          </button>
+                          <button
+                            className="delete-btn"
+                            onClick={() => handleDeleteProduct(product.id)}
+                          >
+                            Delete
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                    {hasVariations && isVariationOpen && (
+                      <tr>
+                        <td colSpan="6" style={{ padding: '0', backgroundColor: '#f5f5f5' }}>
+                          <div style={{ padding: '15px', marginLeft: '30px' }}>
+                            <h4 style={{ margin: '0 0 10px 0', color: '#333', fontSize: '14px', fontWeight: 'bold' }}>
+                              Product Variations:
+                            </h4>
+                            <table style={{ width: '100%', borderCollapse: 'collapse', backgroundColor: 'white', borderRadius: '4px' }}>
+                              <thead>
+                                <tr style={{ backgroundColor: '#f0f0f0' }}>
+                                  <th style={{ padding: '8px', textAlign: 'left', border: '1px solid #ddd', fontSize: '13px' }}>Size</th>
+                                  <th style={{ padding: '8px', textAlign: 'right', border: '1px solid #ddd', fontSize: '13px' }}>Price</th>
+                                  <th style={{ padding: '8px', textAlign: 'right', border: '1px solid #ddd', fontSize: '13px' }}>Quantity</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {product.variations.map((variation, index) => (
+                                  <tr key={index}>
+                                    <td style={{ padding: '8px', border: '1px solid #ddd', fontSize: '13px' }}>{variation.size || '-'}</td>
+                                    <td style={{ padding: '8px', textAlign: 'right', border: '1px solid #ddd', fontSize: '13px' }}>₹{variation.price?.toFixed(2) || '0.00'}</td>
+                                    <td style={{ padding: '8px', textAlign: 'right', border: '1px solid #ddd', fontSize: '13px' }}>{variation.quantity || 0}</td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                  </React.Fragment>
+                );
+              })}
             </tbody>
           </table>
         )}
