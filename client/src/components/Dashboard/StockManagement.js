@@ -331,6 +331,7 @@ function StockManagement() {
     // Match if at least 70% of words are found (handles missing words like "type")
     const matchThreshold = Math.max(1, Math.ceil(queryWords.length * 0.7));
     return matchedWords.length >= matchThreshold;
+
   };
 
   // Filter products based on search query
@@ -376,7 +377,7 @@ function StockManagement() {
 
       {showAddForm && (
         <div className="add-product-form">
-          <h3>{editingProduct ? 'Edit Product' : 'Add New Product'}</h3>
+          <h3>{editingProduct ? 'Edit Product' : 'Add New Productt'}</h3>
           <form onSubmit={editingProduct ? handleUpdateProduct : handleAddProduct}>
             <div className="form-row">
               <div className="form-group">
