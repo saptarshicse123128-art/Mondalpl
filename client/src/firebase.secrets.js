@@ -14,4 +14,7 @@
 //   appId: 'your-app-id',
 //   // ... other config
 // };
-export default {};
+
+const firebaseSecrets = {};
+
+export default firebaseSecrets;
