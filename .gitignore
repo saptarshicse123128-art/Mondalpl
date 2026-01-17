@@ -33,6 +33,6 @@ Thumbs.db
 # Firebase
 .firebase/
 firebase-debug.log
-# Local firebase secrets file (do NOT commit real credentials)
-client/src/firebase.secrets.js
+# Note: firebase.secrets.js stub file is committed (it's empty and safe)
+# Users can override it locally, but it won't be committed if they add real credentials
 

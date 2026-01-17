@@ -22,11 +22,13 @@ const envConfig = {
 // Note: In CI/production builds, env vars (REACT_APP_*) are used instead
 let localConfig = null;
 // Skip loading secrets file in CI to avoid webpack build errors
-// In CI, webpack tries to statically analyze require() calls even in try-catch blocks
+// Webpack statically analyzes require() calls, so we completely skip it in CI
 if (!process.env.CI) {
   try {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    // Use a string literal that webpack can't optimize away
+    // eslint-disable-next-line @typescript-eslint/no-var-requires, import/no-dynamic-require
     // @ts-ignore - This file is optional and may not exist
+    // webpackIgnore comment doesn't work with require, so we rely on CI check
     const secretsModule = require('./firebase.secrets');
     const secrets = secretsModule && (secretsModule.default || secretsModule);
     // Only use local config if it has a valid API key (not empty object)
