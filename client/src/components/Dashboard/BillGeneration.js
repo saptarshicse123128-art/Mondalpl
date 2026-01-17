@@ -153,7 +153,6 @@ function BillGeneration() {
       return;
     }
 
-    let variationData = null;
     let availableQuantity = product.quantity;
     let productPrice = product.price;
 
@@ -164,7 +163,6 @@ function BillGeneration() {
         alert('Selected variation not found');
         return;
       }
-      variationData = variation;
       availableQuantity = variation.quantity || 0;
       productPrice = variation.price || product.price;
     }
