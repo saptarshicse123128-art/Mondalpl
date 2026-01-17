@@ -268,14 +268,83 @@ function StockManagement() {
     }
   };
 
+  // Optimized search function that handles:
+  // 1. Partial word matching (missing words don't break search)
+  // 2. Word order independence
+  // 3. Ignoring spaces (e.g., "WaterTank" matches "Water Tank")
+  // 4. Handling numbers in parentheses (e.g., "75" matches "(75 mm)", "75mm" matches "(75 mm)")
+  const matchesSearch = (text, query) => {
+    if (!text || !query) return false;
+    
+    const lowerText = text.toLowerCase();
+    const lowerQuery = query.toLowerCase();
+    
+    // Normalize: remove parentheses, spaces, and keep alphanumeric characters
+    // This allows "75mm" to match "(75 mm)" and "75" to match "(75 mm)"
+    const normalizeText = (str) => {
+      return str.replace(/[()\s]+/g, '').toLowerCase();
+    };
+    
+    const normalizedText = normalizeText(lowerText);
+    const normalizedQuery = normalizeText(lowerQuery);
+    
+    // First check: if normalized query appears in normalized text
+    if (normalizedText.includes(normalizedQuery)) return true;
+    
+    // Second check: split query into words and check if all/most words appear
+    // Extract words and numbers separately
+    const queryWords = lowerQuery
+      .split(/\s+|(?=\d)|(?<=\d)(?=\D)/) // Split by spaces, or between numbers and letters
+      .filter(word => word.length > 0)
+      .map(word => word.replace(/[()]/g, '')) // Remove parentheses from individual words
+      .filter(word => word.length > 0);
+    
+    if (queryWords.length === 0) return false;
+    
+    // Normalize text words similarly
+    const textWords = lowerText
+      .split(/\s+|(?=\d)|(?<=\d)(?=\D)/)
+      .filter(word => word.length > 0)
+      .map(word => word.replace(/[()]/g, ''))
+      .filter(word => word.length > 0);
+    
+    // Check if each query word appears in the text (with or without spaces, parentheses)
+    const matchedWords = queryWords.filter(queryWord => {
+      const normalizedQueryWord = normalizeText(queryWord);
+      
+      // Check in normalized text
+      if (normalizedText.includes(normalizedQueryWord)) return true;
+      
+      // Check in text with spaces
+      if (lowerText.includes(queryWord)) return true;
+      
+      // Check if query word is part of any text word
+      return textWords.some(textWord => {
+        const normalizedTextWord = normalizeText(textWord);
+        return normalizedTextWord.includes(normalizedQueryWord) || 
+               normalizedQueryWord.includes(normalizedTextWord) ||
+               textWord.includes(queryWord) || 
+               queryWord.includes(textWord);
+      });
+    });
+    
+    // Match if at least 70% of words are found (handles missing words like "type")
+    const matchThreshold = Math.max(1, Math.ceil(queryWords.length * 0.7));
+    return matchedWords.length >= matchThreshold;
+  };
+
   // Filter products based on search query
   const filteredProducts = products.filter(product => {
     if (!searchQuery.trim()) return true;
-    const query = searchQuery.toLowerCase();
+    
+    const query = searchQuery.trim();
+    
+    // Check name, category, description, and price
     return (
-      product.name?.toLowerCase().includes(query) ||
-      product.category?.toLowerCase().includes(query) ||
-      product.description?.toLowerCase().includes(query) ||
+      matchesSearch(product.name, query) ||
+      matchesSearch(product.category, query) ||
+      matchesSearch(product.subcategory, query) ||
+      matchesSearch(product.description, query) ||
       product.price?.toString().includes(query)
     );
   });

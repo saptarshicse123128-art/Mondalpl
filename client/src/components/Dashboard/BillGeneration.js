@@ -509,10 +509,12 @@ function BillGeneration() {
 
       // Initialize due history if there's a due amount
       let dueHistory = [];
+      let initialDueAmount = 0;
       if (billForm.due.trim()) {
         const cleanedDue = billForm.due.replace(/[^0-9.-]/g, '');
         const parsedDue = parseFloat(cleanedDue);
         if (!isNaN(parsedDue) && parsedDue > 0) {
+          initialDueAmount = parsedDue;
           dueHistory = [{
             amount: parsedDue,
             date: new Date().toISOString().split('T')[0]
@@ -527,6 +529,7 @@ function BillGeneration() {
         phone: ensuredPhone || billForm.phone,
         discount: discount,
         due: billForm.due.trim() || null,
+        initialDueAmount: initialDueAmount, // Store initial due amount
         dueHistory: dueHistory,
         billNumber: billNumber,
         billNumberValue: nextBillNumber,
@@ -544,12 +547,12 @@ function BillGeneration() {
 
       const docRef = await addDoc(collection(db, 'bills'), billData);
       const billWithId = { id: docRef.id, ...billData };
-
+      
       // Automatically open print dialog for the newly generated bill
       setTimeout(() => {
         printPDF(billWithId);
       }, 500);
-       
+      
       // Note: Stock is already updated when products were added to cart
       // So we just clear the cart and form
       setCart([]);
@@ -686,6 +689,24 @@ function BillGeneration() {
       // Calculate table start Y (after customer info) - decreased height from top
       const tableStartY = Math.max(currentY, startY + 1);
       
+      // Check if bill is fully paid (no due and no initial due) - show "PAID IN FULL" stamp on left
+      const due = parseFloat(billToDownload.due || 0);
+      const initialDueForStamp = parseFloat(billToDownload.initialDueAmount || 0);
+      if (due === 0 && initialDueForStamp === 0) {
+        // Draw "PAID IN FULL" stamp on the left side
+        const stampX = 20;
+        const stampY = tableStartY + 30; // Position stamp below customer info, above/beside table
+        pdfDoc.setDrawColor(200, 0, 0); // Red border
+        pdfDoc.setLineWidth(2);
+        pdfDoc.roundedRect(stampX, stampY - 8, 50, 12, 2, 2); // Rounded rectangle
+        pdfDoc.setFont('helvetica', 'bold');
+        pdfDoc.setFontSize(10);
+        pdfDoc.setTextColor(200, 0, 0); // Red text
+        pdfDoc.text('PAID IN FULL', stampX + 25, stampY, { align: 'center' });
+        pdfDoc.setLineWidth(0.5); // Reset line width
+        pdfDoc.setDrawColor(0, 0, 0); // Reset draw color
+      }
+      
       pdfDoc.autoTable({
         startY: tableStartY,
         head: [['SL No.', 'Product', 'Qty.', 'Price', 'Amount']],
@@ -725,15 +746,9 @@ function BillGeneration() {
       
       const subtotal = parseFloat(billToDownload.subtotal || 0);
       const discount = parseFloat(billToDownload.discount || 0);
-      const due = parseFloat(billToDownload.due || 0);
       const total = parseFloat(billToDownload.total || subtotal);
       
       let summaryY = finalY;
-      
-      // SUBTOTAL
-      pdfDoc.text('SUBTOTAL Rs.', 150, summaryY, { align: 'right' });
-      pdfDoc.text(subtotal.toFixed(2), 190, summaryY, { align: 'right' });
-      summaryY += 7;
       
       // DISCOUNT
       if (discount > 0) {
@@ -748,39 +763,69 @@ function BillGeneration() {
       pdfDoc.text(total.toFixed(2), 190, summaryY, { align: 'right' });
       summaryY += 7;
       
-      // DUE AMOUNT (in red, below total) - show even if 0
+      // PAID (calculated: if no due, then subtotal; if due exists, then subtotal - due)
+      pdfDoc.setFont('helvetica', 'normal');
+      pdfDoc.setTextColor(0, 0, 200); // Blue color for PAID amount
       const dueHistory = billToDownload.dueHistory || [];
-      const hasDueOrHistory = due > 0 || dueHistory.length > 0;
+      // Get initial due amount: use initialDueAmount if available, otherwise use first dueHistory entry, or current due as fallback
+      let initialDue = parseFloat(billToDownload.initialDueAmount || 0);
+      if (initialDue === 0 && dueHistory.length > 0) {
+        // Find first entry that has 'amount' (initial entry) or use first entry's newDue
+        const firstEntry = dueHistory[0];
+        if (firstEntry.amount !== undefined && firstEntry.amountPaid === undefined) {
+          initialDue = parseFloat(firstEntry.amount || 0);
+        } else if (firstEntry.newDue !== undefined) {
+          // If first entry is a payment, we need to find the initial due from history
+          // Look for the highest previousDue in history
+          let maxPreviousDue = 0;
+          dueHistory.forEach(entry => {
+            if (entry.previousDue !== undefined) {
+              maxPreviousDue = Math.max(maxPreviousDue, parseFloat(entry.previousDue || 0));
+            }
+          });
+          initialDue = maxPreviousDue > 0 ? maxPreviousDue : parseFloat(firstEntry.newDue || 0);
+        }
+      }
+      if (initialDue === 0) {
+        initialDue = due; // Fallback to current due if no history
+      }
+      const paidAmount = initialDue > 0 ? (subtotal - initialDue) : subtotal;
+      pdfDoc.text('PAID Rs.', 150, summaryY, { align: 'right' });
+      pdfDoc.text(paidAmount.toFixed(2), 190, summaryY, { align: 'right' });
+      summaryY += 7;
       
-      if (hasDueOrHistory) {
-        pdfDoc.setFont('helvetica', 'normal');
+      // DUE AMOUNT (fixed label, shows initial due amount - never changes)
+      // Only show due section if there's an initial due amount
+      if (initialDue > 0) {
         pdfDoc.setTextColor(200, 0, 0); // Red color
-        pdfDoc.text('DUE AMOUNT Rs.', 150, summaryY, { align: 'right' });
-        pdfDoc.text(due.toFixed(2), 190, summaryY, { align: 'right' });
+        pdfDoc.text('DUE AMOUNT', 150, summaryY, { align: 'right' });
+        pdfDoc.text(initialDue.toFixed(2), 190, summaryY, { align: 'right' });
         summaryY += 7;
         
-        // DUE HISTORY entries (in red, no heading, right-aligned under due amount)
-        // Show history even if current due is 0
-        if (dueHistory.length > 0) {
+        // DUE HISTORY entries (in red, right-aligned under due amount)
+        // Filter out initial entry (entries that only have 'amount' without 'amountPaid')
+        const filteredHistory = dueHistory.filter(entry => entry.amountPaid !== undefined);
+        if (filteredHistory.length > 0) {
           pdfDoc.setFontSize(9);
-          dueHistory.forEach((entry, idx) => {
+          filteredHistory.forEach((entry) => {
             const entryDate = entry.date || (entry.timestamp?.toDate ? entry.timestamp.toDate().toLocaleDateString('en-GB') : 'N/A');
-            // Handle both old format (amount) and new format (amountPaid, previousDue, newDue)
-            if (entry.amountPaid !== undefined) {
-              // New format: show payment details
-              const amountPaid = parseFloat(entry.amountPaid || 0);
-              const newDue = parseFloat(entry.newDue || 0);
-              pdfDoc.setTextColor(200, 0, 0); // Red color for date and new due
-              pdfDoc.text(`${entryDate} - Paid: Rs. ${amountPaid.toFixed(2)}, New Due: Rs. ${newDue.toFixed(2)}`, 190, summaryY, { align: 'right' });
-            } else {
-              // Old format: just show amount
-              const entryAmount = parseFloat(entry.amount || 0);
-              pdfDoc.setTextColor(200, 0, 0); // Red color
-              pdfDoc.text(`${entryDate} - Rs. ${entryAmount.toFixed(2)}`, 190, summaryY, { align: 'right' });
-            }
+            const amountPaid = parseFloat(entry.amountPaid || 0);
+            const newDue = parseFloat(entry.newDue || 0);
+            pdfDoc.setTextColor(200, 0, 0); // Red color for date and new due
+            pdfDoc.text(`${entryDate} - Paid: Rs. ${amountPaid.toFixed(2)}, New Due: Rs. ${newDue.toFixed(2)}`, 190, summaryY, { align: 'right' });
             summaryY += 6;
           });
         }
+      }
+      
+      // "Due now" in bold and big size (only show if there's a current due amount)
+      if (due > 0 || initialDue > 0) {
+        summaryY += 5;
+        pdfDoc.setFont('helvetica', 'bold');
+        pdfDoc.setFontSize(14);
+        pdfDoc.setTextColor(200, 0, 0); // Red color
+        pdfDoc.text('Due now', 150, summaryY, { align: 'right' });
+        pdfDoc.text(due.toFixed(2), 190, summaryY, { align: 'right' });
       }
       
       // Reset text color to black for any remaining content
@@ -913,6 +958,24 @@ function BillGeneration() {
       // Calculate table start Y (after customer info) - decreased height from top
       const tableStartY = Math.max(currentY, startY + 1);
       
+      // Check if bill is fully paid (no due and no initial due) - show "PAID IN FULL" stamp on left
+      const due = parseFloat(billToPrint.due || 0);
+      const initialDueForStamp = parseFloat(billToPrint.initialDueAmount || 0);
+      if (due === 0 && initialDueForStamp === 0) {
+        // Draw "PAID IN FULL" stamp on the left side
+        const stampX = 20;
+        const stampY = tableStartY + 30; // Position stamp below customer info, above/beside table
+        pdfDoc.setDrawColor(200, 0, 0); // Red border
+        pdfDoc.setLineWidth(2);
+        pdfDoc.roundedRect(stampX, stampY - 8, 50, 12, 2, 2); // Rounded rectangle
+        pdfDoc.setFont('helvetica', 'bold');
+        pdfDoc.setFontSize(10);
+        pdfDoc.setTextColor(200, 0, 0); // Red text
+        pdfDoc.text('PAID IN FULL', stampX + 25, stampY, { align: 'center' });
+        pdfDoc.setLineWidth(0.5); // Reset line width
+        pdfDoc.setDrawColor(0, 0, 0); // Reset draw color
+      }
+      
       pdfDoc.autoTable({
         startY: tableStartY,
         head: [['SL No.', 'Product', 'Qty.', 'Price', 'Amount']],
@@ -952,15 +1015,9 @@ function BillGeneration() {
       
       const subtotal = parseFloat(billToPrint.subtotal || 0);
       const discount = parseFloat(billToPrint.discount || 0);
-      const due = parseFloat(billToPrint.due || 0);
       const total = parseFloat(billToPrint.total || subtotal);
       
       let summaryY = finalY;
-      
-      // SUBTOTAL
-      pdfDoc.text('SUBTOTAL Rs.', 150, summaryY, { align: 'right' });
-      pdfDoc.text(subtotal.toFixed(2), 190, summaryY, { align: 'right' });
-      summaryY += 7;
       
       // DISCOUNT
       if (discount > 0) {
@@ -975,39 +1032,69 @@ function BillGeneration() {
       pdfDoc.text(total.toFixed(2), 190, summaryY, { align: 'right' });
       summaryY += 7;
       
-      // DUE AMOUNT (in red, below total) - show even if 0
+      // PAID (calculated: if no due, then subtotal; if due exists, then subtotal - due)
+      pdfDoc.setFont('helvetica', 'normal');
+      pdfDoc.setTextColor(0, 0, 200); // Blue color for PAID amount
       const dueHistory = billToPrint.dueHistory || [];
-      const hasDueOrHistory = due > 0 || dueHistory.length > 0;
+      // Get initial due amount: use initialDueAmount if available, otherwise use first dueHistory entry, or current due as fallback
+      let initialDue = parseFloat(billToPrint.initialDueAmount || 0);
+      if (initialDue === 0 && dueHistory.length > 0) {
+        // Find first entry that has 'amount' (initial entry) or use first entry's newDue
+        const firstEntry = dueHistory[0];
+        if (firstEntry.amount !== undefined && firstEntry.amountPaid === undefined) {
+          initialDue = parseFloat(firstEntry.amount || 0);
+        } else if (firstEntry.newDue !== undefined) {
+          // If first entry is a payment, we need to find the initial due from history
+          // Look for the highest previousDue in history
+          let maxPreviousDue = 0;
+          dueHistory.forEach(entry => {
+            if (entry.previousDue !== undefined) {
+              maxPreviousDue = Math.max(maxPreviousDue, parseFloat(entry.previousDue || 0));
+            }
+          });
+          initialDue = maxPreviousDue > 0 ? maxPreviousDue : parseFloat(firstEntry.newDue || 0);
+        }
+      }
+      if (initialDue === 0) {
+        initialDue = due; // Fallback to current due if no history
+      }
+      const paidAmount = initialDue > 0 ? (subtotal - initialDue) : subtotal;
+      pdfDoc.text('PAID Rs.', 150, summaryY, { align: 'right' });
+      pdfDoc.text(paidAmount.toFixed(2), 190, summaryY, { align: 'right' });
+      summaryY += 7;
       
-      if (hasDueOrHistory) {
-        pdfDoc.setFont('helvetica', 'normal');
+      // DUE AMOUNT (fixed label, shows initial due amount - never changes)
+      // Only show due section if there's an initial due amount
+      if (initialDue > 0) {
         pdfDoc.setTextColor(200, 0, 0); // Red color
-        pdfDoc.text('DUE AMOUNT Rs.', 150, summaryY, { align: 'right' });
-        pdfDoc.text(due.toFixed(2), 190, summaryY, { align: 'right' });
+        pdfDoc.text('DUE AMOUNT', 150, summaryY, { align: 'right' });
+        pdfDoc.text(initialDue.toFixed(2), 190, summaryY, { align: 'right' });
         summaryY += 7;
         
-        // DUE HISTORY entries (in red, no heading, right-aligned under due amount)
-        // Show history even if current due is 0
-        if (dueHistory.length > 0) {
+        // DUE HISTORY entries (in red, right-aligned under due amount)
+        // Filter out initial entry (entries that only have 'amount' without 'amountPaid')
+        const filteredHistory = dueHistory.filter(entry => entry.amountPaid !== undefined);
+        if (filteredHistory.length > 0) {
           pdfDoc.setFontSize(9);
-          dueHistory.forEach((entry, idx) => {
+          filteredHistory.forEach((entry) => {
             const entryDate = entry.date || (entry.timestamp?.toDate ? entry.timestamp.toDate().toLocaleDateString('en-GB') : 'N/A');
-            // Handle both old format (amount) and new format (amountPaid, previousDue, newDue)
-            if (entry.amountPaid !== undefined) {
-              // New format: show payment details
-              const amountPaid = parseFloat(entry.amountPaid || 0);
-              const newDue = parseFloat(entry.newDue || 0);
-              pdfDoc.setTextColor(200, 0, 0); // Red color for date and new due
-              pdfDoc.text(`${entryDate} - Paid: Rs. ${amountPaid.toFixed(2)}, New Due: Rs. ${newDue.toFixed(2)}`, 190, summaryY, { align: 'right' });
-            } else {
-              // Old format: just show amount
-              const entryAmount = parseFloat(entry.amount || 0);
-              pdfDoc.setTextColor(200, 0, 0); // Red color
-              pdfDoc.text(`${entryDate} - Rs. ${entryAmount.toFixed(2)}`, 190, summaryY, { align: 'right' });
-            }
+            const amountPaid = parseFloat(entry.amountPaid || 0);
+            const newDue = parseFloat(entry.newDue || 0);
+            pdfDoc.setTextColor(200, 0, 0); // Red color for date and new due
+            pdfDoc.text(`${entryDate} - Paid: Rs. ${amountPaid.toFixed(2)}, New Due: Rs. ${newDue.toFixed(2)}`, 190, summaryY, { align: 'right' });
             summaryY += 6;
           });
         }
+      }
+      
+      // "Due now" in bold and big size (only show if there's a current due amount)
+      if (due > 0 || initialDue > 0) {
+        summaryY += 5;
+        pdfDoc.setFont('helvetica', 'bold');
+        pdfDoc.setFontSize(14);
+        pdfDoc.setTextColor(200, 0, 0); // Red color
+        pdfDoc.text('Due now', 150, summaryY, { align: 'right' });
+        pdfDoc.text(due.toFixed(2), 190, summaryY, { align: 'right' });
       }
       
       // Reset text color to black for any remaining content
@@ -1066,17 +1153,82 @@ function BillGeneration() {
     }
   };
 
+  // Optimized search function that handles:
+  // 1. Partial word matching (missing words don't break search)
+  // 2. Word order independence
+  // 3. Ignoring spaces (e.g., "WaterTank" matches "Water Tank")
+  // 4. Handling numbers in parentheses (e.g., "75" matches "(75 mm)", "75mm" matches "(75 mm)")
+  const matchesProductSearch = (text, query) => {
+    if (!text || !query) return false;
+    
+    const lowerText = text.toLowerCase();
+    const lowerQuery = query.toLowerCase();
+    
+    // Normalize: remove parentheses, spaces, and keep alphanumeric characters
+    // This allows "75mm" to match "(75 mm)" and "75" to match "(75 mm)"
+    const normalizeText = (str) => {
+      return str.replace(/[()\s]+/g, '').toLowerCase();
+    };
+    
+    const normalizedText = normalizeText(lowerText);
+    const normalizedQuery = normalizeText(lowerQuery);
+    
+    // First check: if normalized query appears in normalized text
+    if (normalizedText.includes(normalizedQuery)) return true;
+    
+    // Second check: split query into words and check if all/most words appear
+    // Extract words and numbers separately
+    const queryWords = lowerQuery
+      .split(/\s+|(?=\d)|(?<=\d)(?=\D)/) // Split by spaces, or between numbers and letters
+      .filter(word => word.length > 0)
+      .map(word => word.replace(/[()]/g, '')) // Remove parentheses from individual words
+      .filter(word => word.length > 0);
+    
+    if (queryWords.length === 0) return false;
+    
+    // Normalize text words similarly
+    const textWords = lowerText
+      .split(/\s+|(?=\d)|(?<=\d)(?=\D)/)
+      .filter(word => word.length > 0)
+      .map(word => word.replace(/[()]/g, ''))
+      .filter(word => word.length > 0);
+    
+    // Check if each query word appears in the text (with or without spaces, parentheses)
+    const matchedWords = queryWords.filter(queryWord => {
+      const normalizedQueryWord = normalizeText(queryWord);
+      
+      // Check in normalized text
+      if (normalizedText.includes(normalizedQueryWord)) return true;
+      
+      // Check in text with spaces
+      if (lowerText.includes(queryWord)) return true;
+      
+      // Check if query word is part of any text word
+      return textWords.some(textWord => {
+        const normalizedTextWord = normalizeText(textWord);
+        return normalizedTextWord.includes(normalizedQueryWord) || 
+               normalizedQueryWord.includes(normalizedTextWord) ||
+               textWord.includes(queryWord) || 
+               queryWord.includes(textWord);
+      });
+    });
+    
+    // Match if at least 70% of words are found (handles missing words like "type")
+    const matchThreshold = Math.max(1, Math.ceil(queryWords.length * 0.7));
+    return matchedWords.length >= matchThreshold;
+  };
+
   return (
     <div className="bill-generation">
       <div className="bill-header">
         <h2>Bill Generation</h2>
         <div className="bill-header-right">
-          <button
-            className="toggle-bills-btn"
-            onClick={() => setShowBills(!showBills)}
-          >
-            {showBills ? 'Hide Bills' : 'View All Bills'}
-          </button>
+        <button
+          className="toggle-bills-btn"
+          onClick={() => setShowBills(!showBills)}
+        >
+          {showBills ? 'Hide Bills' : 'View All Bills'}
+        </button>
           {showBills && (
             <label className="bill-due-toggle">
               <input
@@ -1449,7 +1601,11 @@ function BillGeneration() {
                       {showProductDropdown && (
                         <div className="product-dropdown">
                           {products
-                            .filter(p => p.quantity > 0 && (!productSearchQuery || p.name.toLowerCase().startsWith(productSearchQuery.toLowerCase())))
+                            .filter(p => p.quantity > 0 && (!productSearchQuery || 
+                              matchesProductSearch(p.name, productSearchQuery) || 
+                              (p.category && matchesProductSearch(p.category, productSearchQuery)) ||
+                              (p.subcategory && matchesProductSearch(p.subcategory, productSearchQuery))
+                            ))
                             .slice(0, 10)
                             .map((product) => (
                               <div
@@ -1470,7 +1626,11 @@ function BillGeneration() {
                                 <span className="product-stock">Stock: {product.quantity}</span>
                               </div>
                             ))}
-                          {products.filter(p => p.quantity > 0 && (!productSearchQuery || p.name.toLowerCase().startsWith(productSearchQuery.toLowerCase()))).length === 0 && (
+                          {products.filter(p => p.quantity > 0 && (!productSearchQuery || 
+                            matchesProductSearch(p.name, productSearchQuery) || 
+                            (p.category && matchesProductSearch(p.category, productSearchQuery)) ||
+                            (p.subcategory && matchesProductSearch(p.subcategory, productSearchQuery))
+                          )).length === 0 && (
                             <div className="product-dropdown-item no-results">No products found</div>
                           )}
                         </div>
@@ -1538,11 +1698,11 @@ function BillGeneration() {
                       {cart.map((item, index) => {
                         const isEditingCustom = editingCustomItem && editingCustomItem.id === item.id && item.isCustomProduct;
                         return (
-                          <tr key={item.id}>
+                        <tr key={item.id}>
                             <td data-label="SL No.">{index + 1}</td>
-                            <td data-label="Product">{item.name}</td>
-                            <td data-label="Category">{item.category || '-'}</td>
-                            <td data-label="Subcategory">{item.subcategory || '-'}</td>
+                          <td data-label="Product">{item.name}</td>
+                          <td data-label="Category">{item.category || '-'}</td>
+                          <td data-label="Subcategory">{item.subcategory || '-'}</td>
                             <td data-label="Price">
                               {item.isCustomProduct && isEditingCustom ? (
                                 <input
@@ -1570,7 +1730,7 @@ function BillGeneration() {
                                 <>₹{item.price?.toFixed(2)}</>
                               )}
                             </td>
-                            <td data-label="Quantity">
+                          <td data-label="Quantity">
                               {item.isCustomProduct && isEditingCustom ? (
                                 <input
                                   type="number"
@@ -1593,30 +1753,30 @@ function BillGeneration() {
                                   }}
                                 />
                               ) : (
-                                <input
-                                  type="number"
-                                  min="1"
-                                  value={item.quantity}
-                                  onChange={(e) => {
-                                    const newQty = parseInt(e.target.value) || 1;
-                                    if (newQty > 0) {
-                                      updateCartQuantity(item.id, newQty);
-                                    }
-                                  }}
-                                  className="quantity-input-edit"
-                                  style={{
-                                    width: '80px',
-                                    padding: '0.5rem',
-                                    border: '1px solid #ddd',
-                                    borderRadius: '5px',
-                                    textAlign: 'center',
-                                    fontSize: '1rem'
-                                  }}
-                                />
+                            <input
+                              type="number"
+                              min="1"
+                              value={item.quantity}
+                              onChange={(e) => {
+                                const newQty = parseInt(e.target.value) || 1;
+                                if (newQty > 0) {
+                                  updateCartQuantity(item.id, newQty);
+                                }
+                              }}
+                              className="quantity-input-edit"
+                              style={{
+                                width: '80px',
+                                padding: '0.5rem',
+                                border: '1px solid #ddd',
+                                borderRadius: '5px',
+                                textAlign: 'center',
+                                fontSize: '1rem'
+                              }}
+                            />
                               )}
-                            </td>
-                            <td data-label="Subtotal">₹{(item.price * item.quantity).toFixed(2)}</td>
-                            <td data-label="Action">
+                          </td>
+                          <td data-label="Subtotal">₹{(item.price * item.quantity).toFixed(2)}</td>
+                          <td data-label="Action">
                               {item.isCustomProduct ? (
                                 isEditingCustom ? (
                                   <>
@@ -1669,12 +1829,12 @@ function BillGeneration() {
                                     >
                                       Edit
                                     </button>
-                                    <button
-                                      className="remove-btn"
-                                      onClick={() => removeFromCart(item.id)}
-                                    >
-                                      Remove
-                                    </button>
+                            <button
+                              className="remove-btn"
+                              onClick={() => removeFromCart(item.id)}
+                            >
+                              Remove
+                            </button>
                                   </>
                                 )
                               ) : (
@@ -1685,8 +1845,8 @@ function BillGeneration() {
                                   Remove
                                 </button>
                               )}
-                            </td>
-                          </tr>
+                          </td>
+                        </tr>
                         );
                       })}
                     </tbody>
