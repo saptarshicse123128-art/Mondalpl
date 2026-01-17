@@ -19,23 +19,30 @@ const envConfig = {
 // Create `client/src/firebase.secrets.js` with a default export like:
 // export default { apiKey: '...', authDomain: '...', projectId: '...', appId: '...', ... };
 // This file is added to .gitignore above so it won't be committed.
+// Note: In CI/production builds, env vars (REACT_APP_*) are used instead
 let localConfig = null;
-try {
-  // eslint-disable-next-line global-require, import/no-dynamic-require
-  // Use require so the import is optional at runtime (won't fail build if file missing)
-  // NOTE: Do NOT commit client/src/firebase.secrets.js with real credentials.
-  // Create it locally if you want to hardcode for testing only.
-  // eslint-disable-next-line no-undef
-  // @ts-ignore
-  // Attempt to load local secrets (this will throw if file doesn't exist)
-  // eslint-disable-next-line global-require
-  const secrets = require('./firebase.secrets');
-  localConfig = secrets && (secrets.default || secrets);
-} catch (e) {
-  localConfig = null;
+// Skip loading secrets file in CI to avoid webpack build errors
+// In CI, webpack tries to statically analyze require() calls even in try-catch blocks
+if (!process.env.CI) {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    // @ts-ignore - This file is optional and may not exist
+    const secretsModule = require('./firebase.secrets');
+    const secrets = secretsModule && (secretsModule.default || secretsModule);
+    // Only use local config if it has a valid API key (not empty object)
+    if (secrets && secrets.apiKey && typeof secrets.apiKey === 'string' && secrets.apiKey.trim().length > 0) {
+      localConfig = secrets;
+    }
+  } catch (e) {
+    // File doesn't exist, which is fine - we'll use env vars instead
+    localConfig = null;
+  }
 }
 
-const firebaseConfig = (localConfig && localConfig.apiKey) ? localConfig : envConfig;
+// Use local config only if it has valid data, otherwise fall back to env vars
+const firebaseConfig = (localConfig && localConfig.apiKey && localConfig.apiKey.trim().length > 0) 
+  ? localConfig 
+  : envConfig;
 
 // Helpful runtime validation: throw a clear error if required config is missing
 const missing = [];

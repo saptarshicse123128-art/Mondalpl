@@ -10,7 +10,6 @@ import {
   query,
   where,
   orderBy,
-  limit,
   onSnapshot,
   arrayUnion,
   arrayRemove,
@@ -680,12 +679,14 @@ export const categoryService = {
   }
 };
 
-export default {
+const firebaseServices = {
   productService,
   billService,
   userProfileService,
   customerService,
   inventoryLogService,
-  batchOperations
-  ,categoryService
+  batchOperations,
+  categoryService
 };
+
+export default firebaseServices;

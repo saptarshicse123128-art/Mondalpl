@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { collection, addDoc, getDocs, onSnapshot, serverTimestamp, doc, updateDoc, getDoc, deleteDoc, writeBatch, query } from 'firebase/firestore';
+import { collection, addDoc, getDocs, onSnapshot, serverTimestamp, doc, updateDoc, getDoc, deleteDoc, writeBatch } from 'firebase/firestore';
 import { db } from '../../firebase';
 import jsPDF from 'jspdf';
 import 'jspdf-autotable';
@@ -1142,7 +1142,7 @@ function BillGeneration() {
               };
               // Give the PDF a moment to load before printing
               setTimeout(invokePrint, 400);
-            <\/script>
+            </script>
           </body>
         </html>
       `);
