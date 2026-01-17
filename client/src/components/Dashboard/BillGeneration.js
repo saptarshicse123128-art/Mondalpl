@@ -1173,22 +1173,33 @@ function BillGeneration() {
     const normalizedText = normalizeText(lowerText);
     const normalizedQuery = normalizeText(lowerQuery);
     
-    // First check: if normalized query appears in normalized text
+    // For single-word queries (like "pump"), check if it appears as a whole substring first
+    // This prevents "p" from matching "P Trap" - we need the whole word "pump"
+    if (!lowerQuery.includes(' ') && lowerQuery.length >= 2) {
+      // Single word query - must appear as a whole substring
+      if (lowerText.includes(lowerQuery) || normalizedText.includes(normalizedQuery)) {
+        return true;
+      }
+      // For single-word queries, if it doesn't match as a whole, don't continue
+      return false;
+    }
+    
+    // For multi-word queries, first check if normalized query appears in normalized text
     if (normalizedText.includes(normalizedQuery)) return true;
     
-    // Second check: split query into words and check if all/most words appear
-    // Extract words and numbers separately
+    // Third check: split query into words and check if all/most words appear
+    // Extract words and numbers separately (for multi-word queries)
     const queryWords = lowerQuery
-      .split(/\s+|(?=\d)|(?<=\d)(?=\D)/) // Split by spaces, or between numbers and letters
+      .split(/\s+/) // Split by spaces only
       .filter(word => word.length > 0)
       .map(word => word.replace(/[()]/g, '')) // Remove parentheses from individual words
-      .filter(word => word.length > 0);
+      .filter(word => word.length >= 2); // Ignore single letters (require at least 2 chars)
     
     if (queryWords.length === 0) return false;
     
     // Normalize text words similarly
     const textWords = lowerText
-      .split(/\s+|(?=\d)|(?<=\d)(?=\D)/)
+      .split(/\s+/)
       .filter(word => word.length > 0)
       .map(word => word.replace(/[()]/g, ''))
       .filter(word => word.length > 0);
