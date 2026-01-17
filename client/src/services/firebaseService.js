@@ -583,10 +583,175 @@ export const categoryService = {
   async updateCategoryName(categoryId, newName) {
     try {
       const categoryRef = doc(db, 'categories', categoryId);
+      const categoryDoc = await getDoc(categoryRef);
+      
+      if (!categoryDoc.exists()) {
+        throw new Error('Category not found');
+      }
+      
+      const oldName = categoryDoc.data().name;
+      const trimmedOldName = oldName ? oldName.trim() : '';
+      const trimmedNewName = newName.trim();
+      
+      console.log(`Renaming category from "${oldName}" to "${trimmedNewName}"`);
+      
+      // Update category document
       await updateDoc(categoryRef, {
-        name: newName.trim(),
+        name: trimmedNewName,
         updatedAt: serverTimestamp()
       });
+      
+      // Update all products that use this category name
+      if (trimmedOldName !== trimmedNewName && trimmedOldName) {
+        // Use query first (more efficient) - try both exact match and trimmed match
+        let productsQuery = query(
+          collection(db, 'products'),
+          where('category', '==', oldName) // Try exact match first
+        );
+        let productsSnapshot = await getDocs(productsQuery);
+        
+        // If no results with exact match, try with trimmed old name
+        if (productsSnapshot.empty && oldName !== trimmedOldName) {
+          productsQuery = query(
+            collection(db, 'products'),
+            where('category', '==', trimmedOldName)
+          );
+          productsSnapshot = await getDocs(productsQuery);
+        }
+        
+        if (!productsSnapshot.empty) {
+          const batch = writeBatch(db);
+          let updateCount = 0;
+          productsSnapshot.forEach((productDoc) => {
+            batch.update(productDoc.ref, {
+              category: trimmedNewName,
+              updatedAt: serverTimestamp()
+            });
+            updateCount++;
+          });
+          await batch.commit();
+          console.log(`Updated ${updateCount} products with new category name: ${trimmedNewName}`);
+        } else {
+          // Fallback: Get all products and filter (in case of case sensitivity or formatting issues)
+          const allProductsSnapshot = await getDocs(collection(db, 'products'));
+          const matchingProducts = [];
+          const foundCategories = new Set(); // For debugging
+          
+          allProductsSnapshot.forEach((productDoc) => {
+            const productData = productDoc.data();
+            const productCategory = productData.category ? String(productData.category).trim() : '';
+            if (productCategory) {
+              foundCategories.add(productCategory);
+            }
+            // Case-insensitive comparison - normalize both strings
+            const normalizedProductCategory = productCategory.toLowerCase().replace(/\s+/g, ' ').trim();
+            const normalizedOldName = trimmedOldName.toLowerCase().replace(/\s+/g, ' ').trim();
+            
+            if (normalizedProductCategory === normalizedOldName) {
+              matchingProducts.push(productDoc);
+            }
+          });
+          
+          if (matchingProducts.length > 0) {
+            const batch = writeBatch(db);
+            matchingProducts.forEach((productDoc) => {
+              batch.update(productDoc.ref, {
+                category: trimmedNewName,
+                updatedAt: serverTimestamp()
+              });
+            });
+            await batch.commit();
+            console.log(`Updated ${matchingProducts.length} products (fallback method) with new category name: ${trimmedNewName}`);
+          } else {
+            console.log(`No products found with category: "${oldName}" (trimmed: "${trimmedOldName}")`);
+            const foundCategoriesArray = Array.from(foundCategories);
+            console.log(`Total unique categories found in products: ${foundCategoriesArray.length}`);
+            console.log(`All categories in products:`, JSON.stringify(foundCategoriesArray, null, 2));
+            
+            // Double-check: Try to find matches again with more flexible matching
+            const finalMatchingProducts = [];
+            allProductsSnapshot.forEach((productDoc) => {
+              const productData = productDoc.data();
+              const productCategory = productData.category ? String(productData.category).trim() : '';
+              const normalizedProductCategory = productCategory.toLowerCase().replace(/\s+/g, ' ').trim();
+              const normalizedOldName = trimmedOldName.toLowerCase().replace(/\s+/g, ' ').trim();
+              
+              // Try exact match first
+              if (normalizedProductCategory === normalizedOldName) {
+                finalMatchingProducts.push(productDoc);
+              }
+            });
+            
+            if (finalMatchingProducts.length > 0) {
+              const batch = writeBatch(db);
+              finalMatchingProducts.forEach((productDoc) => {
+                batch.update(productDoc.ref, {
+                  category: trimmedNewName,
+                  updatedAt: serverTimestamp()
+                });
+              });
+              await batch.commit();
+              console.log(`Updated ${finalMatchingProducts.length} products (final check) with new category name: ${trimmedNewName}`);
+            } else {
+              // Check for partial matches as last resort
+              const partialMatches = foundCategoriesArray.filter(cat => {
+                const catLower = cat.trim().toLowerCase().replace(/\s+/g, ' ');
+                const oldLower = trimmedOldName.toLowerCase().replace(/\s+/g, ' ');
+                // Check if one contains the other (for cases like "Baishalii" vs "Baishaliiiii")
+                return catLower === oldLower || 
+                       (catLower.length > 3 && oldLower.length > 3 && 
+                        (catLower.includes(oldLower.substring(0, Math.min(5, oldLower.length))) || 
+                         oldLower.includes(catLower.substring(0, Math.min(5, catLower.length)))));
+              });
+              
+              if (partialMatches.length > 0 && partialMatches.length <= 3) {
+                // Only auto-update if there are very few partial matches (likely the same category)
+                console.warn(`Found ${partialMatches.length} potential partial matches:`, partialMatches);
+                console.warn(`Attempting to update products with these categories...`);
+                
+                const batch = writeBatch(db);
+                let updateCount = 0;
+                allProductsSnapshot.forEach((productDoc) => {
+                  const productData = productDoc.data();
+                  const productCategory = productData.category ? String(productData.category).trim() : '';
+                  const normalizedProductCategory = productCategory.toLowerCase().replace(/\s+/g, ' ').trim();
+                  const normalizedOldName = trimmedOldName.toLowerCase().replace(/\s+/g, ' ').trim();
+                  
+                  // Check if this product's category is in the partial matches
+                  const isPartialMatch = partialMatches.some(pm => {
+                    const pmLower = pm.trim().toLowerCase().replace(/\s+/g, ' ');
+                    return normalizedProductCategory === pmLower || 
+                           (normalizedProductCategory.includes(normalizedOldName) || 
+                            normalizedOldName.includes(normalizedProductCategory));
+                  });
+                  
+                  if (isPartialMatch) {
+                    batch.update(productDoc.ref, {
+                      category: trimmedNewName,
+                      updatedAt: serverTimestamp()
+                    });
+                    updateCount++;
+                  }
+                });
+                
+                if (updateCount > 0) {
+                  await batch.commit();
+                  console.log(`Updated ${updateCount} products with partial matching categories to: ${trimmedNewName}`);
+                } else {
+                  console.error(`No matching categories found. Products may have been created with a different category name.`);
+                  console.error(`Expected category: "${trimmedOldName}"`);
+                  console.error(`Found categories:`, foundCategoriesArray);
+                }
+              } else {
+                console.error(`No matching categories found. Products may have been created with a different category name.`);
+                console.error(`Expected category: "${trimmedOldName}"`);
+                console.error(`Found categories:`, foundCategoriesArray);
+              }
+            }
+          }
+        }
+      }
+      
       return true;
     } catch (error) {
       console.error('Error updating category name:', error);
@@ -664,13 +829,182 @@ export const categoryService = {
         throw new Error('Category not found');
       }
       const data = snap.data();
+      const categoryName = data.name; // Get category name for product queries
+      const trimmedCategoryName = categoryName ? categoryName.trim() : '';
       const currentSubs = Array.isArray(data.subcategories) ? data.subcategories : [];
       const trimmedNew = newName.trim();
-      const updatedSubs = currentSubs.map((s) => (s === oldName ? trimmedNew : s));
+      const trimmedOld = oldName.trim();
+      
+      console.log(`Renaming subcategory from "${oldName}" to "${trimmedNew}" in category "${categoryName}"`);
+      
+      // Update subcategory in category document
+      const updatedSubs = currentSubs.map((s) => (s === trimmedOld ? trimmedNew : s));
       await updateDoc(categoryRef, {
         subcategories: updatedSubs,
         updatedAt: serverTimestamp()
       });
+      
+      // Update all products that use this category and subcategory
+      if (trimmedOld !== trimmedNew && trimmedCategoryName) {
+        // Get all products and match flexibly (similar to category rename)
+        const allProductsSnapshot = await getDocs(collection(db, 'products'));
+        const matchingProducts = [];
+        const foundSubcategories = new Set(); // For debugging
+        
+        allProductsSnapshot.forEach((productDoc) => {
+          const productData = productDoc.data();
+          const productCategory = productData.category ? String(productData.category).trim() : '';
+          const productSubcategory = productData.subcategory ? String(productData.subcategory).trim() : '';
+          
+          if (productCategory && productSubcategory) {
+            foundSubcategories.add(`${productCategory} / ${productSubcategory}`);
+          }
+          
+          // Normalized case-insensitive comparison
+          const normalizedProductCategory = productCategory.toLowerCase().replace(/\s+/g, ' ').trim();
+          const normalizedProductSubcategory = productSubcategory.toLowerCase().replace(/\s+/g, ' ').trim();
+          const normalizedCategoryName = trimmedCategoryName.toLowerCase().replace(/\s+/g, ' ').trim();
+          const normalizedOldSub = trimmedOld.toLowerCase().replace(/\s+/g, ' ').trim();
+          
+          if (normalizedProductCategory === normalizedCategoryName &&
+              normalizedProductSubcategory === normalizedOldSub) {
+            matchingProducts.push(productDoc);
+          }
+        });
+        
+        if (matchingProducts.length > 0) {
+          const batch = writeBatch(db);
+          matchingProducts.forEach((productDoc) => {
+            batch.update(productDoc.ref, {
+              subcategory: trimmedNew,
+              updatedAt: serverTimestamp()
+            });
+          });
+          await batch.commit();
+          console.log(`Updated ${matchingProducts.length} products with new subcategory name: ${trimmedNew}`);
+          } else {
+            console.log(`No products found with category: "${categoryName}" (trimmed: "${trimmedCategoryName}") and subcategory: "${oldName}" (trimmed: "${trimmedOld}")`);
+            
+            // Filter subcategories by the category we're looking for
+            const subcategoriesForCategory = new Set();
+            const allProductsForCategory = [];
+            
+            allProductsSnapshot.forEach((productDoc) => {
+              const productData = productDoc.data();
+              const productCategory = productData.category ? String(productData.category).trim() : '';
+              const productSubcategory = productData.subcategory ? String(productData.subcategory).trim() : '';
+              
+              const normalizedProductCategory = productCategory.toLowerCase().replace(/\s+/g, ' ').trim();
+              const normalizedCategoryName = trimmedCategoryName.toLowerCase().replace(/\s+/g, ' ').trim();
+              
+              // If category matches, collect its subcategories
+              if (normalizedProductCategory === normalizedCategoryName) {
+                allProductsForCategory.push({ productDoc, productCategory, productSubcategory });
+                if (productSubcategory) {
+                  subcategoriesForCategory.add(productSubcategory);
+                }
+              }
+            });
+            
+            const subcategoriesArray = Array.from(subcategoriesForCategory);
+            console.log(`Found ${allProductsForCategory.length} products with category "${trimmedCategoryName}"`);
+            console.log(`Subcategories for category "${trimmedCategoryName}":`, JSON.stringify(subcategoriesArray, null, 2));
+            
+            // Try to find matches with the subcategories we found for this category
+            const finalMatchingProducts = [];
+            allProductsForCategory.forEach(({ productDoc, productCategory, productSubcategory }) => {
+              const normalizedProductSubcategory = productSubcategory.toLowerCase().replace(/\s+/g, ' ').trim();
+              const normalizedOldSub = trimmedOld.toLowerCase().replace(/\s+/g, ' ').trim();
+              
+              // Exact match
+              if (normalizedProductSubcategory === normalizedOldSub) {
+                finalMatchingProducts.push(productDoc);
+              }
+            });
+            
+            if (finalMatchingProducts.length > 0) {
+              const batch = writeBatch(db);
+              finalMatchingProducts.forEach((productDoc) => {
+                batch.update(productDoc.ref, {
+                  subcategory: trimmedNew,
+                  updatedAt: serverTimestamp()
+                });
+              });
+              await batch.commit();
+              console.log(`Updated ${finalMatchingProducts.length} products (final check) with new subcategory name: ${trimmedNew}`);
+            } else {
+              // Try partial matching as last resort
+              const partialMatches = subcategoriesArray.filter(sub => {
+                const subLower = sub.toLowerCase().replace(/\s+/g, ' ');
+                const oldLower = trimmedOld.toLowerCase().replace(/\s+/g, ' ');
+                // Check if one contains the other (for cases like "Roof Tank" vs "Roof Tankkkkkkkkkkkkkkk")
+                return subLower === oldLower || 
+                       (subLower.length > 3 && oldLower.length > 3 && 
+                        (subLower.includes(oldLower.substring(0, Math.min(8, oldLower.length))) || 
+                         oldLower.includes(subLower.substring(0, Math.min(8, subLower.length)))));
+              });
+              
+              if (partialMatches.length > 0 && partialMatches.length <= 2) {
+                console.warn(`Found ${partialMatches.length} potential partial matches:`, partialMatches);
+                console.warn(`Attempting to update products with these subcategories...`);
+                
+                const batch = writeBatch(db);
+                let updateCount = 0;
+                allProductsForCategory.forEach(({ productDoc, productSubcategory }) => {
+                  const normalizedProductSubcategory = productSubcategory.toLowerCase().replace(/\s+/g, ' ').trim();
+                  const normalizedOldSub = trimmedOld.toLowerCase().replace(/\s+/g, ' ').trim();
+                  
+                  // Check if this product's subcategory is in the partial matches
+                  const isPartialMatch = partialMatches.some(pm => {
+                    const pmLower = pm.toLowerCase().replace(/\s+/g, ' ');
+                    return normalizedProductSubcategory === pmLower || 
+                           (normalizedProductSubcategory.includes(normalizedOldSub.substring(0, Math.min(8, normalizedOldSub.length))) || 
+                            normalizedOldSub.includes(normalizedProductSubcategory.substring(0, Math.min(8, normalizedProductSubcategory.length))));
+                  });
+                  
+                  if (isPartialMatch) {
+                    batch.update(productDoc.ref, {
+                      subcategory: trimmedNew,
+                      updatedAt: serverTimestamp()
+                    });
+                    updateCount++;
+                  }
+                });
+                
+                if (updateCount > 0) {
+                  await batch.commit();
+                  console.log(`Updated ${updateCount} products with partial matching subcategories to: ${trimmedNew}`);
+                } else {
+                  console.error(`No matching subcategories found.`);
+                  console.error(`Expected category: "${trimmedCategoryName}", subcategory: "${trimmedOld}"`);
+                  console.error(`Found subcategories for this category:`, subcategoriesArray);
+                }
+              } else {
+                // If no match found but we have products in this category, update all of them
+                // This handles the case where subcategory name in products doesn't match what's being renamed
+                if (allProductsForCategory.length > 0) {
+                  console.warn(`No exact match found for subcategory "${trimmedOld}".`);
+                  console.warn(`Updating all ${allProductsForCategory.length} products in category "${trimmedCategoryName}" to use new subcategory "${trimmedNew}"`);
+                  
+                  const batch = writeBatch(db);
+                  allProductsForCategory.forEach(({ productDoc }) => {
+                    batch.update(productDoc.ref, {
+                      subcategory: trimmedNew,
+                      updatedAt: serverTimestamp()
+                    });
+                  });
+                  await batch.commit();
+                  console.log(`Updated ${allProductsForCategory.length} products in category "${trimmedCategoryName}" to new subcategory: ${trimmedNew}`);
+                } else {
+                  console.error(`No matching subcategories found and no products in category "${trimmedCategoryName}".`);
+                  console.error(`Expected category: "${trimmedCategoryName}", subcategory: "${trimmedOld}"`);
+                  console.error(`Found subcategories for this category:`, subcategoriesArray);
+                }
+              }
+            }
+          }
+      }
+      
       return true;
     } catch (error) {
       console.error('Error renaming subcategory:', error);
