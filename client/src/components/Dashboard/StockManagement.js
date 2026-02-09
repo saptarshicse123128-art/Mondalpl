@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { 
   collection, 
   addDoc, 
@@ -18,11 +18,12 @@ function StockManagement() {
   const [editingProduct, setEditingProduct] = useState(null);
   const [formData, setFormData] = useState({
     name: '',
-    description: '',
     price: '',
+    purchasePrice: '',
     quantity: '',
     category: '',
-    subcategory: ''
+    subcategory: '',
+    hsnCode: ''
   });
   const [loading, setLoading] = useState(false);
   const [initialLoading, setInitialLoading] = useState(true);
@@ -34,12 +35,13 @@ function StockManagement() {
   const [showCategoryPanel, setShowCategoryPanel] = useState(false);
   const [newCategoryName, setNewCategoryName] = useState('');
   const [newSubcategoryName, setNewSubcategoryName] = useState('');
-  const [variationEnabled, setVariationEnabled] = useState(false);
+  const [variationEnabled, setVariationEnabled] = useState(true);
   const [variations, setVariations] = useState([]);
   const [openVariationProductId, setOpenVariationProductId] = useState(null);
+  const formRef = useRef(null);
 
   useEffect(() => {
-    // Subscribe to categories collection so form can show category/subcategory options
+    // Subscribe to brands collection so form can show brand/category options
     const unsubscribeCategories = categoryService.onCategoriesChange((cats, err) => {
       if (err) {
         console.error('Failed to listen categories:', err);
@@ -98,6 +100,11 @@ function StockManagement() {
     });
   };
 
+  // Prevent number input from changing value on scroll
+  const handleNumberInputWheel = (e) => {
+    e.target.blur();
+  };
+
   const handleCategorySelect = (e) => {
     const catId = e.target.value;
     setSelectedCategoryId(catId);
@@ -122,9 +129,10 @@ function StockManagement() {
 
       const productData = {
         name: formData.name.trim(),
-        description: formData.description.trim(),
         category: categoryName,
         subcategory: formData.subcategory?.trim() || '',
+        hsnCode: formData.hsnCode?.trim() || '',
+        purchasePrice: formData.purchasePrice ? parseFloat(formData.purchasePrice) : null,
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp()
       };
@@ -137,7 +145,10 @@ function StockManagement() {
           .map(v => ({
             size: v.size.trim(),
             price: parseFloat(v.price),
-            quantity: parseInt(v.quantity)
+            purchasePrice: v.purchasePrice ? parseFloat(v.purchasePrice) : null,
+            quantity: parseInt(v.quantity),
+            lowStockQuantity: v.lowStockQuantity ? parseInt(v.lowStockQuantity) : null,
+            unit: v.unit?.trim() || ''
           }));
         
         if (validVariations.length === 0) {
@@ -161,14 +172,15 @@ function StockManagement() {
       
       setFormData({
         name: '',
-        description: '',
         price: '',
+        purchasePrice: '',
         quantity: '',
         category: '',
-        subcategory: ''
+        subcategory: '',
+        hsnCode: ''
       });
       setSelectedCategoryId('');
-      setVariationEnabled(false);
+      setVariationEnabled(true);
       setVariations([]);
       setShowAddForm(false);
       setMessage({ type: 'success', text: 'Product added successfully!' });
@@ -199,11 +211,12 @@ function StockManagement() {
     setEditingProduct(product.id);
     setFormData({
       name: product.name || '',
-      description: product.description || '',
       price: product.price?.toString() || '',
+      purchasePrice: product.purchasePrice?.toString() || '',
       quantity: product.quantity?.toString() || '',
       category: product.category || '',
-      subcategory: product.subcategory || ''
+      subcategory: product.subcategory || '',
+      hsnCode: product.hsnCode || ''
     });
     // Load variations if they exist
     if (product.variations && Array.isArray(product.variations) && product.variations.length > 0) {
@@ -211,7 +224,10 @@ function StockManagement() {
       setVariations(product.variations.map(v => ({
         size: v.size || '',
         price: v.price?.toString() || '',
-        quantity: v.quantity?.toString() || ''
+        purchasePrice: v.purchasePrice?.toString() || '',
+        quantity: v.quantity?.toString() || '',
+        lowStockQuantity: v.lowStockQuantity?.toString() || '',
+        unit: v.unit || ''
       })));
     } else {
       setVariationEnabled(false);
@@ -227,6 +243,12 @@ function StockManagement() {
       setSubcategories([]);
     }
     setShowAddForm(true);
+    // Scroll to form after a short delay to ensure DOM is updated
+    setTimeout(() => {
+      if (formRef.current) {
+        formRef.current.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }
+    }, 100);
   };
 
   const handleUpdateProduct = async (e) => {
@@ -243,9 +265,10 @@ function StockManagement() {
 
       const updateData = {
         name: formData.name.trim(),
-        description: formData.description.trim(),
         category: categoryName,
         subcategory: formData.subcategory?.trim() || '',
+        hsnCode: formData.hsnCode?.trim() || '',
+        purchasePrice: formData.purchasePrice ? parseFloat(formData.purchasePrice) : null,
         updatedAt: serverTimestamp()
       };
 
@@ -257,7 +280,10 @@ function StockManagement() {
           .map(v => ({
             size: v.size.trim(),
             price: parseFloat(v.price),
-            quantity: parseInt(v.quantity)
+            purchasePrice: v.purchasePrice ? parseFloat(v.purchasePrice) : null,
+            quantity: parseInt(v.quantity),
+            lowStockQuantity: v.lowStockQuantity ? parseInt(v.lowStockQuantity) : null,
+            unit: v.unit?.trim() || ''
           }));
         
         if (validVariations.length === 0) {
@@ -283,14 +309,15 @@ function StockManagement() {
       
       setFormData({
         name: '',
-        description: '',
         price: '',
+        purchasePrice: '',
         quantity: '',
         category: '',
-        subcategory: ''
+        subcategory: '',
+        hsnCode: ''
       });
       setSelectedCategoryId('');
-      setVariationEnabled(false);
+      setVariationEnabled(true);
       setVariations([]);
       setShowAddForm(false);
       setEditingProduct(null);
@@ -306,22 +333,22 @@ function StockManagement() {
   const handleCancel = () => {
     setFormData({
       name: '',
-      description: '',
       price: '',
       quantity: '',
       category: '',
-      subcategory: ''
+      subcategory: '',
+      hsnCode: ''
     });
     setShowAddForm(false);
     setEditingProduct(null);
     setMessage({ type: '', text: '' });
-    setVariationEnabled(false);
+    setVariationEnabled(true);
     setVariations([]);
   };
 
   // Variation management helpers
   const handleAddVariation = () => {
-    setVariations([...variations, { size: '', price: '', quantity: '' }]);
+    setVariations([...variations, { size: '', price: '', purchasePrice: '', quantity: '', lowStockQuantity: '', unit: '' }]);
   };
 
   const handleRemoveVariation = (index) => {
@@ -337,31 +364,31 @@ function StockManagement() {
     setVariations(updatedVariations);
   };
 
-  // Category management helpers
+  // Brand & Category management helpers
   const handleAddCategory = async () => {
-    if (!newCategoryName.trim()) return setMessage({ type: 'error', text: 'Category name required' });
+    if (!newCategoryName.trim()) return setMessage({ type: 'error', text: 'Brand name required' });
     try {
       await categoryService.addCategory(newCategoryName.trim());
       setNewCategoryName('');
-      setMessage({ type: 'success', text: 'Category added' });
+      setMessage({ type: 'success', text: 'Brand added' });
       setTimeout(() => setMessage({ type: '', text: '' }), 2000);
     } catch (err) {
-      console.error('Add category failed', err);
-      setMessage({ type: 'error', text: 'Failed to add category' });
+      console.error('Add brand failed', err);
+      setMessage({ type: 'error', text: 'Failed to add brand' });
     }
   };
 
   const handleAddSubcategory = async (categoryId) => {
     const name = newSubcategoryName.trim();
-    if (!categoryId || !name) return setMessage({ type: 'error', text: 'Select category and enter subcategory' });
+    if (!categoryId || !name) return setMessage({ type: 'error', text: 'Select brand and enter category' });
     try {
       await categoryService.addSubcategory(categoryId, name);
       setNewSubcategoryName('');
-      setMessage({ type: 'success', text: 'Subcategory added' });
+      setMessage({ type: 'success', text: 'Category added' });
       setTimeout(() => setMessage({ type: '', text: '' }), 2000);
     } catch (err) {
-      console.error('Add subcategory failed', err);
-      setMessage({ type: 'error', text: 'Failed to add subcategory' });
+      console.error('Add category failed', err);
+      setMessage({ type: 'error', text: 'Failed to add category' });
     }
   };
 
@@ -469,6 +496,12 @@ function StockManagement() {
             } else {
               setShowAddForm(true);
               setEditingProduct(null);
+              // Scroll to form after a short delay to ensure DOM is updated
+              setTimeout(() => {
+                if (formRef.current) {
+                  formRef.current.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                }
+              }, 100);
             }
           }}
         >
@@ -483,7 +516,7 @@ function StockManagement() {
       )}
 
       {showAddForm && (
-        <div className="add-product-form">
+        <div className="add-product-form" ref={formRef}>
           <h3>{editingProduct ? 'Edit Product' : 'Add New Product'}</h3>
           <form onSubmit={editingProduct ? handleUpdateProduct : handleAddProduct}>
             <div className="form-row">
@@ -498,14 +531,14 @@ function StockManagement() {
                 />
               </div>
               <div className="form-group">
-                <label>Category</label>
+                <label>Brand</label>
                 <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
                   <select
                     name="categoryId"
                     value={selectedCategoryId}
                     onChange={handleCategorySelect}
                   >
-                    <option value="">Select category</option>
+                    <option value="">Select brand</option>
                     {categories.map((c) => (
                       <option key={c.id} value={c.id}>{c.name}</option>
                     ))}
@@ -516,7 +549,7 @@ function StockManagement() {
                     onChange={handleInputChange}
                     style={{ minWidth: 160 }}
                   >
-                    <option value="">No subcategory</option>
+                    <option value="">No category</option>
                     {subcategories.map((s) => (
                       <option key={s} value={s}>{s}</option>
                     ))}
@@ -525,26 +558,17 @@ function StockManagement() {
                     Manage
                   </button>
                 </div>
-                {/* Allow manual entry if user prefers */}
-                <small className="muted">Or type a category below to save with product</small>
+              </div>
+              <div className="form-group">
+                <label>HSN Code</label>
                 <input
                   type="text"
-                  name="category"
-                  value={formData.category}
+                  name="hsnCode"
+                  value={formData.hsnCode}
                   onChange={handleInputChange}
-                  placeholder="(optional) fallback category name"
-                  style={{ marginTop: 8 }}
+                  placeholder="Enter HSN code"
                 />
               </div>
-            </div>
-            <div className="form-group">
-              <label>Description</label>
-              <textarea
-                name="description"
-                value={formData.description}
-                onChange={handleInputChange}
-                rows="3"
-              />
             </div>
             <div className="form-row">
               <div className="form-group" style={{ width: '100%' }}>
@@ -557,7 +581,7 @@ function StockManagement() {
                       if (!e.target.checked) {
                         setVariations([]);
                       } else if (variations.length === 0) {
-                        setVariations([{ size: '', price: '', quantity: '' }]);
+                        setVariations([{ size: '', price: '', purchasePrice: '', quantity: '', lowStockQuantity: '', unit: '' }]);
                       }
                     }}
                     style={{ width: 'auto', margin: 0 }}
@@ -576,9 +600,23 @@ function StockManagement() {
                     name="price"
                     value={formData.price}
                     onChange={handleInputChange}
+                    onWheel={handleNumberInputWheel}
                     step="0.01"
                     min="0"
                     required={!variationEnabled}
+                  />
+                </div>
+                <div className="form-group">
+                  <label>Purchase Price</label>
+                  <input
+                    type="number"
+                    name="purchasePrice"
+                    value={formData.purchasePrice}
+                    onChange={handleInputChange}
+                    onWheel={handleNumberInputWheel}
+                    step="0.01"
+                    min="0"
+                    placeholder="Cost price"
                   />
                 </div>
                 <div className="form-group">
@@ -588,6 +626,7 @@ function StockManagement() {
                     name="quantity"
                     value={formData.quantity}
                     onChange={handleInputChange}
+                    onWheel={handleNumberInputWheel}
                     min="0"
                     required={!variationEnabled}
                   />
@@ -597,25 +636,10 @@ function StockManagement() {
               <div className="variations-section" style={{ marginTop: '15px', marginBottom: '15px' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
                   <label style={{ fontWeight: 'bold' }}>Product Variations</label>
-                  <button
-                    type="button"
-                    onClick={handleAddVariation}
-                    style={{
-                      padding: '6px 12px',
-                      backgroundColor: '#4CAF50',
-                      color: 'white',
-                      border: 'none',
-                      borderRadius: '4px',
-                      cursor: 'pointer',
-                      fontSize: '14px'
-                    }}
-                  >
-                    + Add New Variation
-                  </button>
                 </div>
                 
                 {variations.length === 0 ? (
-                  <p style={{ color: '#666', fontStyle: 'italic' }}>No variations added. Click "Add New Variation" to add one.</p>
+                  <p style={{ color: '#666', fontStyle: 'italic' }}>No variations added. Click "Add New Variation" button below to add one.</p>
                 ) : (
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '15px' }}>
                     {variations.map((variation, index) => (
@@ -663,10 +687,23 @@ function StockManagement() {
                               type="number"
                               value={variation.price}
                               onChange={(e) => handleVariationChange(index, 'price', e.target.value)}
+                              onWheel={handleNumberInputWheel}
                               step="0.01"
                               min="0"
                               placeholder="0.00"
                               required
+                            />
+                          </div>
+                          <div className="form-group">
+                            <label>Purchase Price</label>
+                            <input
+                              type="number"
+                              value={variation.purchasePrice || ''}
+                              onChange={(e) => handleVariationChange(index, 'purchasePrice', e.target.value)}
+                              onWheel={handleNumberInputWheel}
+                              step="0.01"
+                              min="0"
+                              placeholder="Cost price"
                             />
                           </div>
                           <div className="form-group">
@@ -675,9 +712,32 @@ function StockManagement() {
                               type="number"
                               value={variation.quantity}
                               onChange={(e) => handleVariationChange(index, 'quantity', e.target.value)}
+                              onWheel={handleNumberInputWheel}
                               min="0"
                               placeholder="0"
                               required
+                            />
+                          </div>
+                        </div>
+                        <div className="form-row">
+                          <div className="form-group">
+                            <label>Low Stock Quantity</label>
+                            <input
+                              type="number"
+                              value={variation.lowStockQuantity || ''}
+                              onChange={(e) => handleVariationChange(index, 'lowStockQuantity', e.target.value)}
+                              onWheel={handleNumberInputWheel}
+                              min="0"
+                              placeholder="Alert threshold"
+                            />
+                          </div>
+                          <div className="form-group">
+                            <label>Unit</label>
+                            <input
+                              type="text"
+                              value={variation.unit || ''}
+                              onChange={(e) => handleVariationChange(index, 'unit', e.target.value)}
+                              placeholder="e.g., kg, pcs, liters"
                             />
                           </div>
                         </div>
@@ -688,45 +748,65 @@ function StockManagement() {
               </div>
             )}
             
+            <div style={{ display: 'flex', gap: '10px', alignItems: 'center', marginTop: '20px' }}>
+              {variationEnabled && (
+                <button
+                  type="button"
+                  onClick={handleAddVariation}
+                  style={{
+                    padding: '10px 20px',
+                    backgroundColor: '#4CAF50',
+                    color: 'white',
+                    border: 'none',
+                    borderRadius: '4px',
+                    cursor: 'pointer',
+                    fontSize: '14px',
+                    fontWeight: '500'
+                  }}
+                >
+                  + Add New Variation
+                </button>
+              )}
             <button type="submit" disabled={loading} className="submit-btn">
               {loading 
                 ? (editingProduct ? 'Updating...' : 'Adding...') 
                 : (editingProduct ? 'Update Product' : 'Add Product')
               }
             </button>
+            </div>
           </form>
           {showCategoryPanel && (
             <div className="category-panel">
-              <h4>Manage Categories</h4>
+              <h4>Manage Brands & Categories</h4>
               <div className="form-row">
                 <div className="form-group">
-                  <label>New Category</label>
+                  <label>New Brand</label>
                   <input
                     type="text"
                     value={newCategoryName}
                     onChange={(e) => setNewCategoryName(e.target.value)}
-                    placeholder="Category name"
+                    placeholder="Brand name"
                   />
-                  <button type="button" className="submit-btn" onClick={handleAddCategory}>Add Category</button>
+                  <button type="button" className="submit-btn" onClick={handleAddCategory}>Add Brand</button>
                 </div>
                 <div className="form-group">
-                  <label>New Subcategory</label>
+                  <label>New Category</label>
                   <select value={selectedCategoryId} onChange={(e) => setSelectedCategoryId(e.target.value)}>
-                    <option value="">Select category</option>
+                    <option value="">Select brand</option>
                     {categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
                   </select>
                   <input
                     type="text"
                     value={newSubcategoryName}
                     onChange={(e) => setNewSubcategoryName(e.target.value)}
-                    placeholder="Subcategory name"
+                    placeholder="Category name"
                   />
-                  <button type="button" className="submit-btn" onClick={() => handleAddSubcategory(selectedCategoryId)}>Add Subcategory</button>
+                  <button type="button" className="submit-btn" onClick={() => handleAddSubcategory(selectedCategoryId)}>Add Category</button>
                 </div>
               </div>
 
               <div className="categories-list">
-                <h5>Existing Categories</h5>
+                <h5>Existing Brands</h5>
                 <ul>
                   {categories.map((c) => (
                     <li key={c.id}>
@@ -749,7 +829,7 @@ function StockManagement() {
           <div className="search-container">
             <input
               type="text"
-              placeholder="Search products by name, category, description, or price..."
+              placeholder="Search products by name, brand, category, description, or price..."
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               className="search-input"
@@ -767,7 +847,7 @@ function StockManagement() {
             <thead>
               <tr>
                 <th>Name</th>
-                <th>Category</th>
+                <th>Brand</th>
                 <th>Description</th>
                 <th>Price</th>
                 <th>Quantity</th>
@@ -812,7 +892,7 @@ function StockManagement() {
                           <span>{product.name}</span>
                         </div>
                       </td>
-                      <td data-label="Category">{product.category}{product.subcategory ? ' / ' + product.subcategory : ''}</td>
+                      <td data-label="Brand">{product.category}{product.subcategory ? ' / ' + product.subcategory : ''}</td>
                       <td data-label="Description">{product.description || '-'}</td>
                       <td data-label="Price">
                         {hasVariations ? (

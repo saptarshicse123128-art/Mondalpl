@@ -41,7 +41,7 @@ function Sidebar({ onLogout, isOpen, onClose }) {
           className={({ isActive }) => (isActive ? 'nav-item active' : 'nav-item')}
           onClick={handleNavClick}
         >
-          🏷️ Categories
+          🏷️ Brands & Categories
         </NavLink>
         <NavLink
           to="/dashboard/users"

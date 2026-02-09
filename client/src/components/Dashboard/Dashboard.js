@@ -25,7 +25,7 @@ function Dashboard() {
     } else if (path.includes('/bills')) {
       return 'Bill Generation';
     } else if (path.includes('/categories')) {
-      return 'Categories';
+      return 'Brands & Categories';
     } else if (path.includes('/users')) {
       return 'Users';
     }

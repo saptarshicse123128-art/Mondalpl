@@ -37,6 +37,9 @@ function BillGeneration() {
   const [editingDueBillId, setEditingDueBillId] = useState(null);
   const [editingDueAmount, setEditingDueAmount] = useState('');
   const [currentDueAmount, setCurrentDueAmount] = useState(0);
+  const [openMenuBillId, setOpenMenuBillId] = useState(null);
+  const [returningBillId, setReturningBillId] = useState(null);
+  const [returnItems, setReturnItems] = useState([]);
 
   useEffect(() => {
     const unsubscribe = onSnapshot(collection(db, 'products'), (snapshot) => {
@@ -49,6 +52,22 @@ function BillGeneration() {
 
     return () => unsubscribe();
   }, []);
+
+  // Close menu when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event) => {
+      if (openMenuBillId && !event.target.closest('.bill-menu-container')) {
+        setOpenMenuBillId(null);
+      }
+    };
+
+    if (openMenuBillId) {
+      document.addEventListener('mousedown', handleClickOutside);
+      return () => {
+        document.removeEventListener('mousedown', handleClickOutside);
+      };
+    }
+  }, [openMenuBillId]);
 
   useEffect(() => {
     const unsubscribe = onSnapshot(collection(db, 'bills'), (snapshot) => {
@@ -73,6 +92,11 @@ function BillGeneration() {
       ...billForm,
       [e.target.name]: e.target.value
     });
+  };
+
+  // Prevent number input from changing value on scroll
+  const handleNumberInputWheel = (e) => {
+    e.target.blur();
   };
 
   const handleAddCustomProduct = () => {
@@ -486,6 +510,144 @@ function BillGeneration() {
     setCurrentDueAmount(0);
   };
 
+  const handleReturnBill = (bill) => {
+    // Initialize return items with bill items
+    // Account for already returned quantities
+    const initialReturnItems = (bill.items || []).map((item, index) => {
+      const originalQuantity = item.originalQuantity || item.quantity || 0;
+      const alreadyReturned = item.returnedQuantity || 0;
+      const currentQuantity = item.quantity || 0;
+      // Max returnable is the current quantity (what's left after previous returns)
+      const maxReturnable = currentQuantity;
+      
+      return {
+        ...item,
+        returnQuantity: 0,
+        maxReturnQuantity: maxReturnable,
+        originalIndex: index,
+        originalQuantity: originalQuantity,
+        alreadyReturned: alreadyReturned
+      };
+    });
+    setReturnItems(initialReturnItems);
+    setReturningBillId(bill.id);
+  };
+
+  const handleReturnQuantityChange = (index, value) => {
+    const updatedItems = [...returnItems];
+    const maxQty = updatedItems[index].maxReturnQuantity;
+    const returnQty = Math.max(0, Math.min(parseInt(value) || 0, maxQty));
+    updatedItems[index].returnQuantity = returnQty;
+    setReturnItems(updatedItems);
+  };
+
+  const handleProcessReturn = async () => {
+    const itemsToReturn = returnItems.filter(item => item.returnQuantity > 0);
+    
+    if (itemsToReturn.length === 0) {
+      alert('Please select items and quantities to return');
+      return;
+    }
+
+    if (!window.confirm(`Are you sure you want to return ${itemsToReturn.length} item(s)?`)) {
+      return;
+    }
+
+    try {
+      const billRef = doc(db, 'bills', returningBillId);
+      const billDoc = await getDoc(billRef);
+      
+      if (!billDoc.exists()) {
+        alert('Bill not found');
+        return;
+      }
+
+      const billData = billDoc.data();
+      const batch = writeBatch(db);
+
+      // Update stock for each returned item
+      for (const item of itemsToReturn) {
+        if (item.productId) {
+          await restoreProductStock(
+            item.productId,
+            item.returnQuantity,
+            item.variationSize || null
+          );
+        }
+      }
+
+      // Update bill items with returned quantities
+      const updatedItems = billData.items.map((item, index) => {
+        const returnItem = returnItems.find(ri => ri.originalIndex === index);
+        if (returnItem && returnItem.returnQuantity > 0) {
+          const currentQuantity = item.quantity || 0;
+          const newQuantity = Math.max(0, currentQuantity - returnItem.returnQuantity);
+          const newSubtotal = (item.price || 0) * newQuantity;
+          const totalReturned = (item.returnedQuantity || 0) + returnItem.returnQuantity;
+          return {
+            ...item,
+            quantity: newQuantity,
+            subtotal: newSubtotal,
+            returnedQuantity: totalReturned,
+            originalQuantity: item.originalQuantity || currentQuantity + totalReturned
+          };
+        }
+        return item;
+      });
+
+      // Calculate new totals
+      const newSubtotal = updatedItems.reduce((sum, item) => sum + (item.subtotal || 0), 0);
+      const discount = parseFloat(billData.discount || 0);
+      const newTotal = newSubtotal - discount;
+      
+      // Calculate new due (reduce due by returned amount)
+      const returnedAmount = itemsToReturn.reduce((sum, item) => {
+        return sum + ((item.price || 0) * item.returnQuantity);
+      }, 0);
+      
+      const currentDue = parseFloat(billData.due || 0);
+      const newDue = Math.max(0, currentDue - returnedAmount);
+
+      // Get existing returnedItems if any
+      const existingReturnedItems = billData.returnedItems || [];
+      
+      // Prepare new returned items with regular timestamp (serverTimestamp() not supported in arrays)
+      const newReturnedItems = itemsToReturn.map(item => ({
+        productId: item.productId,
+        productName: item.productName,
+        variationSize: item.variationSize || null,
+        quantity: item.returnQuantity,
+        price: item.price,
+        subtotal: (item.price || 0) * item.returnQuantity,
+        returnedAt: new Date()
+      }));
+
+      // Update bill
+      batch.update(billRef, {
+        items: updatedItems,
+        subtotal: newSubtotal,
+        total: newTotal,
+        due: newDue > 0 ? newDue : null,
+        returnedItems: [...existingReturnedItems, ...newReturnedItems],
+        updatedAt: serverTimestamp()
+      });
+
+      await batch.commit();
+      
+      alert(`Return processed successfully! Stock updated for ${itemsToReturn.length} item(s).`);
+      setReturningBillId(null);
+      setReturnItems([]);
+    } catch (error) {
+      console.error('Error processing return:', error);
+      alert('Failed to process return. Please try again.');
+    }
+  };
+
+  const handleCancelReturn = () => {
+    setReturningBillId(null);
+    setReturnItems([]);
+  };
+
   const generateBillNumber = (billNumber) => {
     return `MPS/${String(billNumber).padStart(5, '0')}`;
   };
@@ -870,7 +1032,73 @@ function BillGeneration() {
       });
       
       // Calculate final Y position after table
-      const finalY = pdfDoc.lastAutoTable.finalY + 10;
+      let finalY = pdfDoc.lastAutoTable.finalY + 10;
+      
+      // Check for returned items and add returned items table
+      const returnedItems = billToDownload.returnedItems || [];
+      if (returnedItems.length > 0) {
+        // Add spacing before returned items section
+        finalY += 10;
+        
+        // "Returned Items" heading
+        pdfDoc.setFontSize(12);
+        pdfDoc.setFont('helvetica', 'bold');
+        pdfDoc.setTextColor(200, 0, 0); // Red color for returned items heading
+        pdfDoc.text('RETURNED ITEMS', 20, finalY);
+        finalY += 8;
+        
+        // Prepare returned items table data
+        const returnedTableData = returnedItems.map((item, index) => {
+          const price = parseFloat(item.price || 0);
+          const quantity = parseInt(item.quantity || 0);
+          const amount = parseFloat(item.subtotal || (price * quantity));
+          
+          // Include variation size in product name if it exists
+          let productName = String(item.productName || 'N/A');
+          if (item.variationSize) {
+            productName = `${productName} ${item.variationSize}`;
+          }
+          
+          return [
+            String(index + 1), // SL No.
+            productName, // Product (with variation size if applicable)
+            String(quantity), // Qty.
+            'Rs. ' + price.toFixed(2), // Price
+            'Rs. ' + amount.toFixed(2) // Amount
+          ];
+        });
+        
+        pdfDoc.autoTable({
+          startY: finalY,
+          head: [['SL No.', 'Product', 'Qty.', 'Price', 'Amount']],
+          body: returnedTableData,
+          theme: 'striped',
+          headStyles: { 
+            fillColor: [200, 0, 0], // Red header for returned items
+            textColor: [255, 255, 255], // White text
+            fontStyle: 'bold',
+            fontSize: 10
+          },
+          styles: { 
+            fontSize: 9,
+            font: 'helvetica',
+            textColor: [0, 0, 0]
+          },
+          alternateRowStyles: {
+            fillColor: [255, 245, 245] // Light red for alternating rows
+          },
+          margin: { left: 20, right: 20 },
+          columnStyles: {
+            0: { cellWidth: 20 }, // SL No.
+            1: { cellWidth: 70 }, // Product
+            2: { cellWidth: 20 }, // Qty.
+            3: { cellWidth: 30 }, // Price
+            4: { cellWidth: 30 }  // Amount
+          }
+        });
+        
+        finalY = pdfDoc.lastAutoTable.finalY + 10;
+      }
       
       // Summary section at bottom right
       pdfDoc.setFontSize(10);
@@ -880,6 +1108,11 @@ function BillGeneration() {
       const subtotal = parseFloat(billToDownload.subtotal || 0);
       const discount = parseFloat(billToDownload.discount || 0);
       const total = parseFloat(billToDownload.total || subtotal);
+      
+      // Calculate total return amount
+      const totalReturnAmount = returnedItems.reduce((sum, item) => {
+        return sum + parseFloat(item.subtotal || ((item.price || 0) * (item.quantity || 0)));
+      }, 0);
       
       let summaryY = finalY;
       
@@ -951,14 +1184,56 @@ function BillGeneration() {
         }
       }
       
-      // "Due now" in bold and big size (only show if there's a current due amount)
-      if (due > 0 || initialDue > 0) {
+      // Handle returned items adjustment
+      if (totalReturnAmount > 0) {
+        summaryY += 5;
+        pdfDoc.setFont('helvetica', 'normal');
+        pdfDoc.setFontSize(10);
+        pdfDoc.setTextColor(200, 0, 0); // Red color for return amount
+        pdfDoc.text('RETURNED AMOUNT Rs.', 150, summaryY, { align: 'right' });
+        pdfDoc.text(totalReturnAmount.toFixed(2), 190, summaryY, { align: 'right' });
+        summaryY += 7;
+        
+        // Check if bill was fully paid (no initial due)
+        if (initialDue === 0) {
+          // All amount was paid - show amount to return to customer
+          pdfDoc.setFont('helvetica', 'bold');
+          pdfDoc.setFontSize(12);
+          pdfDoc.setTextColor(0, 150, 0); // Green color
+          pdfDoc.text('AMOUNT TO RETURN TO CUSTOMER Rs.', 150, summaryY, { align: 'right' });
+          pdfDoc.text(totalReturnAmount.toFixed(2), 190, summaryY, { align: 'right' });
+          summaryY += 8;
+        } else {
+          // There was due amount - adjust the due
+          const adjustedDue = Math.max(0, due - totalReturnAmount);
+          pdfDoc.setFont('helvetica', 'bold');
+          pdfDoc.setFontSize(12);
+          pdfDoc.setTextColor(200, 0, 0); // Red color
+          pdfDoc.text('ADJUSTED DUE AMOUNT Rs.', 150, summaryY, { align: 'right' });
+          pdfDoc.text(adjustedDue.toFixed(2), 190, summaryY, { align: 'right' });
+          summaryY += 8;
+        }
+      }
+      
+      // "Due now" in bold and big size (only show if there's a current due amount and no returns adjusted)
+      if ((due > 0 || initialDue > 0) && totalReturnAmount === 0) {
         summaryY += 5;
         pdfDoc.setFont('helvetica', 'bold');
         pdfDoc.setFontSize(14);
         pdfDoc.setTextColor(200, 0, 0); // Red color
         pdfDoc.text('Due now', 150, summaryY, { align: 'right' });
         pdfDoc.text(due.toFixed(2), 190, summaryY, { align: 'right' });
+      } else if (totalReturnAmount > 0 && initialDue > 0) {
+        // Show adjusted due now if returns were processed
+        const adjustedDue = Math.max(0, due - totalReturnAmount);
+        if (adjustedDue > 0) {
+          summaryY += 5;
+          pdfDoc.setFont('helvetica', 'bold');
+          pdfDoc.setFontSize(14);
+          pdfDoc.setTextColor(200, 0, 0); // Red color
+          pdfDoc.text('Due now', 150, summaryY, { align: 'right' });
+          pdfDoc.text(adjustedDue.toFixed(2), 190, summaryY, { align: 'right' });
+        }
       }
       
       // Reset text color to black for any remaining content
@@ -1145,7 +1420,73 @@ function BillGeneration() {
       });
       
       // Calculate final Y position after table
-      const finalY = pdfDoc.lastAutoTable.finalY + 10;
+      let finalY = pdfDoc.lastAutoTable.finalY + 10;
+      
+      // Check for returned items and add returned items table
+      const returnedItems = billToPrint.returnedItems || [];
+      if (returnedItems.length > 0) {
+        // Add spacing before returned items section
+        finalY += 10;
+        
+        // "Returned Items" heading
+        pdfDoc.setFontSize(12);
+        pdfDoc.setFont('helvetica', 'bold');
+        pdfDoc.setTextColor(200, 0, 0); // Red color for returned items heading
+        pdfDoc.text('RETURNED ITEMS', 20, finalY);
+        finalY += 8;
+        
+        // Prepare returned items table data
+        const returnedTableData = returnedItems.map((item, index) => {
+          const price = parseFloat(item.price || 0);
+          const quantity = parseInt(item.quantity || 0);
+          const amount = parseFloat(item.subtotal || (price * quantity));
+          
+          // Include variation size in product name if it exists
+          let productName = String(item.productName || 'N/A');
+          if (item.variationSize) {
+            productName = `${productName} ${item.variationSize}`;
+          }
+          
+          return [
+            String(index + 1), // SL No.
+            productName, // Product (with variation size if applicable)
+            String(quantity), // Qty.
+            'Rs. ' + price.toFixed(2), // Price
+            'Rs. ' + amount.toFixed(2) // Amount
+          ];
+        });
+        
+        pdfDoc.autoTable({
+          startY: finalY,
+          head: [['SL No.', 'Product', 'Qty.', 'Price', 'Amount']],
+          body: returnedTableData,
+          theme: 'striped',
+          headStyles: { 
+            fillColor: [200, 0, 0], // Red header for returned items
+            textColor: [255, 255, 255], // White text
+            fontStyle: 'bold',
+            fontSize: 10
+          },
+          styles: { 
+            fontSize: 9,
+            font: 'helvetica',
+            textColor: [0, 0, 0]
+          },
+          alternateRowStyles: {
+            fillColor: [255, 245, 245] // Light red for alternating rows
+          },
+          margin: { left: 20, right: 20 },
+          columnStyles: {
+            0: { cellWidth: 20 }, // SL No.
+            1: { cellWidth: 70 }, // Product
+            2: { cellWidth: 20 }, // Qty.
+            3: { cellWidth: 30 }, // Price
+            4: { cellWidth: 30 }  // Amount
+          }
+        });
+        
+        finalY = pdfDoc.lastAutoTable.finalY + 10;
+      }
       
       // Summary section at bottom right
       pdfDoc.setFontSize(10);
@@ -1155,6 +1496,11 @@ function BillGeneration() {
       const subtotal = parseFloat(billToPrint.subtotal || 0);
       const discount = parseFloat(billToPrint.discount || 0);
       const total = parseFloat(billToPrint.total || subtotal);
+      
+      // Calculate total return amount
+      const totalReturnAmount = returnedItems.reduce((sum, item) => {
+        return sum + parseFloat(item.subtotal || ((item.price || 0) * (item.quantity || 0)));
+      }, 0);
       
       let summaryY = finalY;
       
@@ -1226,14 +1572,56 @@ function BillGeneration() {
         }
       }
       
-      // "Due now" in bold and big size (only show if there's a current due amount)
-      if (due > 0 || initialDue > 0) {
+      // Handle returned items adjustment
+      if (totalReturnAmount > 0) {
+        summaryY += 5;
+        pdfDoc.setFont('helvetica', 'normal');
+        pdfDoc.setFontSize(10);
+        pdfDoc.setTextColor(200, 0, 0); // Red color for return amount
+        pdfDoc.text('RETURNED AMOUNT Rs.', 150, summaryY, { align: 'right' });
+        pdfDoc.text(totalReturnAmount.toFixed(2), 190, summaryY, { align: 'right' });
+        summaryY += 7;
+        
+        // Check if bill was fully paid (no initial due)
+        if (initialDue === 0) {
+          // All amount was paid - show amount to return to customer
+          pdfDoc.setFont('helvetica', 'bold');
+          pdfDoc.setFontSize(12);
+          pdfDoc.setTextColor(0, 150, 0); // Green color
+          pdfDoc.text('AMOUNT TO RETURN TO CUSTOMER Rs.', 150, summaryY, { align: 'right' });
+          pdfDoc.text(totalReturnAmount.toFixed(2), 190, summaryY, { align: 'right' });
+          summaryY += 8;
+        } else {
+          // There was due amount - adjust the due
+          const adjustedDue = Math.max(0, due - totalReturnAmount);
+          pdfDoc.setFont('helvetica', 'bold');
+          pdfDoc.setFontSize(12);
+          pdfDoc.setTextColor(200, 0, 0); // Red color
+          pdfDoc.text('ADJUSTED DUE AMOUNT Rs.', 150, summaryY, { align: 'right' });
+          pdfDoc.text(adjustedDue.toFixed(2), 190, summaryY, { align: 'right' });
+          summaryY += 8;
+        }
+      }
+      
+      // "Due now" in bold and big size (only show if there's a current due amount and no returns adjusted)
+      if ((due > 0 || initialDue > 0) && totalReturnAmount === 0) {
         summaryY += 5;
         pdfDoc.setFont('helvetica', 'bold');
         pdfDoc.setFontSize(14);
         pdfDoc.setTextColor(200, 0, 0); // Red color
         pdfDoc.text('Due now', 150, summaryY, { align: 'right' });
         pdfDoc.text(due.toFixed(2), 190, summaryY, { align: 'right' });
+      } else if (totalReturnAmount > 0 && initialDue > 0) {
+        // Show adjusted due now if returns were processed
+        const adjustedDue = Math.max(0, due - totalReturnAmount);
+        if (adjustedDue > 0) {
+          summaryY += 5;
+          pdfDoc.setFont('helvetica', 'bold');
+          pdfDoc.setFontSize(14);
+          pdfDoc.setTextColor(200, 0, 0); // Red color
+          pdfDoc.text('Due now', 150, summaryY, { align: 'right' });
+          pdfDoc.text(adjustedDue.toFixed(2), 190, summaryY, { align: 'right' });
+        }
       }
       
       // Reset text color to black for any remaining content
@@ -1455,9 +1843,114 @@ function BillGeneration() {
                       <div key={bill.id} className="bill-card">
                         <div className="bill-card-header">
                           <h4>Bill #{bill.billNumber || bill.id.slice(0, 8)}</h4>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
                           <span className="bill-date">
                             {bill.createdAt?.toDate().toLocaleDateString()}
                           </span>
+                            <div className="bill-menu-container" style={{ position: 'relative' }}>
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setOpenMenuBillId(openMenuBillId === bill.id ? null : bill.id);
+                                }}
+                                style={{
+                                  background: 'none',
+                                  border: 'none',
+                                  cursor: 'pointer',
+                                  fontSize: '20px',
+                                  padding: '4px 8px',
+                                  color: '#333',
+                                  display: 'flex',
+                                  flexDirection: 'column',
+                                  alignItems: 'center',
+                                  justifyContent: 'center',
+                                  borderRadius: '4px',
+                                  transition: 'background 0.2s',
+                                  fontWeight: 'bold',
+                                  lineHeight: '0.5',
+                                  gap: '2px'
+                                }}
+                                onMouseEnter={(e) => e.target.style.backgroundColor = '#f0f0f0'}
+                                onMouseLeave={(e) => e.target.style.backgroundColor = 'transparent'}
+                                title="More options"
+                              >
+                                <span>•</span>
+                                <span>•</span>
+                                <span>•</span>
+                              </button>
+                              {openMenuBillId === bill.id && (
+                                <div
+                                  className="bill-menu-dropdown"
+                                  style={{
+                                    position: 'absolute',
+                                    top: '100%',
+                                    right: 0,
+                                    backgroundColor: 'white',
+                                    border: '1px solid #ddd',
+                                    borderRadius: '5px',
+                                    boxShadow: '0 2px 8px rgba(0,0,0,0.15)',
+                                    zIndex: 1000,
+                                    minWidth: '150px',
+                                    marginTop: '5px',
+                                    overflow: 'hidden'
+                                  }}
+                                >
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      downloadPDF(bill);
+                                      setOpenMenuBillId(null);
+                                    }}
+                                    style={{
+                                      width: '100%',
+                                      padding: '10px 15px',
+                                      border: 'none',
+                                      background: 'none',
+                                      textAlign: 'left',
+                                      cursor: 'pointer',
+                                      fontSize: '14px',
+                                      color: '#333',
+                                      display: 'flex',
+                                      alignItems: 'center',
+                                      gap: '8px'
+                                    }}
+                                    onMouseEnter={(e) => e.target.style.backgroundColor = '#f5f5f5'}
+                                    onMouseLeave={(e) => e.target.style.backgroundColor = 'white'}
+                                  >
+                                    📄 Download PDF
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      handleDeleteBill(bill.id);
+                                      setOpenMenuBillId(null);
+                                    }}
+                                    style={{
+                                      width: '100%',
+                                      padding: '10px 15px',
+                                      border: 'none',
+                                      background: 'none',
+                                      textAlign: 'left',
+                                      cursor: 'pointer',
+                                      fontSize: '14px',
+                                      color: '#e74c3c',
+                                      display: 'flex',
+                                      alignItems: 'center',
+                                      gap: '8px',
+                                      borderTop: '1px solid #eee'
+                                    }}
+                                    onMouseEnter={(e) => e.target.style.backgroundColor = '#f5f5f5'}
+                                    onMouseLeave={(e) => e.target.style.backgroundColor = 'white'}
+                                  >
+                                    🗑️ Delete
+                                  </button>
+                                </div>
+                              )}
+                            </div>
+                          </div>
                         </div>
                   <div className="bill-card-body">
                     <p><strong>Customer:</strong> {bill.fullName || bill.customerName}</p>
@@ -1501,6 +1994,7 @@ function BillGeneration() {
                           max={currentDueAmount}
                           value={editingDueAmount}
                           onChange={(e) => setEditingDueAmount(e.target.value)}
+                          onWheel={handleNumberInputWheel}
                           placeholder="Enter amount paid"
                           className="edit-due-input"
                         />
@@ -1531,11 +2025,11 @@ function BillGeneration() {
                     ) : null}
                     <div className="bill-actions">
                       <button
-                        className="download-bill-btn"
-                        onClick={() => downloadPDF(bill)}
-                        title="Download PDF"
+                        className="return-bill-btn"
+                        onClick={() => handleReturnBill(bill)}
+                        title="Return Bill"
                       >
-                        📄 Download PDF
+                        ↩️ Return
                       </button>
                       <button
                         className="print-bill-btn"
@@ -1566,13 +2060,6 @@ function BillGeneration() {
                           </button>
                         ) : null;
                       })()}
-                      <button
-                        className="delete-bill-btn"
-                        onClick={() => handleDeleteBill(bill.id)}
-                        title="Delete Bill"
-                      >
-                        🗑️ Delete
-                      </button>
                     </div>
                   </div>
                 </div>
@@ -1695,6 +2182,7 @@ function BillGeneration() {
                             }
                           }
                         }}
+                        onWheel={handleNumberInputWheel}
                         onBlur={(e) => {
                           if (e.target.value === '' || parseInt(e.target.value) < 1) {
                             setCustomProduct({ ...customProduct, quantity: 1 });
@@ -1712,6 +2200,7 @@ function BillGeneration() {
                         step="0.01"
                         value={customProduct.price}
                         onChange={(e) => setCustomProduct({ ...customProduct, price: e.target.value })}
+                        onWheel={handleNumberInputWheel}
                         placeholder="Enter price"
                         className="quantity-input"
                       />
@@ -1832,6 +2321,7 @@ function BillGeneration() {
                       type="number"
                       min="1"
                       value={productQuantity}
+                      onWheel={handleNumberInputWheel}
                       onChange={(e) => {
                         const value = e.target.value;
                         if (value === '' || value === '0') {
@@ -1881,8 +2371,8 @@ function BillGeneration() {
                       <tr>
                         <th>SL No.</th>
                         <th>Product</th>
+                        <th>Brand</th>
                         <th>Category</th>
-                        <th>Subcategory</th>
                         <th>Price</th>
                         <th>Quantity</th>
                         <th>Subtotal</th>
@@ -1899,8 +2389,8 @@ function BillGeneration() {
                             {item.name}
                             {item.variationSize && <span style={{ color: '#666', fontSize: '0.9em', marginLeft: '4px' }}> {item.variationSize}</span>}
                           </td>
-                          <td data-label="Category">{item.category || '-'}</td>
-                          <td data-label="Subcategory">{item.subcategory || '-'}</td>
+                          <td data-label="Brand">{item.category || '-'}</td>
+                          <td data-label="Category">{item.subcategory || '-'}</td>
                             <td data-label="Price">
                               {item.isCustomProduct && isEditingCustom ? (
                                 <input
@@ -1914,6 +2404,7 @@ function BillGeneration() {
                                       price: e.target.value
                                     })
                                   }
+                                  onWheel={handleNumberInputWheel}
                                   className="quantity-input-edit"
                                   style={{
                                     width: '100px',
@@ -1940,6 +2431,7 @@ function BillGeneration() {
                                       quantity: e.target.value
                                     })
                                   }
+                                  onWheel={handleNumberInputWheel}
                                   className="quantity-input-edit"
                                   style={{
                                     width: '80px',
@@ -1955,6 +2447,7 @@ function BillGeneration() {
                               type="number"
                               min="1"
                               value={item.quantity}
+                              onWheel={handleNumberInputWheel}
                               onChange={(e) => {
                                 const newQty = parseInt(e.target.value) || 1;
                                 if (newQty > 0) {
@@ -2067,6 +2560,7 @@ function BillGeneration() {
                     name="discount"
                     value={billForm.discount}
                     onChange={handleFormChange}
+                    onWheel={handleNumberInputWheel}
                     placeholder="Enter discount amount"
                     min="0"
                     step="0.01"
@@ -2106,6 +2600,174 @@ function BillGeneration() {
             </div>
           </div>
         </>
+      )}
+
+      {/* Return Modal */}
+      {returningBillId && (
+        <div
+          style={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            backgroundColor: 'rgba(0, 0, 0, 0.5)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 10000,
+            padding: '20px'
+          }}
+          onClick={(e) => {
+            if (e.target === e.currentTarget) {
+              handleCancelReturn();
+            }
+          }}
+        >
+          <div
+            style={{
+              backgroundColor: 'white',
+              borderRadius: '12px',
+              padding: '2rem',
+              maxWidth: '900px',
+              width: '100%',
+              maxHeight: '90vh',
+              overflow: 'auto',
+              boxShadow: '0 4px 20px rgba(0, 0, 0, 0.3)',
+              position: 'relative'
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem' }}>
+              <h3 style={{ margin: 0, color: '#27ae60', fontSize: '1.5rem' }}>Return Items</h3>
+              <button
+                type="button"
+                onClick={handleCancelReturn}
+                style={{
+                  background: 'none',
+                  border: 'none',
+                  fontSize: '24px',
+                  cursor: 'pointer',
+                  color: '#999',
+                  padding: '0',
+                  width: '30px',
+                  height: '30px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  borderRadius: '50%',
+                  transition: 'background 0.2s'
+                }}
+                onMouseEnter={(e) => e.target.style.backgroundColor = '#f0f0f0'}
+                onMouseLeave={(e) => e.target.style.backgroundColor = 'transparent'}
+                title="Close"
+              >
+                ×
+              </button>
+            </div>
+            
+            <div style={{ maxHeight: '500px', overflowY: 'auto', marginBottom: '1.5rem' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '14px' }}>
+                <thead>
+                  <tr style={{ backgroundColor: '#f0f0f0', position: 'sticky', top: 0 }}>
+                    <th style={{ padding: '12px', textAlign: 'left', border: '1px solid #ddd', fontWeight: '600' }}>Product</th>
+                    <th style={{ padding: '12px', textAlign: 'center', border: '1px solid #ddd', fontWeight: '600' }}>Available to Return</th>
+                    <th style={{ padding: '12px', textAlign: 'center', border: '1px solid #ddd', fontWeight: '600' }}>Return Qty</th>
+                    <th style={{ padding: '12px', textAlign: 'right', border: '1px solid #ddd', fontWeight: '600' }}>Price</th>
+                    <th style={{ padding: '12px', textAlign: 'right', border: '1px solid #ddd', fontWeight: '600' }}>Amount</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {returnItems.map((item, index) => {
+                    if (item.maxReturnQuantity <= 0) return null;
+                    return (
+                      <tr key={item.originalIndex || index} style={{ backgroundColor: item.returnQuantity > 0 ? '#fff9e6' : 'white' }}>
+                        <td style={{ padding: '12px', border: '1px solid #ddd' }}>
+                          <div style={{ fontWeight: '500' }}>
+                            {item.productName || item.name}
+                            {item.variationSize && <span style={{ color: '#666', fontSize: '0.9em', marginLeft: '4px' }}> {item.variationSize}</span>}
+                          </div>
+                          {item.alreadyReturned > 0 && (
+                            <span style={{ color: '#999', fontSize: '0.85em', display: 'block', marginTop: '4px' }}>
+                              (Already returned: {item.alreadyReturned})
+                            </span>
+                          )}
+                        </td>
+                        <td style={{ padding: '12px', textAlign: 'center', border: '1px solid #ddd' }}>
+                          {item.maxReturnQuantity}
+                        </td>
+                        <td style={{ padding: '12px', textAlign: 'center', border: '1px solid #ddd' }}>
+                          <input
+                            type="number"
+                            min="0"
+                            max={item.maxReturnQuantity}
+                            value={item.returnQuantity || 0}
+                            onChange={(e) => handleReturnQuantityChange(index, e.target.value)}
+                            onWheel={handleNumberInputWheel}
+                            style={{
+                              width: '100px',
+                              padding: '8px',
+                              border: '1px solid #ddd',
+                              borderRadius: '4px',
+                              textAlign: 'center',
+                              fontSize: '14px'
+                            }}
+                          />
+                        </td>
+                        <td style={{ padding: '12px', textAlign: 'right', border: '1px solid #ddd' }}>
+                          ₹{(item.price || 0).toFixed(2)}
+                        </td>
+                        <td style={{ padding: '12px', textAlign: 'right', border: '1px solid #ddd', fontWeight: '500' }}>
+                          ₹{((item.price || 0) * (item.returnQuantity || 0)).toFixed(2)}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                  {returnItems.filter(item => item.maxReturnQuantity > 0).length === 0 && (
+                    <tr>
+                      <td colSpan="5" style={{ padding: '2rem', textAlign: 'center', color: '#999' }}>
+                        No items available to return
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+            
+            <div style={{ 
+              display: 'flex', 
+              justifyContent: 'space-between', 
+              alignItems: 'center',
+              marginTop: '1.5rem',
+              paddingTop: '1.5rem',
+              borderTop: '2px solid #ddd'
+            }}>
+              <div>
+                <strong style={{ fontSize: '1.1em' }}>Total Return Amount: </strong>
+                <span style={{ color: '#27ae60', fontSize: '1.3em', fontWeight: 'bold' }}>
+                  ₹{returnItems.reduce((sum, item) => sum + ((item.price || 0) * (item.returnQuantity || 0)), 0).toFixed(2)}
+                </span>
+              </div>
+              <div style={{ display: 'flex', gap: '12px' }}>
+                <button
+                  className="cancel-due-btn"
+                  onClick={handleCancelReturn}
+                  style={{ padding: '10px 24px', fontSize: '1rem' }}
+                >
+                  Cancel
+                </button>
+                <button
+                  className="save-due-btn"
+                  onClick={handleProcessReturn}
+                  disabled={returnItems.filter(item => item.returnQuantity > 0).length === 0}
+                  style={{ padding: '10px 24px', fontSize: '1rem' }}
+                >
+                  Process Return
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

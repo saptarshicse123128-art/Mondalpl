@@ -322,6 +322,11 @@ function Analytics() {
     setTopProducts(topList);
   }, [bills, timeRange, selectedWeekStart, selectedWeekEnd, selectedMonth, selectedYear]);
 
+  // Prevent number input from changing value on scroll
+  const handleNumberInputWheel = (e) => {
+    e.target.blur();
+  };
+
   if (loading) {
     return <div className="analytics-container"><p className="loading">Loading analytics...</p></div>;
   }
@@ -395,6 +400,7 @@ function Analytics() {
               max={new Date().getFullYear() + 1}
               value={selectedYear}
               onChange={(e) => setSelectedYear(e.target.value)}
+              onWheel={handleNumberInputWheel}
               className="year-picker"
               placeholder="Year"
               title="Select year"
@@ -442,11 +448,11 @@ function Analytics() {
         </div>
 
         <div className="metric-card">
-          <div className="metric-icon">⚠️</div>
+          <div className="metric-icon">📊</div>
           <div className="metric-content">
-            <h3>Low Stock</h3>
-            <p className="metric-value">{lowStockProducts.filter(p => p.quantity > 0).length}</p>
-            <span className="metric-label">Items</span>
+            <h3>Avg. Sale Per Bill</h3>
+            <p className="metric-value">₹{billCount > 0 ? (totalSales / billCount).toFixed(2) : '0.00'}</p>
+            <span className="metric-label">{getPeriodLabel()}</span>
           </div>
         </div>
       </div>
@@ -455,10 +461,6 @@ function Analytics() {
       <div className="summary-section">
         <h3>📊 Quick Summary</h3>
         <div className="summary-grid">
-          <div className="summary-item">
-            <span className="summary-label">Avg. Sale Per Bill:</span>
-            <span className="summary-value">₹{billCount > 0 ? (totalSales / billCount).toFixed(2) : '0.00'}</span>
-          </div>
           <div className="summary-item">
             <span className="summary-label">Total Products:</span>
             <span className="summary-value">{allProducts.length}</span>
@@ -531,7 +533,7 @@ function Analytics() {
             <div className="low-stock-search-row">
               <input
                 type="text"
-                placeholder="Search low stock by name or category..."
+                placeholder="Search low stock by name, brand, or category..."
                 value={lowStockSearch}
                 onChange={(e) => setLowStockSearch(e.target.value)}
                 className="low-stock-search-input"
@@ -541,7 +543,7 @@ function Analytics() {
               <thead>
                 <tr>
                   <th>Product Name</th>
-                  <th>Category</th>
+                  <th>Brand</th>
                   <th>Current Stock</th>
                   <th>Price</th>
                   <th>Status</th>

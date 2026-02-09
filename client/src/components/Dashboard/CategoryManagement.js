@@ -29,10 +29,24 @@ function CategoryManagement() {
   }, []);
 
   const handleAddCategory = async () => {
-    if (!newCategory.trim()) return setMessage({ type: 'error', text: 'Enter category name' });
+    if (!newCategory.trim()) return setMessage({ type: 'error', text: 'Enter brand name' });
     try {
       await categoryService.addCategory(newCategory.trim());
       setNewCategory('');
+      setMessage({ type: 'success', text: 'Brand added' });
+      setTimeout(() => setMessage({ type: '', text: '' }), 2000);
+    } catch (err) {
+      console.error(err);
+      setMessage({ type: 'error', text: 'Failed to add brand' });
+    }
+  };
+
+  const handleAddSubcategory = async () => {
+    const name = newSubcategory.trim();
+    if (!selectedCategoryId || !name) return setMessage({ type: 'error', text: 'Select brand and enter category' });
+    try {
+      await categoryService.addSubcategory(selectedCategoryId, name);
+      setNewSubcategory('');
       setMessage({ type: 'success', text: 'Category added' });
       setTimeout(() => setMessage({ type: '', text: '' }), 2000);
     } catch (err) {
@@ -41,41 +55,27 @@ function CategoryManagement() {
     }
   };
 
-  const handleAddSubcategory = async () => {
-    const name = newSubcategory.trim();
-    if (!selectedCategoryId || !name) return setMessage({ type: 'error', text: 'Select category and enter subcategory' });
-    try {
-      await categoryService.addSubcategory(selectedCategoryId, name);
-      setNewSubcategory('');
-      setMessage({ type: 'success', text: 'Subcategory added' });
-      setTimeout(() => setMessage({ type: '', text: '' }), 2000);
-    } catch (err) {
-      console.error(err);
-      setMessage({ type: 'error', text: 'Failed to add subcategory' });
-    }
-  };
-
   const handleDeleteCategory = async (categoryId, name) => {
-    if (!window.confirm(`Delete category "${name}"? This will not remove category names from existing products.`)) return;
+    if (!window.confirm(`Delete brand "${name}"? This will not remove brand names from existing products.`)) return;
     try {
       await categoryService.deleteCategory(categoryId);
-      setMessage({ type: 'success', text: 'Category deleted' });
+      setMessage({ type: 'success', text: 'Brand deleted' });
       setTimeout(() => setMessage({ type: '', text: '' }), 2000);
     } catch (err) {
       console.error(err);
-      setMessage({ type: 'error', text: 'Failed to delete category' });
+      setMessage({ type: 'error', text: 'Failed to delete brand' });
     }
   };
 
   const handleRemoveSubcategory = async (categoryId, subName) => {
-    if (!window.confirm(`Remove subcategory "${subName}"?`)) return;
+    if (!window.confirm(`Remove category "${subName}"?`)) return;
     try {
       await categoryService.removeSubcategory(categoryId, subName);
-      setMessage({ type: 'success', text: 'Subcategory removed' });
+      setMessage({ type: 'success', text: 'Category removed' });
       setTimeout(() => setMessage({ type: '', text: '' }), 2000);
     } catch (err) {
       console.error(err);
-      setMessage({ type: 'error', text: 'Failed to remove subcategory' });
+      setMessage({ type: 'error', text: 'Failed to remove category' });
     }
   };
 
@@ -87,19 +87,19 @@ function CategoryManagement() {
   const handleSaveCategoryEdit = async () => {
     const name = editingCategoryName.trim();
     if (!editingCategoryId || !name) {
-      setMessage({ type: 'error', text: 'Category name cannot be empty' });
+      setMessage({ type: 'error', text: 'Brand name cannot be empty' });
       setTimeout(() => setMessage({ type: '', text: '' }), 2000);
       return;
     }
     try {
       await categoryService.updateCategoryName(editingCategoryId, name);
-      setMessage({ type: 'success', text: 'Category name updated' });
+      setMessage({ type: 'success', text: 'Brand name updated' });
       setTimeout(() => setMessage({ type: '', text: '' }), 2000);
       setEditingCategoryId('');
       setEditingCategoryName('');
     } catch (err) {
       console.error(err);
-      setMessage({ type: 'error', text: 'Failed to update category name' });
+      setMessage({ type: 'error', text: 'Failed to update brand name' });
     }
   };
 
@@ -120,18 +120,18 @@ function CategoryManagement() {
     if (!editingSub) return;
     const newName = (editingSub.name || '').trim();
     if (!newName) {
-      setMessage({ type: 'error', text: 'Subcategory name cannot be empty' });
+      setMessage({ type: 'error', text: 'Category name cannot be empty' });
       setTimeout(() => setMessage({ type: '', text: '' }), 2000);
       return;
     }
     try {
       await categoryService.renameSubcategory(editingSub.categoryId, editingSub.originalName, newName);
-      setMessage({ type: 'success', text: 'Subcategory name updated' });
+      setMessage({ type: 'success', text: 'Category name updated' });
       setTimeout(() => setMessage({ type: '', text: '' }), 2000);
       setEditingSub(null);
     } catch (err) {
       console.error(err);
-      setMessage({ type: 'error', text: 'Failed to update subcategory name' });
+      setMessage({ type: 'error', text: 'Failed to update category name' });
     }
   };
 
@@ -141,37 +141,37 @@ function CategoryManagement() {
 
   return (
     <div className="category-management">
-      <h2>Categories</h2>
+      <h2>Brands & Categories</h2>
 
       {message.text && <div className={`message ${message.type}`}>{message.text}</div>}
 
       <div className="form-row">
         <div className="form-group">
-          <label>New category</label>
-          <input value={newCategory} onChange={(e) => setNewCategory(e.target.value)} placeholder="Category name" />
-          <button className="submit-btn" type="button" onClick={handleAddCategory}>Add Category</button>
+          <label>New Brand</label>
+          <input value={newCategory} onChange={(e) => setNewCategory(e.target.value)} placeholder="Brand name" />
+          <button className="submit-btn" type="button" onClick={handleAddCategory}>Add Brand</button>
         </div>
 
         <div className="form-group">
-          <label>Add subcategory</label>
+          <label>Add Category</label>
           <select value={selectedCategoryId} onChange={(e) => setSelectedCategoryId(e.target.value)}>
-            <option value="">Select category</option>
+            <option value="">Select brand</option>
             {categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
           </select>
-          <input value={newSubcategory} onChange={(e) => setNewSubcategory(e.target.value)} placeholder="Subcategory name" />
-          <button className="submit-btn" type="button" onClick={handleAddSubcategory}>Add Subcategory</button>
+          <input value={newSubcategory} onChange={(e) => setNewSubcategory(e.target.value)} placeholder="Category name" />
+          <button className="submit-btn" type="button" onClick={handleAddSubcategory}>Add Category</button>
         </div>
       </div>
 
       <div className="categories-list">
-        <h3>Existing categories</h3>
+        <h3>Existing brands</h3>
         {categories.length === 0 ? (
-          <p className="muted">No categories yet.</p>
+          <p className="muted">No brands yet.</p>
         ) : (
           <div>
             <input
               className="search-input"
-              placeholder="Search categories..."
+              placeholder="Search brands..."
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               style={{ marginBottom: 12 }}
@@ -199,7 +199,7 @@ function CategoryManagement() {
                           <button type="button" className="small-btn" onClick={() => handleStartEditCategory(c)}>Edit</button>
                         </>
                       )}
-                      <small className="muted">{Array.isArray(c.subcategories) ? `${c.subcategories.length} sub` : '0 sub'}</small>
+                      <small className="muted">{Array.isArray(c.subcategories) ? `${c.subcategories.length} cat` : '0 cat'}</small>
                       <button type="button" className="small-btn danger" onClick={() => handleDeleteCategory(c.id, c.name)}>Delete</button>
                     </div>
                     {Array.isArray(c.subcategories) && c.subcategories.length > 0 && (
