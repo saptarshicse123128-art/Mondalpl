@@ -23,7 +23,10 @@ function StockManagement() {
     quantity: '',
     category: '',
     subcategory: '',
-    hsnCode: ''
+    hsnCode: '',
+    catalogueNumber: '',
+    lowStockQuantity: '',
+    unit: ''
   });
   const [loading, setLoading] = useState(false);
   const [initialLoading, setInitialLoading] = useState(true);
@@ -148,7 +151,8 @@ function StockManagement() {
             purchasePrice: v.purchasePrice ? parseFloat(v.purchasePrice) : null,
             quantity: parseInt(v.quantity),
             lowStockQuantity: v.lowStockQuantity ? parseInt(v.lowStockQuantity) : null,
-            unit: v.unit?.trim() || ''
+            unit: v.unit?.trim() || '',
+            catalogueNumber: v.catalogueNumber?.trim() || ''
           }));
         
         if (validVariations.length === 0) {
@@ -166,6 +170,9 @@ function StockManagement() {
         // Single product without variations
         productData.price = parseFloat(formData.price);
         productData.quantity = parseInt(formData.quantity);
+        productData.catalogueNumber = formData.catalogueNumber?.trim() || '';
+        productData.lowStockQuantity = formData.lowStockQuantity ? parseInt(formData.lowStockQuantity) : null;
+        productData.unit = formData.unit?.trim() || '';
       }
 
       await addDoc(collection(db, 'products'), productData);
@@ -177,7 +184,10 @@ function StockManagement() {
         quantity: '',
         category: '',
         subcategory: '',
-        hsnCode: ''
+        hsnCode: '',
+        catalogueNumber: '',
+        lowStockQuantity: '',
+        unit: ''
       });
       setSelectedCategoryId('');
       setVariationEnabled(true);
@@ -216,7 +226,10 @@ function StockManagement() {
       quantity: product.quantity?.toString() || '',
       category: product.category || '',
       subcategory: product.subcategory || '',
-      hsnCode: product.hsnCode || ''
+      hsnCode: product.hsnCode || '',
+      catalogueNumber: product.catalogueNumber || '',
+      lowStockQuantity: product.lowStockQuantity?.toString() || '',
+      unit: product.unit || ''
     });
     // Load variations if they exist
     if (product.variations && Array.isArray(product.variations) && product.variations.length > 0) {
@@ -227,7 +240,8 @@ function StockManagement() {
         purchasePrice: v.purchasePrice?.toString() || '',
         quantity: v.quantity?.toString() || '',
         lowStockQuantity: v.lowStockQuantity?.toString() || '',
-        unit: v.unit || ''
+        unit: v.unit || '',
+        catalogueNumber: v.catalogueNumber || ''
       })));
     } else {
       setVariationEnabled(false);
@@ -283,7 +297,8 @@ function StockManagement() {
             purchasePrice: v.purchasePrice ? parseFloat(v.purchasePrice) : null,
             quantity: parseInt(v.quantity),
             lowStockQuantity: v.lowStockQuantity ? parseInt(v.lowStockQuantity) : null,
-            unit: v.unit?.trim() || ''
+            unit: v.unit?.trim() || '',
+            catalogueNumber: v.catalogueNumber?.trim() || ''
           }));
         
         if (validVariations.length === 0) {
@@ -301,6 +316,9 @@ function StockManagement() {
         // Single product without variations
         updateData.price = parseFloat(formData.price);
         updateData.quantity = parseInt(formData.quantity);
+        updateData.catalogueNumber = formData.catalogueNumber?.trim() || '';
+        updateData.lowStockQuantity = formData.lowStockQuantity ? parseInt(formData.lowStockQuantity) : null;
+        updateData.unit = formData.unit?.trim() || '';
         // Remove variations if switching from variations to single product
         updateData.variations = null;
       }
@@ -314,7 +332,10 @@ function StockManagement() {
         quantity: '',
         category: '',
         subcategory: '',
-        hsnCode: ''
+        hsnCode: '',
+        catalogueNumber: '',
+        lowStockQuantity: '',
+        unit: ''
       });
       setSelectedCategoryId('');
       setVariationEnabled(true);
@@ -337,7 +358,10 @@ function StockManagement() {
       quantity: '',
       category: '',
       subcategory: '',
-      hsnCode: ''
+      hsnCode: '',
+      catalogueNumber: '',
+      lowStockQuantity: '',
+      unit: ''
     });
     setShowAddForm(false);
     setEditingProduct(null);
@@ -348,7 +372,7 @@ function StockManagement() {
 
   // Variation management helpers
   const handleAddVariation = () => {
-    setVariations([...variations, { size: '', price: '', purchasePrice: '', quantity: '', lowStockQuantity: '', unit: '' }]);
+    setVariations([...variations, { size: '', price: '', purchasePrice: '', quantity: '', lowStockQuantity: '', unit: '', catalogueNumber: '' }]);
   };
 
   const handleRemoveVariation = (index) => {
@@ -569,6 +593,18 @@ function StockManagement() {
                   placeholder="Enter HSN code"
                 />
               </div>
+              {!variationEnabled && (
+                <div className="form-group">
+                  <label>Catalogue Number</label>
+                  <input
+                    type="text"
+                    name="catalogueNumber"
+                    value={formData.catalogueNumber}
+                    onChange={handleInputChange}
+                    placeholder="Enter catalogue number"
+                  />
+                </div>
+              )}
             </div>
             <div className="form-row">
               <div className="form-group" style={{ width: '100%' }}>
@@ -581,7 +617,7 @@ function StockManagement() {
                       if (!e.target.checked) {
                         setVariations([]);
                       } else if (variations.length === 0) {
-                        setVariations([{ size: '', price: '', purchasePrice: '', quantity: '', lowStockQuantity: '', unit: '' }]);
+                        setVariations([{ size: '', price: '', purchasePrice: '', quantity: '', lowStockQuantity: '', unit: '', catalogueNumber: '' }]);
                       }
                     }}
                     style={{ width: 'auto', margin: 0 }}
@@ -592,46 +628,72 @@ function StockManagement() {
             </div>
             
             {!variationEnabled ? (
-              <div className="form-row">
-                <div className="form-group">
-                  <label>Price *</label>
-                  <input
-                    type="number"
-                    name="price"
-                    value={formData.price}
-                    onChange={handleInputChange}
-                    onWheel={handleNumberInputWheel}
-                    step="0.01"
-                    min="0"
-                    required={!variationEnabled}
-                  />
+              <>
+                <div className="form-row">
+                  <div className="form-group">
+                    <label>Price *</label>
+                    <input
+                      type="number"
+                      name="price"
+                      value={formData.price}
+                      onChange={handleInputChange}
+                      onWheel={handleNumberInputWheel}
+                      step="0.01"
+                      min="0"
+                      required={!variationEnabled}
+                    />
+                  </div>
+                  <div className="form-group">
+                    <label>Purchase Price</label>
+                    <input
+                      type="number"
+                      name="purchasePrice"
+                      value={formData.purchasePrice}
+                      onChange={handleInputChange}
+                      onWheel={handleNumberInputWheel}
+                      step="0.01"
+                      min="0"
+                      placeholder="Cost price"
+                    />
+                  </div>
+                  <div className="form-group">
+                    <label>Quantity *</label>
+                    <input
+                      type="number"
+                      name="quantity"
+                      value={formData.quantity}
+                      onChange={handleInputChange}
+                      onWheel={handleNumberInputWheel}
+                      min="0"
+                      required={!variationEnabled}
+                    />
+                  </div>
                 </div>
-                <div className="form-group">
-                  <label>Purchase Price</label>
-                  <input
-                    type="number"
-                    name="purchasePrice"
-                    value={formData.purchasePrice}
-                    onChange={handleInputChange}
-                    onWheel={handleNumberInputWheel}
-                    step="0.01"
-                    min="0"
-                    placeholder="Cost price"
-                  />
+                <div className="form-row">
+                  <div className="form-group">
+                    <label>Low Stock Quantity</label>
+                    <input
+                      type="number"
+                      name="lowStockQuantity"
+                      value={formData.lowStockQuantity}
+                      onChange={handleInputChange}
+                      onWheel={handleNumberInputWheel}
+                      min="0"
+                      placeholder="Alert threshold"
+                    />
+                  </div>
+                  <div className="form-group">
+                    <label>Unit</label>
+                    <input
+                      type="text"
+                      name="unit"
+                      value={formData.unit}
+                      onChange={handleInputChange}
+                      placeholder="e.g., kg, pcs, liters"
+                    />
+                  </div>
                 </div>
-                <div className="form-group">
-                  <label>Quantity *</label>
-                  <input
-                    type="number"
-                    name="quantity"
-                    value={formData.quantity}
-                    onChange={handleInputChange}
-                    onWheel={handleNumberInputWheel}
-                    min="0"
-                    required={!variationEnabled}
-                  />
-                </div>
-              </div>
+              </>
             ) : (
               <div className="variations-section" style={{ marginTop: '15px', marginBottom: '15px' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
@@ -738,6 +800,15 @@ function StockManagement() {
                               value={variation.unit || ''}
                               onChange={(e) => handleVariationChange(index, 'unit', e.target.value)}
                               placeholder="e.g., kg, pcs, liters"
+                            />
+                          </div>
+                          <div className="form-group">
+                            <label>Catalogue Number</label>
+                            <input
+                              type="text"
+                              value={variation.catalogueNumber || ''}
+                              onChange={(e) => handleVariationChange(index, 'catalogueNumber', e.target.value)}
+                              placeholder="Enter catalogue number"
                             />
                           </div>
                         </div>
