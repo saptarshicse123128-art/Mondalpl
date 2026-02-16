@@ -19,7 +19,7 @@ function BillGeneration() {
   });
   const [selectedProduct, setSelectedProduct] = useState('');
   const [selectedVariation, setSelectedVariation] = useState('');
-  const [productQuantity, setProductQuantity] = useState(1);
+  const [productQuantity, setProductQuantity] = useState('');
   const [productSearchQuery, setProductSearchQuery] = useState('');
   const [showProductDropdown, setShowProductDropdown] = useState(false);
   const [bills, setBills] = useState([]);
@@ -163,8 +163,9 @@ function BillGeneration() {
       alert('Please select a product');
       return;
     }
-    if (productQuantity <= 0) {
-      alert('Quantity must be greater than 0');
+    const qty = typeof productQuantity === 'string' && productQuantity.trim() === '' ? 0 : parseInt(productQuantity) || 0;
+    if (qty <= 0) {
+      alert('Please enter a quantity greater than 0');
       return;
     }
 
@@ -192,8 +193,7 @@ function BillGeneration() {
       availableQuantity = variation.quantity || 0;
       productPrice = variation.price || product.price;
     }
-
-    if (availableQuantity < productQuantity) {
+    if (availableQuantity < qty) {
       alert(`Only ${availableQuantity} items available in stock for this size`);
       return;
     }
@@ -208,7 +208,7 @@ function BillGeneration() {
       return itemId === cartItemId;
     });
 
-    const newCartQuantity = existingItem ? existingItem.quantity + productQuantity : productQuantity;
+    const newCartQuantity = existingItem ? existingItem.quantity + qty : qty;
     
     if (availableQuantity < newCartQuantity) {
       alert(`Only ${availableQuantity} items available in stock for this size`);
@@ -223,7 +223,7 @@ function BillGeneration() {
         // Update the specific variation's quantity
         const updatedVariations = product.variations.map(v => {
           if (v.size === selectedVariation) {
-            return { ...v, quantity: (v.quantity || 0) - productQuantity };
+            return { ...v, quantity: (v.quantity || 0) - qty };
           }
           return v;
         });
@@ -237,7 +237,7 @@ function BillGeneration() {
         });
       } else {
         // Update regular product quantity
-        const newStockQuantity = product.quantity - productQuantity;
+        const newStockQuantity = product.quantity - qty;
         await updateDoc(productRef, {
           quantity: newStockQuantity,
           updatedAt: serverTimestamp()
@@ -263,7 +263,7 @@ function BillGeneration() {
 
       setSelectedProduct('');
       setSelectedVariation('');
-      setProductQuantity(1);
+      setProductQuantity('');
       setProductSearchQuery('');
     } catch (error) {
       console.error('Error updating product quantity:', error);
@@ -2298,7 +2298,7 @@ function BillGeneration() {
                             value={selectedVariation}
                             onChange={(e) => {
                               setSelectedVariation(e.target.value);
-                              setProductQuantity(1); // Reset quantity when size changes
+                              setProductQuantity(''); // Reset quantity when size changes
                             }}
                             className="product-search-input"
                             required
@@ -2336,8 +2336,9 @@ function BillGeneration() {
                         }
                       }}
                       onBlur={(e) => {
+                        // Keep it blank if empty, don't set default value
                         if (e.target.value === '' || parseInt(e.target.value) < 1) {
-                          setProductQuantity(1);
+                          setProductQuantity('');
                         }
                       }}
                       className="quantity-input"

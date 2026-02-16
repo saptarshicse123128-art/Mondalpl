@@ -919,8 +919,8 @@ function StockManagement() {
               <tr>
                 <th>Name</th>
                 <th>Brand</th>
-                <th>Price</th>
                 <th>Purchase Price</th>
+                <th>Price</th>
                 <th>Quantity</th>
                 <th>Actions</th>
               </tr>
@@ -964,18 +964,18 @@ function StockManagement() {
                         </div>
                       </td>
                       <td data-label="Brand">{product.category}{product.subcategory ? ' / ' + product.subcategory : ''}</td>
-                      <td data-label="Price">
-                        {hasVariations ? (
-                          <span style={{ color: '#999', fontStyle: 'italic' }}>See variations</span>
-                        ) : (
-                          <>₹{product.price?.toFixed(2) || '0.00'}</>
-                        )}
-                      </td>
                       <td data-label="Purchase Price">
                         {hasVariations ? (
                           <span style={{ color: '#999', fontStyle: 'italic' }}>See variations</span>
                         ) : (
                           <>₹{product.purchasePrice?.toFixed(2) || '-'}</>
+                        )}
+                      </td>
+                      <td data-label="Price">
+                        {hasVariations ? (
+                          <span style={{ color: '#999', fontStyle: 'italic' }}>See variations</span>
+                        ) : (
+                          <>₹{product.price?.toFixed(2) || '0.00'}</>
                         )}
                       </td>
                       <td data-label="Quantity">
@@ -1013,8 +1013,8 @@ function StockManagement() {
                               <thead>
                                 <tr style={{ backgroundColor: '#f0f0f0' }}>
                                   <th style={{ padding: '8px', textAlign: 'left', border: '1px solid #ddd', fontSize: '13px' }}>Size</th>
-                                  <th style={{ padding: '8px', textAlign: 'right', border: '1px solid #ddd', fontSize: '13px' }}>Price</th>
                                   <th style={{ padding: '8px', textAlign: 'right', border: '1px solid #ddd', fontSize: '13px' }}>Purchase Price</th>
+                                  <th style={{ padding: '8px', textAlign: 'right', border: '1px solid #ddd', fontSize: '13px' }}>Price</th>
                                   <th style={{ padding: '8px', textAlign: 'right', border: '1px solid #ddd', fontSize: '13px' }}>Quantity</th>
                                 </tr>
                               </thead>
@@ -1022,8 +1022,8 @@ function StockManagement() {
                                 {product.variations.map((variation, index) => (
                                   <tr key={index}>
                                     <td style={{ padding: '8px', border: '1px solid #ddd', fontSize: '13px' }}>{variation.size || '-'}</td>
-                                    <td style={{ padding: '8px', textAlign: 'right', border: '1px solid #ddd', fontSize: '13px' }}>₹{variation.price?.toFixed(2) || '0.00'}</td>
                                     <td style={{ padding: '8px', textAlign: 'right', border: '1px solid #ddd', fontSize: '13px' }}>₹{variation.purchasePrice?.toFixed(2) || '-'}</td>
+                                    <td style={{ padding: '8px', textAlign: 'right', border: '1px solid #ddd', fontSize: '13px' }}>₹{variation.price?.toFixed(2) || '0.00'}</td>
                                     <td style={{ padding: '8px', textAlign: 'right', border: '1px solid #ddd', fontSize: '13px' }}>{variation.quantity || 0}</td>
                                   </tr>
                                 ))}
