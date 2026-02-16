@@ -103,8 +103,6 @@ function Analytics() {
   const [selectedMonth, setSelectedMonth] = useState(new Date().toISOString().slice(0, 7)); // YYYY-MM format
   const [selectedYear, setSelectedYear] = useState(new Date().getFullYear().toString());
   const [bills, setBills] = useState([]);
-  const [lowStockSearch, setLowStockSearch] = useState('');
-  const [showAllLowStock, setShowAllLowStock] = useState(false);
   const [allProducts, setAllProducts] = useState([]);
 
   // Fetch analytics data
