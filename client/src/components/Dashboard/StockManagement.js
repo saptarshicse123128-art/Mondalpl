@@ -920,6 +920,7 @@ function StockManagement() {
                 <th>Name</th>
                 <th>Brand</th>
                 <th>Price</th>
+                <th>Purchase Price</th>
                 <th>Quantity</th>
                 <th>Actions</th>
               </tr>
@@ -970,6 +971,13 @@ function StockManagement() {
                           <>₹{product.price?.toFixed(2) || '0.00'}</>
                         )}
                       </td>
+                      <td data-label="Purchase Price">
+                        {hasVariations ? (
+                          <span style={{ color: '#999', fontStyle: 'italic' }}>See variations</span>
+                        ) : (
+                          <>₹{product.purchasePrice?.toFixed(2) || '-'}</>
+                        )}
+                      </td>
                       <td data-label="Quantity">
                         {hasVariations ? (
                           <span style={{ color: '#999', fontStyle: 'italic' }}>See variations</span>
@@ -996,7 +1004,7 @@ function StockManagement() {
                     </tr>
                     {hasVariations && isVariationOpen && (
                       <tr>
-                        <td colSpan="5" style={{ padding: '0', backgroundColor: '#f5f5f5' }}>
+                        <td colSpan="6" style={{ padding: '0', backgroundColor: '#f5f5f5' }}>
                           <div style={{ padding: '15px', marginLeft: '30px' }}>
                             <h4 style={{ margin: '0 0 10px 0', color: '#333', fontSize: '14px', fontWeight: 'bold' }}>
                               Product Variations:
@@ -1006,6 +1014,7 @@ function StockManagement() {
                                 <tr style={{ backgroundColor: '#f0f0f0' }}>
                                   <th style={{ padding: '8px', textAlign: 'left', border: '1px solid #ddd', fontSize: '13px' }}>Size</th>
                                   <th style={{ padding: '8px', textAlign: 'right', border: '1px solid #ddd', fontSize: '13px' }}>Price</th>
+                                  <th style={{ padding: '8px', textAlign: 'right', border: '1px solid #ddd', fontSize: '13px' }}>Purchase Price</th>
                                   <th style={{ padding: '8px', textAlign: 'right', border: '1px solid #ddd', fontSize: '13px' }}>Quantity</th>
                                 </tr>
                               </thead>
@@ -1014,6 +1023,7 @@ function StockManagement() {
                                   <tr key={index}>
                                     <td style={{ padding: '8px', border: '1px solid #ddd', fontSize: '13px' }}>{variation.size || '-'}</td>
                                     <td style={{ padding: '8px', textAlign: 'right', border: '1px solid #ddd', fontSize: '13px' }}>₹{variation.price?.toFixed(2) || '0.00'}</td>
+                                    <td style={{ padding: '8px', textAlign: 'right', border: '1px solid #ddd', fontSize: '13px' }}>₹{variation.purchasePrice?.toFixed(2) || '-'}</td>
                                     <td style={{ padding: '8px', textAlign: 'right', border: '1px solid #ddd', fontSize: '13px' }}>{variation.quantity || 0}</td>
                                   </tr>
                                 ))}
