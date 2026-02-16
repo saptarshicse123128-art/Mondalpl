@@ -1,9 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import jsPDF from 'jspdf';
 import 'jspdf-autotable';
-import { collection, addDoc, onSnapshot, query, orderBy, serverTimestamp } from 'firebase/firestore';
+import { collection, addDoc, onSnapshot, query, orderBy, serverTimestamp, getDocs } from 'firebase/firestore';
 import { db } from '../../firebase';
-import { searchUtils } from '../../utils/firebaseUtils';
 import './Analytics.css';
 
 function PurchaseOrder() {
@@ -23,13 +22,96 @@ function PurchaseOrder() {
 
   const [purchaseOrders, setPurchaseOrders] = useState([]);
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
+  const [openLowVariationProductId, setOpenLowVariationProductId] = useState(null);
 
   useEffect(() => {
     const fetchLowStock = async () => {
       try {
         setLoading(true);
-        const lowStock = await searchUtils.getLowStockProducts(200);
-        setLowStockProducts(lowStock);
+
+        const snapshot = await getDocs(collection(db, 'products'));
+        const lowList = [];
+
+        snapshot.forEach((docSnap) => {
+          const data = docSnap.data();
+          const baseProduct = {
+            id: docSnap.id,
+            name: data.name || '',
+            category: data.category || '',
+            catalogueNumber: data.catalogueNumber || '',
+            price: data.price || 0
+          };
+
+          const totalQuantity = data.quantity || 0;
+          const productLowThreshold = data.lowStockQuantity ? parseInt(data.lowStockQuantity, 10) : null;
+
+          const hasVariations = Array.isArray(data.variations) && data.variations.length > 0;
+
+          // Structure we'll push if this product has any low/out entries
+          const lowEntry = {
+            ...baseProduct,
+            base: null, // for non-variation product low/out
+            variations: [] // only low/out variations
+          };
+
+          if (hasVariations) {
+            data.variations.forEach((variation) => {
+              const vQty = variation.quantity || 0;
+              const vLowRaw = variation.lowStockQuantity;
+              const vLow =
+                vLowRaw !== undefined && vLowRaw !== null && vLowRaw !== ''
+                  ? parseInt(vLowRaw, 10)
+                  : null;
+
+              const isOut = vQty === 0;
+              const isLow = !isOut && vLow !== null && !Number.isNaN(vLow) && vQty <= vLow;
+
+              if (isOut || isLow) {
+                lowEntry.variations.push({
+                  id: `${docSnap.id}_${variation.size || ''}`,
+                  size: variation.size || '',
+                  quantity: vQty,
+                  unit: variation.unit || '',
+                  catalogueNumber: variation.catalogueNumber || data.catalogueNumber || '',
+                  price: variation.price || data.price || 0,
+                  status: isOut ? 'out' : 'low'
+                });
+              }
+            });
+
+            if (lowEntry.variations.length > 0) {
+              lowList.push(lowEntry);
+            }
+          } else {
+            const isOut = totalQuantity === 0;
+            const thresholdValid =
+              productLowThreshold !== null && !Number.isNaN(productLowThreshold);
+            const isLow =
+              !isOut && thresholdValid && totalQuantity <= productLowThreshold;
+
+            if (isOut || isLow) {
+              lowEntry.base = {
+                quantity: totalQuantity,
+                unit: data.unit || '',
+                price: data.price || 0,
+                status: isOut ? 'out' : 'low'
+              };
+              lowList.push(lowEntry);
+            }
+          }
+        });
+
+        // Sort: out-of-stock first, then low stock; then by name
+        lowList.sort((a, b) => {
+          const aStatus = (a.base?.status || a.variations[0]?.status || 'low');
+          const bStatus = (b.base?.status || b.variations[0]?.status || 'low');
+          if (aStatus !== bStatus) {
+            return aStatus === 'out' ? -1 : 1;
+          }
+          return (a.name || '').localeCompare(b.name || '');
+        });
+
+        setLowStockProducts(lowList);
       } catch (error) {
         console.error('Error fetching low stock products for purchase order:', error);
       } finally {
@@ -281,7 +363,7 @@ function PurchaseOrder() {
       </div>
 
       <div className="section">
-        <h3>⚠️ Low Stock Items (≤20 units)</h3>
+        <h3>⚠️ Low Stock Items</h3>
         {lowStockProducts.length > 0 ? (
           <div className="products-table">
             <div className="low-stock-search-row">
@@ -296,76 +378,177 @@ function PurchaseOrder() {
             <table>
               <thead>
                 <tr>
-                  <th>Product Name</th>
+                  <th>Product</th>
                   <th>Brand</th>
                   <th>Current Stock</th>
+                  <th>Unit</th>
                   <th>Price</th>
                   <th>Status</th>
                 </tr>
               </thead>
               <tbody>
                 {(() => {
-                  const filtered = lowStockProducts.filter((product) => {
-                    if (!lowStockSearch.trim()) return true;
-                    const q = lowStockSearch.toLowerCase().trim();
-                    return (
-                      (product.name || '').toLowerCase().includes(q) ||
-                      (product.category || '').toLowerCase().includes(q)
-                    );
-                  });
+                  const filtered = lowStockProducts;
 
-                  const visible = showAllLowStock ? filtered : filtered.slice(0, 20);
-
-                  if (visible.length === 0) {
+                  if (filtered.length === 0) {
                     return (
                       <tr>
-                        <td colSpan="5" className="no-data">
-                          No low stock items match your search.
+                        <td colSpan="6" className="no-data">
+                          No low stock items based on configured thresholds.
                         </td>
                       </tr>
                     );
                   }
 
-                  return visible.map((product) => (
-                    <tr
-                      key={product.id}
-                      className={`status-${product.quantity === 0 ? 'critical' : 'warning'}`}
-                    >
-                      <td className="product-name">{product.name}</td>
-                      <td>{product.category}</td>
-                      <td className="stock-quantity">
-                        <span
-                          className={`badge ${
-                            product.quantity === 0 ? 'badge-danger' : 'badge-warning'
-                          }`}
-                        >
-                          {product.quantity}
-                        </span>
-                      </td>
-                      <td className="price">₹{product.price?.toFixed(2)}</td>
-                      <td className="status-cell">
-                        {product.quantity === 0 ? (
-                          <span className="status-badge danger">OUT OF STOCK</span>
-                        ) : (
-                          <span className="status-badge warning">LOW STOCK</span>
-                        )}
-                      </td>
-                    </tr>
-                  ));
+                  return filtered.flatMap((product) => {
+                    const hasVariations = product.variations && product.variations.length > 0;
+                    const isOpen = openLowVariationProductId === product.id;
+
+                    const status =
+                      product.base?.status ||
+                      product.variations?.[0]?.status ||
+                      'low';
+                    const quantity =
+                      product.base?.quantity ?? product.variations?.[0]?.quantity ?? 0;
+                    const unit = product.base?.unit ?? product.variations?.[0]?.unit ?? '';
+                    const price =
+                      product.base?.price ?? product.variations?.[0]?.price ?? product.price ?? 0;
+
+                    const mainRow = (
+                      <tr
+                        key={product.id}
+                        className={`status-${status === 'out' ? 'critical' : 'warning'}`}
+                      >
+                        <td className="product-name" style={{ position: 'relative' }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                            {hasVariations && (
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setOpenLowVariationProductId(isOpen ? null : product.id)
+                                }
+                                style={{
+                                  background: 'none',
+                                  border: 'none',
+                                  cursor: 'pointer',
+                                  padding: '4px',
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  fontSize: '16px',
+                                  color: '#667eea',
+                                  transition: 'transform 0.2s'
+                                }}
+                                title={isOpen ? 'Hide variations' : 'Show variations'}
+                              >
+                                <span
+                                  style={{
+                                    transform: isOpen ? 'rotate(90deg)' : 'rotate(0deg)',
+                                    transition: 'transform 0.2s'
+                                  }}
+                                >
+                                  ▶
+                                </span>
+                              </button>
+                            )}
+                            <span>{product.name}</span>
+                          </div>
+                        </td>
+                        <td>{product.category}</td>
+                        <td className="stock-quantity">
+                          {product.base ? (
+                            <span
+                              className={`badge ${
+                                product.base.status === 'out' ? 'badge-danger' : 'badge-warning'
+                              }`}
+                            >
+                              {product.base.quantity}
+                            </span>
+                          ) : (
+                            <span className="badge badge-warning">See variations</span>
+                          )}
+                        </td>
+                        <td>{unit || '-'}</td>
+                        <td className="price">₹{(price || 0).toFixed(2)}</td>
+                        <td className="status-cell">
+                          {product.base ? (
+                            product.base.status === 'out' ? (
+                              <span className="status-badge danger">OUT OF STOCK</span>
+                            ) : (
+                              <span className="status-badge warning">LOW STOCK</span>
+                            )
+                          ) : (
+                            <span className="status-badge warning">LOW STOCK VARIANTS</span>
+                          )}
+                        </td>
+                      </tr>
+                    );
+
+                    const variationRow =
+                      hasVariations && isOpen ? (
+                        <tr key={`${product.id}_vars`}>
+                          <td colSpan="6">
+                            <table
+                              style={{
+                                width: '100%',
+                                borderCollapse: 'collapse',
+                                marginTop: '6px',
+                                backgroundColor: '#fafafa'
+                              }}
+                            >
+                              <thead>
+                                <tr>
+                                  <th style={{ padding: '6px', border: '1px solid #ddd' }}>
+                                    Size
+                                  </th>
+                                  <th style={{ padding: '6px', border: '1px solid #ddd' }}>
+                                    Quantity
+                                  </th>
+                                  <th style={{ padding: '6px', border: '1px solid #ddd' }}>
+                                    Unit
+                                  </th>
+                                  <th style={{ padding: '6px', border: '1px solid #ddd' }}>
+                                    Price
+                                  </th>
+                                  <th style={{ padding: '6px', border: '1px solid #ddd' }}>
+                                    Status
+                                  </th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {product.variations.map((v) => (
+                                  <tr key={v.id}>
+                                    <td style={{ padding: '6px', border: '1px solid #ddd' }}>
+                                      {v.size || '-'}
+                                    </td>
+                                    <td style={{ padding: '6px', border: '1px solid #ddd' }}>
+                                      {v.quantity}
+                                    </td>
+                                    <td style={{ padding: '6px', border: '1px solid #ddd' }}>
+                                      {v.unit || '-'}
+                                    </td>
+                                    <td style={{ padding: '6px', border: '1px solid #ddd' }}>
+                                      ₹{(v.price || 0).toFixed(2)}
+                                    </td>
+                                    <td style={{ padding: '6px', border: '1px solid #ddd' }}>
+                                      {v.status === 'out' ? (
+                                        <span className="status-badge danger">OUT OF STOCK</span>
+                                      ) : (
+                                        <span className="status-badge warning">LOW STOCK</span>
+                                      )}
+                                    </td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </td>
+                        </tr>
+                      ) : null;
+
+                    return variationRow ? [mainRow, variationRow] : [mainRow];
+                  });
                 })()}
               </tbody>
             </table>
-            {lowStockProducts.length > 20 && (
-              <div className="low-stock-more-row">
-                <button
-                  type="button"
-                  className="low-stock-more-btn"
-                  onClick={() => setShowAllLowStock((prev) => !prev)}
-                >
-                  {showAllLowStock ? 'Show Less' : 'See More'}
-                </button>
-              </div>
-            )}
           </div>
         ) : (
           <p className="no-data">All products have sufficient stock! ✅</p>
