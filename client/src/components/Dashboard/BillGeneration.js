@@ -34,6 +34,8 @@ function BillGeneration() {
     price: ''
   });
   const [editingCustomItem, setEditingCustomItem] = useState(null);
+  const [editingQuantityItemId, setEditingQuantityItemId] = useState(null);
+  const [editingQuantityValue, setEditingQuantityValue] = useState('');
   const [editingDueBillId, setEditingDueBillId] = useState(null);
   const [editingDueAmount, setEditingDueAmount] = useState('');
   const [currentDueAmount, setCurrentDueAmount] = useState(0);
@@ -2382,6 +2384,7 @@ function BillGeneration() {
                     <tbody>
                       {cart.map((item, index) => {
                         const isEditingCustom = editingCustomItem && editingCustomItem.id === item.id && item.isCustomProduct;
+                        const isEditingQuantity = editingQuantityItemId === item.id && !item.isCustomProduct;
                         return (
                         <tr key={item.id}>
                             <td data-label="SL No.">{index + 1}</td>
@@ -2442,18 +2445,18 @@ function BillGeneration() {
                                     fontSize: '1rem'
                                   }}
                                 />
-                              ) : (
+                              ) : isEditingQuantity ? (
                             <input
                               type="number"
                               min="1"
-                              value={item.quantity}
-                              onWheel={handleNumberInputWheel}
+                                  value={editingQuantityValue}
                               onChange={(e) => {
-                                const newQty = parseInt(e.target.value) || 1;
-                                if (newQty > 0) {
-                                  updateCartQuantity(item.id, newQty);
-                                }
-                              }}
+                                    const value = e.target.value;
+                                    if (value === '' || parseInt(value) >= 1) {
+                                      setEditingQuantityValue(value);
+                                    }
+                                  }}
+                                  onWheel={handleNumberInputWheel}
                               className="quantity-input-edit"
                               style={{
                                 width: '80px',
@@ -2464,6 +2467,8 @@ function BillGeneration() {
                                 fontSize: '1rem'
                               }}
                             />
+                              ) : (
+                                <span>{item.quantity}</span>
                               )}
                           </td>
                           <td data-label="Subtotal">₹{(item.price * item.quantity).toFixed(2)}</td>
@@ -2528,13 +2533,56 @@ function BillGeneration() {
                             </button>
                                   </>
                                 )
+                              ) : isEditingQuantity ? (
+                                <>
+                                  <button
+                                    className="add-product-btn"
+                                    type="button"
+                                    onClick={() => {
+                                      const newQty = parseInt(editingQuantityValue, 10);
+                                      if (isNaN(newQty) || newQty <= 0) {
+                                        alert('Quantity must be greater than 0');
+                                        return;
+                                      }
+                                      updateCartQuantity(item.id, newQty);
+                                      setEditingQuantityItemId(null);
+                                      setEditingQuantityValue('');
+                                    }}
+                                    style={{ marginRight: '0.5rem' }}
+                                  >
+                                    Save
+                                  </button>
+                                  <button
+                                    className="remove-btn"
+                                    type="button"
+                                    onClick={() => {
+                                      setEditingQuantityItemId(null);
+                                      setEditingQuantityValue('');
+                                    }}
+                                  >
+                                    Cancel
+                                  </button>
+                                </>
                               ) : (
+                                <>
+                                  <button
+                                    className="add-product-btn"
+                                    type="button"
+                                    onClick={() => {
+                                      setEditingQuantityItemId(item.id);
+                                      setEditingQuantityValue(item.quantity.toString());
+                                    }}
+                                    style={{ marginRight: '0.5rem' }}
+                                  >
+                                    Edit
+                                  </button>
                                 <button
                                   className="remove-btn"
                                   onClick={() => removeFromCart(item.id)}
                                 >
                                   Remove
                                 </button>
+                                </>
                               )}
                           </td>
                         </tr>
@@ -2550,8 +2598,8 @@ function BillGeneration() {
               <h3>Bill Summary</h3>
               <div className="bill-summary">
                 <div className="summary-row">
-                  <span>Subtotal:</span>
-                  <span>₹{calculateSubtotal().toFixed(2)}</span>
+                  <span><strong>Subtotal:</strong></span>
+                  <span><strong>₹{calculateSubtotal().toFixed(2)}</strong></span>
                 </div>
                 <div className="form-group discount-field">
                   <label>Discount (₹)</label>

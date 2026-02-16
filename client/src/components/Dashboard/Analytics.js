@@ -91,9 +91,10 @@ function Analytics() {
   const [lowStockProducts, setLowStockProducts] = useState([]);
   const [inventoryValue, setInventoryValue] = useState(0);
   const [totalDue, setTotalDue] = useState(0);
+  const [profitLoss, setProfitLoss] = useState(0);
   const [salesData, setSalesData] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [timeRange, setTimeRange] = useState('weekly'); // weekly, monthly, yearly
+  const [timeRange, setTimeRange] = useState('today'); // today, weekly, monthly, yearly
   const [selectedWeekStart, setSelectedWeekStart] = useState(() => {
     const today = new Date();
     today.setDate(today.getDate() - 6); // Default to 7 days ago
@@ -262,9 +263,20 @@ function Analytics() {
     return { start, end };
   };
 
+  // Helper function to get today's date range
+  const getTodayRange = () => {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const end = new Date(today);
+    end.setHours(23, 59, 59, 999);
+    return { start: today, end };
+  };
+
   // Helper function to format period label
   const getPeriodLabel = () => {
-    if (timeRange === 'weekly') {
+    if (timeRange === 'today') {
+      return 'Today';
+    } else if (timeRange === 'weekly') {
       const startDate = new Date(selectedWeekStart + 'T00:00:00');
       const endDate = new Date(selectedWeekEnd + 'T00:00:00');
       const startStr = startDate.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
@@ -286,13 +298,16 @@ function Analytics() {
       setTotalSales(0);
       setBillCount(0);
       setTotalDue(0);
+      setProfitLoss(0);
       setTopProducts([]);
       return;
     }
 
     // Get date range based on selected period
     let dateRange;
-    if (timeRange === 'weekly') {
+    if (timeRange === 'today') {
+      dateRange = getTodayRange();
+    } else if (timeRange === 'weekly') {
       dateRange = getWeekRange(selectedWeekStart, selectedWeekEnd);
     } else if (timeRange === 'monthly') {
       dateRange = getMonthRange(selectedMonth);
@@ -332,6 +347,46 @@ function Analytics() {
       return sum + num;
     }, 0);
     setTotalDue(dueTotal);
+
+    // Calculate Profit/Loss: (selling price - purchase price) * quantity for each item
+    let totalPL = 0;
+    filteredBills.forEach((bill) => {
+      if (!bill.items || !Array.isArray(bill.items)) return;
+      
+      bill.items.forEach((item) => {
+        const sellingPrice = item.price || 0;
+        const quantity = item.quantity || 0;
+        
+        // Find product to get purchase price
+        const product = allProducts.find(p => p.id === item.productId);
+        let purchasePrice = 0;
+        
+        if (product) {
+          // Check if product has variations
+          if (product.variations && Array.isArray(product.variations) && product.variations.length > 0) {
+            // Find matching variation by size
+            const variationSize = item.variationSize;
+            const variation = product.variations.find(v => v.size === variationSize);
+            if (variation && variation.purchasePrice != null) {
+              purchasePrice = variation.purchasePrice;
+            } else if (product.purchasePrice != null) {
+              purchasePrice = product.purchasePrice;
+            }
+          } else {
+            // No variations, use product purchase price
+            if (product.purchasePrice != null) {
+              purchasePrice = product.purchasePrice;
+            }
+          }
+        }
+        
+        // Calculate profit: (selling price - purchase price) * quantity
+        const profit = (sellingPrice - purchasePrice) * quantity;
+        totalPL += profit;
+      });
+    });
+    
+    setProfitLoss(totalPL);
 
     // Daily sales for chart
     const dailySales = {};
@@ -373,7 +428,7 @@ function Analytics() {
       .slice(0, 5);
 
     setTopProducts(topList);
-  }, [bills, timeRange, selectedWeekStart, selectedWeekEnd, selectedMonth, selectedYear]);
+  }, [bills, timeRange, selectedWeekStart, selectedWeekEnd, selectedMonth, selectedYear, allProducts]);
 
   // Prevent number input from changing value on scroll
   const handleNumberInputWheel = (e) => {
@@ -389,6 +444,13 @@ function Analytics() {
       <div className="chart-header-row">
         <h2>📊 Sales Analytics & Overview</h2>
         <div className="time-filter">
+          <button
+            type="button"
+            className={timeRange === 'today' ? 'time-btn active' : 'time-btn'}
+            onClick={() => setTimeRange('today')}
+          >
+            Today
+          </button>
           <button
             type="button"
             className={timeRange === 'weekly' ? 'time-btn active' : 'time-btn'}
@@ -492,20 +554,22 @@ function Analytics() {
         </div>
 
         <div className="metric-card">
-          <div className="metric-icon">📦</div>
-          <div className="metric-content">
-            <h3>Inventory Value</h3>
-            <p className="metric-value">₹{inventoryValue.toFixed(2)}</p>
-            <span className="metric-label">Current stock</span>
-          </div>
-        </div>
-
-        <div className="metric-card">
           <div className="metric-icon">📊</div>
           <div className="metric-content">
             <h3>Avg. Sale Per Bill</h3>
             <p className="metric-value">₹{billCount > 0 ? (totalSales / billCount).toFixed(2) : '0.00'}</p>
             <span className="metric-label">{getPeriodLabel()}</span>
+          </div>
+        </div>
+
+        <div className="metric-card">
+          <div className="metric-icon">💵</div>
+          <div className="metric-content">
+            <h3>P/L</h3>
+            <p className="metric-value" style={{ color: profitLoss >= 0 ? '#28a745' : '#dc3545' }}>
+              ₹{profitLoss.toFixed(2)}
+            </p>
+            <span className="metric-label">Profit/Loss ({getPeriodLabel()})</span>
           </div>
         </div>
       </div>
@@ -517,6 +581,10 @@ function Analytics() {
           <div className="summary-item">
             <span className="summary-label">Total Products:</span>
             <span className="summary-value">{allProducts.length}</span>
+          </div>
+          <div className="summary-item">
+            <span className="summary-label">Inventory Value:</span>
+            <span className="summary-value">₹{inventoryValue.toFixed(2)}</span>
           </div>
           <div className="summary-item">
             <span className="summary-label">Out of Stock:</span>

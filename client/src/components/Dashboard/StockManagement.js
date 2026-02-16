@@ -919,7 +919,6 @@ function StockManagement() {
               <tr>
                 <th>Name</th>
                 <th>Brand</th>
-                <th>Description</th>
                 <th>Price</th>
                 <th>Quantity</th>
                 <th>Actions</th>
@@ -964,7 +963,6 @@ function StockManagement() {
                         </div>
                       </td>
                       <td data-label="Brand">{product.category}{product.subcategory ? ' / ' + product.subcategory : ''}</td>
-                      <td data-label="Description">{product.description || '-'}</td>
                       <td data-label="Price">
                         {hasVariations ? (
                           <span style={{ color: '#999', fontStyle: 'italic' }}>See variations</span>
@@ -998,7 +996,7 @@ function StockManagement() {
                     </tr>
                     {hasVariations && isVariationOpen && (
                       <tr>
-                        <td colSpan="6" style={{ padding: '0', backgroundColor: '#f5f5f5' }}>
+                        <td colSpan="5" style={{ padding: '0', backgroundColor: '#f5f5f5' }}>
                           <div style={{ padding: '15px', marginLeft: '30px' }}>
                             <h4 style={{ margin: '0 0 10px 0', color: '#333', fontSize: '14px', fontWeight: 'bold' }}>
                               Product Variations:
