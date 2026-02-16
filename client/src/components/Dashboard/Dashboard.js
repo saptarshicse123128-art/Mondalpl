@@ -7,6 +7,7 @@ import BillGeneration from './BillGeneration';
 import Analytics from './Analytics';
 import CategoryManagement from './CategoryManagement';
 import Users from './Users';
+import PurchaseOrder from './PurchaseOrder';
 import './Dashboard.css';
 
 function Dashboard() {
@@ -20,6 +21,8 @@ function Dashboard() {
     const path = location.pathname;
     if (path.includes('/analytics') || path === '/dashboard' || path === '/dashboard/') {
       return 'Analytics';
+    } else if (path.includes('/purchase')) {
+      return 'Purchase Order';
     } else if (path.includes('/stock')) {
       return 'Stock Management';
     } else if (path.includes('/bills')) {
@@ -70,6 +73,7 @@ function Dashboard() {
           <Routes>
             <Route path="/" element={<Analytics />} />
             <Route path="analytics" element={<Analytics />} />
+            <Route path="purchase" element={<PurchaseOrder />} />
             <Route path="stock" element={<StockManagement />} />
             <Route path="categories" element={<CategoryManagement />} />
             <Route path="bills" element={<BillGeneration />} />

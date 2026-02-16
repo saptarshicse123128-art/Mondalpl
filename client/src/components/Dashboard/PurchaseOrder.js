@@ -1,0 +1,735 @@
+import React, { useState, useEffect } from 'react';
+import jsPDF from 'jspdf';
+import 'jspdf-autotable';
+import { collection, addDoc, onSnapshot, query, orderBy, serverTimestamp } from 'firebase/firestore';
+import { db } from '../../firebase';
+import { searchUtils } from '../../utils/firebaseUtils';
+import './Analytics.css';
+
+function PurchaseOrder() {
+  const [lowStockProducts, setLowStockProducts] = useState([]);
+  const [lowStockSearch, setLowStockSearch] = useState('');
+  const [showAllLowStock, setShowAllLowStock] = useState(false);
+  const [loading, setLoading] = useState(true);
+
+  const [isCreatingOrder, setIsCreatingOrder] = useState(false);
+  const [orderStep, setOrderStep] = useState('select'); // 'select' | 'preview'
+  const [selectedIds, setSelectedIds] = useState([]);
+  const [selectedProducts, setSelectedProducts] = useState([]); // with orderQuantity (string) and optional isCustom
+  const [orderName, setOrderName] = useState('');
+  const [orderDate, setOrderDate] = useState(() => {
+    return new Date().toISOString().split('T')[0];
+  });
+
+  const [purchaseOrders, setPurchaseOrders] = useState([]);
+  const [isHistoryOpen, setIsHistoryOpen] = useState(false);
+
+  useEffect(() => {
+    const fetchLowStock = async () => {
+      try {
+        setLoading(true);
+        const lowStock = await searchUtils.getLowStockProducts(200);
+        setLowStockProducts(lowStock);
+      } catch (error) {
+        console.error('Error fetching low stock products for purchase order:', error);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    fetchLowStock();
+  }, []);
+
+  // Listen to saved purchase orders
+  useEffect(() => {
+    const ordersRef = collection(db, 'purchaseOrders');
+    const q = query(ordersRef, orderBy('createdAt', 'desc'));
+
+    const unsubscribe = onSnapshot(
+      q,
+      (snapshot) => {
+        const list = [];
+        snapshot.forEach((docSnap) => {
+          list.push({ id: docSnap.id, ...docSnap.data() });
+        });
+        setPurchaseOrders(list);
+      },
+      (error) => {
+        console.error('Error fetching purchase orders:', error);
+      }
+    );
+
+    return () => unsubscribe();
+  }, []);
+
+  const toggleSelectProduct = (productId) => {
+    setSelectedIds((prev) => {
+      if (prev.includes(productId)) {
+        return prev.filter((id) => id !== productId);
+      }
+      return [...prev, productId];
+    });
+  };
+
+  const startCreateOrder = () => {
+    setIsCreatingOrder(true);
+    setOrderStep('select');
+    setSelectedIds([]);
+    setSelectedProducts([]);
+  };
+
+  const goToPreview = () => {
+    const chosen = lowStockProducts.filter((p) => selectedIds.includes(p.id));
+    if (chosen.length === 0) {
+      alert('Please select at least one product for the purchase order.');
+      return;
+    }
+    const withQty = chosen.map((p) => ({
+      ...p,
+      orderQuantity: '1'
+    }));
+    setSelectedProducts(withQty);
+    setOrderStep('preview');
+  };
+
+  const handleQuantityChange = (index, value) => {
+    setSelectedProducts((prev) => {
+      const copy = [...prev];
+      copy[index] = { ...copy[index], orderQuantity: value };
+      return copy;
+    });
+  };
+
+  const handleCustomFieldChange = (index, field, value) => {
+    setSelectedProducts((prev) => {
+      const copy = [...prev];
+      copy[index] = { ...copy[index], [field]: value };
+      return copy;
+    });
+  };
+
+  const handleAddCustomProduct = () => {
+    setSelectedProducts((prev) => [
+      ...prev,
+      {
+        id: `custom_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+        name: '',
+        catalogueNumber: '',
+        orderQuantity: '',
+        isCustom: true
+      }
+    ]);
+  };
+
+  const handleRemoveProductFromOrder = (index) => {
+    setSelectedProducts((prev) => prev.filter((_, i) => i !== index));
+  };
+
+  const closeOrderModal = () => {
+    setIsCreatingOrder(false);
+    setOrderStep('select');
+    setSelectedIds([]);
+    setSelectedProducts([]);
+    setOrderName('');
+    setOrderDate(new Date().toISOString().split('T')[0]);
+  };
+
+  // Helper to build and download PDF from generic order data
+  const createOrderPDF = (displayName, displayDate, itemsToOrder) => {
+    const doc = new jsPDF('p', 'mm', 'a4');
+
+    // Title
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(20);
+    doc.text('ORDER LIST', 105, 25, { align: 'center' });
+
+    doc.setFontSize(10);
+    doc.setFont('helvetica', 'normal');
+
+    // Name on left
+    doc.text(`[${displayName}]`, 20, 40);
+    // Date on right
+    doc.text(`[${displayDate}]`, 190, 40, { align: 'right' });
+
+    // Table
+    const head = [['SL No.', 'Products', 'Catalogue No.', 'Qty.']];
+    const body = itemsToOrder.map((item, idx) => {
+      const catalogueNo = item.catalogueNumber || '';
+      return [
+        String(idx + 1),
+        item.name || '',
+        catalogueNo,
+        String(item.orderQuantity)
+      ];
+    });
+
+    doc.autoTable({
+      startY: 50,
+      head,
+      body,
+      theme: 'grid',
+      headStyles: {
+        fillColor: [50, 50, 50],
+        textColor: [255, 255, 255],
+        fontStyle: 'bold'
+      },
+      styles: {
+        font: 'helvetica',
+        fontSize: 10
+      },
+      columnStyles: {
+        0: { cellWidth: 20 },
+        1: { cellWidth: 90 },
+        2: { cellWidth: 40 },
+        3: { cellWidth: 20 }
+      },
+      margin: { left: 15, right: 15 }
+    });
+
+    const fileName = `PurchaseOrder_${String(displayDate).replace(/-/g, '')}.pdf`;
+    doc.save(fileName);
+  };
+
+  const generateOrderPDF = async () => {
+    const itemsToOrder = selectedProducts.filter((p) => {
+      const q = (p.orderQuantity ?? '').toString().trim();
+      return q.length > 0;
+    });
+    if (itemsToOrder.length === 0) {
+      alert('Please set quantity for at least one product before generating the PDF.');
+      return;
+    }
+
+    const displayName = orderName && orderName.trim().length > 0 ? orderName.trim() : '[Name]';
+    const displayDate = orderDate || new Date().toISOString().split('T')[0];
+
+    // Create and download PDF
+    createOrderPDF(displayName, displayDate, itemsToOrder);
+
+    // Save order to Firestore for future reference
+    try {
+      const orderDoc = {
+        name: displayName === '[Name]' ? '' : displayName,
+        date: displayDate,
+        createdAt: serverTimestamp(),
+        items: itemsToOrder.map((item) => ({
+          productId: item.isCustom ? null : (item.id || null),
+          name: item.name || '',
+          catalogueNumber: item.catalogueNumber || '',
+          quantityText: item.orderQuantity != null ? String(item.orderQuantity) : ''
+        }))
+      };
+
+      await addDoc(collection(db, 'purchaseOrders'), orderDoc);
+    } catch (err) {
+      console.error('Failed to save purchase order:', err);
+    }
+
+    alert('Purchase order PDF generated successfully.');
+    closeOrderModal();
+  };
+
+  const downloadExistingOrderPDF = (order) => {
+    const displayName = order.name && order.name.trim().length > 0 ? order.name.trim() : '[Name]';
+    const dateFromDoc = order.date || (order.createdAt?.toDate ? order.createdAt.toDate().toISOString().split('T')[0] : new Date().toISOString().split('T')[0]);
+    const items = Array.isArray(order.items) ? order.items : [];
+    const itemsForPdf = items.filter((it) => {
+      const qt = (it.quantityText != null ? it.quantityText : it.quantity);
+      if (qt == null) return false;
+      return String(qt).trim().length > 0;
+    });
+
+    if (itemsForPdf.length === 0) {
+      alert('This purchase order has no items with quantity.');
+      return;
+    }
+
+    createOrderPDF(displayName, dateFromDoc, itemsForPdf.map((it) => ({
+      name: it.name,
+      catalogueNumber: it.catalogueNumber,
+      orderQuantity: it.quantityText != null ? it.quantityText : it.quantity
+    })));
+  };
+
+  if (loading) {
+    return (
+      <div className="analytics-container">
+        <p className="loading">Loading purchase order data...</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="analytics-container">
+      <h2>📥 Purchase Order / Low Stock Items</h2>
+
+      <div style={{ marginBottom: '15px', display: 'flex', justifyContent: 'space-between', gap: '10px' }}>
+        <button
+          type="button"
+          className="low-stock-more-btn"
+          onClick={() => setIsHistoryOpen(true)}
+        >
+          📂 Show Old Purchase Orders
+        </button>
+        <button
+          type="button"
+          className="low-stock-more-btn"
+          onClick={startCreateOrder}
+        >
+          ➕ Create Purchase Order
+        </button>
+      </div>
+
+      <div className="section">
+        <h3>⚠️ Low Stock Items (≤20 units)</h3>
+        {lowStockProducts.length > 0 ? (
+          <div className="products-table">
+            <div className="low-stock-search-row">
+              <input
+                type="text"
+                placeholder="Search low stock by name, brand, or category..."
+                value={lowStockSearch}
+                onChange={(e) => setLowStockSearch(e.target.value)}
+                className="low-stock-search-input"
+              />
+            </div>
+            <table>
+              <thead>
+                <tr>
+                  <th>Product Name</th>
+                  <th>Brand</th>
+                  <th>Current Stock</th>
+                  <th>Price</th>
+                  <th>Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(() => {
+                  const filtered = lowStockProducts.filter((product) => {
+                    if (!lowStockSearch.trim()) return true;
+                    const q = lowStockSearch.toLowerCase().trim();
+                    return (
+                      (product.name || '').toLowerCase().includes(q) ||
+                      (product.category || '').toLowerCase().includes(q)
+                    );
+                  });
+
+                  const visible = showAllLowStock ? filtered : filtered.slice(0, 20);
+
+                  if (visible.length === 0) {
+                    return (
+                      <tr>
+                        <td colSpan="5" className="no-data">
+                          No low stock items match your search.
+                        </td>
+                      </tr>
+                    );
+                  }
+
+                  return visible.map((product) => (
+                    <tr
+                      key={product.id}
+                      className={`status-${product.quantity === 0 ? 'critical' : 'warning'}`}
+                    >
+                      <td className="product-name">{product.name}</td>
+                      <td>{product.category}</td>
+                      <td className="stock-quantity">
+                        <span
+                          className={`badge ${
+                            product.quantity === 0 ? 'badge-danger' : 'badge-warning'
+                          }`}
+                        >
+                          {product.quantity}
+                        </span>
+                      </td>
+                      <td className="price">₹{product.price?.toFixed(2)}</td>
+                      <td className="status-cell">
+                        {product.quantity === 0 ? (
+                          <span className="status-badge danger">OUT OF STOCK</span>
+                        ) : (
+                          <span className="status-badge warning">LOW STOCK</span>
+                        )}
+                      </td>
+                    </tr>
+                  ));
+                })()}
+              </tbody>
+            </table>
+            {lowStockProducts.length > 20 && (
+              <div className="low-stock-more-row">
+                <button
+                  type="button"
+                  className="low-stock-more-btn"
+                  onClick={() => setShowAllLowStock((prev) => !prev)}
+                >
+                  {showAllLowStock ? 'Show Less' : 'See More'}
+                </button>
+              </div>
+            )}
+          </div>
+        ) : (
+          <p className="no-data">All products have sufficient stock! ✅</p>
+        )}
+      </div>
+
+      {/* Create Purchase Order Modal */}
+      {isCreatingOrder && (
+        <div
+          style={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            backgroundColor: 'rgba(0,0,0,0.55)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 10000,
+            padding: '20px'
+          }}
+          onClick={(e) => {
+            if (e.target === e.currentTarget) {
+              closeOrderModal();
+            }
+          }}
+        >
+          <div
+            style={{
+              backgroundColor: '#fff',
+              borderRadius: '10px',
+              maxWidth: '900px',
+              width: '100%',
+              maxHeight: '90vh',
+              overflow: 'auto',
+              padding: '20px',
+              boxShadow: '0 4px 18px rgba(0,0,0,0.3)',
+              position: 'relative'
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div
+              style={{
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                marginBottom: '16px'
+              }}
+            >
+              <h3 style={{ margin: 0 }}>
+                {orderStep === 'select' ? 'Select Products for Purchase Order' : 'Preview Purchase Order'}
+              </h3>
+              <button
+                type="button"
+                onClick={closeOrderModal}
+                style={{
+                  background: 'none',
+                  border: 'none',
+                  fontSize: '22px',
+                  cursor: 'pointer',
+                  color: '#666'
+                }}
+                title="Close"
+              >
+                ×
+              </button>
+            </div>
+
+            {orderStep === 'select' && (
+              <div>
+                <p style={{ marginBottom: '10px' }}>
+                  Select the low stock products you want to include in the purchase order.
+                </p>
+                <div className="products-table">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th style={{ width: '40px' }}>Add</th>
+                        <th>Product Name</th>
+                        <th>Brand</th>
+                        <th>Current Stock</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {lowStockProducts.map((product) => (
+                        <tr key={product.id}>
+                          <td style={{ textAlign: 'center' }}>
+                            <input
+                              type="checkbox"
+                              checked={selectedIds.includes(product.id)}
+                              onChange={() => toggleSelectProduct(product.id)}
+                            />
+                          </td>
+                          <td>{product.name}</td>
+                          <td>{product.category}</td>
+                          <td>{product.quantity}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                <div style={{ marginTop: '16px', display: 'flex', justifyContent: 'flex-end', gap: '10px' }}>
+                  <button
+                    type="button"
+                    className="cancel-due-btn"
+                    onClick={closeOrderModal}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    className="save-due-btn"
+                    onClick={goToPreview}
+                  >
+                    Next
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {orderStep === 'preview' && (
+              <div>
+                <div
+                  style={{
+                    display: 'flex',
+                    gap: '20px',
+                    marginBottom: '16px',
+                    flexWrap: 'wrap'
+                  }}
+                >
+                  <div className="form-group" style={{ minWidth: '200px' }}>
+                    <label>Order Name / Supplier Name</label>
+                    <input
+                      type="text"
+                      value={orderName}
+                      onChange={(e) => setOrderName(e.target.value)}
+                      placeholder="Enter name (optional)"
+                    />
+                  </div>
+                  <div className="form-group" style={{ minWidth: '160px' }}>
+                    <label>Date</label>
+                    <input
+                      type="date"
+                      value={orderDate}
+                      onChange={(e) => setOrderDate(e.target.value)}
+                    />
+                  </div>
+                </div>
+
+                <div className="products-table">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>SL No.</th>
+                        <th>Product</th>
+                        <th>Catalogue No.</th>
+                        <th>Qty to Order</th>
+                        <th>Action</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {selectedProducts.map((product, index) => (
+                        <tr key={product.id}>
+                          <td>{index + 1}</td>
+                          <td>
+                            {product.isCustom ? (
+                              <input
+                                type="text"
+                                value={product.name || ''}
+                                onChange={(e) => handleCustomFieldChange(index, 'name', e.target.value)}
+                                placeholder="Custom product name"
+                              />
+                            ) : (
+                              product.name
+                            )}
+                          </td>
+                          <td>
+                            {product.isCustom ? (
+                              <input
+                                type="text"
+                                value={product.catalogueNumber || ''}
+                                onChange={(e) => handleCustomFieldChange(index, 'catalogueNumber', e.target.value)}
+                                placeholder="Catalogue no. (optional)"
+                              />
+                            ) : (
+                              product.catalogueNumber || ''
+                            )}
+                          </td>
+                          <td>
+                            <input
+                              type="text"
+                              value={product.orderQuantity || ''}
+                              onChange={(e) => handleQuantityChange(index, e.target.value)}
+                              placeholder="Qty (can include text)"
+                              style={{ width: '120px' }}
+                            />
+                          </td>
+                          <td>
+                            <button
+                              type="button"
+                              className="cancel-due-btn"
+                              onClick={() => handleRemoveProductFromOrder(index)}
+                            >
+                              Remove
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+
+                <div style={{ marginTop: '12px', marginBottom: '8px' }}>
+                  <button
+                    type="button"
+                    className="low-stock-more-btn"
+                    onClick={handleAddCustomProduct}
+                  >
+                    ➕ Add Custom Product
+                  </button>
+                </div>
+
+                <div style={{ marginTop: '16px', display: 'flex', justifyContent: 'space-between' }}>
+                  <button
+                    type="button"
+                    className="cancel-due-btn"
+                    onClick={() => setOrderStep('select')}
+                  >
+                    Back
+                  </button>
+                  <div style={{ display: 'flex', gap: '10px' }}>
+                    <button
+                      type="button"
+                      className="cancel-due-btn"
+                      onClick={closeOrderModal}
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      className="save-due-btn"
+                      onClick={generateOrderPDF}
+                    >
+                      Save & Generate PDF
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Old Purchase Orders Modal */}
+      {isHistoryOpen && (
+        <div
+          style={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            backgroundColor: 'rgba(0,0,0,0.55)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 10000,
+            padding: '20px'
+          }}
+          onClick={(e) => {
+            if (e.target === e.currentTarget) {
+              setIsHistoryOpen(false);
+            }
+          }}
+        >
+          <div
+            style={{
+              backgroundColor: '#fff',
+              borderRadius: '10px',
+              maxWidth: '900px',
+              width: '100%',
+              maxHeight: '90vh',
+              overflow: 'auto',
+              padding: '20px',
+              boxShadow: '0 4px 18px rgba(0,0,0,0.3)',
+              position: 'relative'
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div
+              style={{
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                marginBottom: '16px'
+              }}
+            >
+              <h3 style={{ margin: 0 }}>Old Purchase Orders</h3>
+              <button
+                type="button"
+                onClick={() => setIsHistoryOpen(false)}
+                style={{
+                  background: 'none',
+                  border: 'none',
+                  fontSize: '22px',
+                  cursor: 'pointer',
+                  color: '#666'
+                }}
+                title="Close"
+              >
+                ×
+              </button>
+            </div>
+
+            {purchaseOrders.length === 0 ? (
+              <p className="no-data">No purchase orders saved yet.</p>
+            ) : (
+              <div className="products-table">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Date</th>
+                      <th>Name</th>
+                      <th>Items</th>
+                      <th>Action</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {purchaseOrders.map((order) => {
+                      const createdAt = order.createdAt?.toDate
+                        ? order.createdAt.toDate().toLocaleDateString('en-GB')
+                        : '';
+                      const dateLabel = order.date || createdAt || '-';
+                      const nameLabel = order.name || '[Name]';
+                      const itemCount = Array.isArray(order.items) ? order.items.length : 0;
+                      return (
+                        <tr key={order.id}>
+                          <td>{dateLabel}</td>
+                          <td>{nameLabel}</td>
+                          <td>{itemCount}</td>
+                          <td>
+                            <button
+                              type="button"
+                              className="low-stock-more-btn"
+                              onClick={() => downloadExistingOrderPDF(order)}
+                            >
+                              Download PDF
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+export default PurchaseOrder;
+
+

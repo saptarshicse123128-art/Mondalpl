@@ -23,6 +23,13 @@ function Sidebar({ onLogout, isOpen, onClose }) {
           📊 Analytics
         </NavLink>
         <NavLink
+          to="/dashboard/purchase"
+          className={({ isActive }) => (isActive ? 'nav-item active' : 'nav-item')}
+          onClick={handleNavClick}
+        >
+          🧾 Purchase Order
+        </NavLink>
+        <NavLink
           to="/dashboard/stock"
           className={({ isActive }) => (isActive ? 'nav-item active' : 'nav-item')}
           onClick={handleNavClick}
