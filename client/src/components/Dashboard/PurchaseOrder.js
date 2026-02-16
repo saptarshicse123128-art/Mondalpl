@@ -7,8 +7,8 @@ import './Analytics.css';
 
 function PurchaseOrder() {
   const [lowStockProducts, setLowStockProducts] = useState([]);
+  const [allProducts, setAllProducts] = useState([]);
   const [lowStockSearch, setLowStockSearch] = useState('');
-  const [showAllLowStock, setShowAllLowStock] = useState(false);
   const [loading, setLoading] = useState(true);
 
   const [isCreatingOrder, setIsCreatingOrder] = useState(false);
@@ -23,6 +23,7 @@ function PurchaseOrder() {
   const [purchaseOrders, setPurchaseOrders] = useState([]);
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
   const [openLowVariationProductId, setOpenLowVariationProductId] = useState(null);
+  const [openOrderVariationProductId, setOpenOrderVariationProductId] = useState(null);
 
   useEffect(() => {
     const fetchLowStock = async () => {
@@ -31,6 +32,7 @@ function PurchaseOrder() {
 
         const snapshot = await getDocs(collection(db, 'products'));
         const lowList = [];
+        const allList = [];
 
         snapshot.forEach((docSnap) => {
           const data = docSnap.data();
@@ -54,9 +56,21 @@ function PurchaseOrder() {
             variations: [] // only low/out variations
           };
 
+          // Structure including ALL variations/base, for purchase order selection
+          const allEntry = {
+            ...baseProduct,
+            base: null,
+            variations: []
+          };
+
           if (hasVariations) {
+            let aggregatedQty = 0;
+            let anyOut = false;
+            let anyLow = false;
+
             data.variations.forEach((variation) => {
               const vQty = variation.quantity || 0;
+              aggregatedQty += vQty;
               const vLowRaw = variation.lowStockQuantity;
               const vLow =
                 vLowRaw !== undefined && vLowRaw !== null && vLowRaw !== ''
@@ -66,6 +80,12 @@ function PurchaseOrder() {
               const isOut = vQty === 0;
               const isLow = !isOut && vLow !== null && !Number.isNaN(vLow) && vQty <= vLow;
 
+              if (isOut) anyOut = true;
+              if (isLow) anyLow = true;
+
+              const varStatus = isOut ? 'out' : isLow ? 'low' : 'ok';
+
+              // For low-stock-only list, keep only low/out variations
               if (isOut || isLow) {
                 lowEntry.variations.push({
                   id: `${docSnap.id}_${variation.size || ''}`,
@@ -74,14 +94,34 @@ function PurchaseOrder() {
                   unit: variation.unit || '',
                   catalogueNumber: variation.catalogueNumber || data.catalogueNumber || '',
                   price: variation.price || data.price || 0,
-                  status: isOut ? 'out' : 'low'
+                  status: varStatus
                 });
               }
+
+              // For all-products list, include every variation with its status
+              allEntry.variations.push({
+                id: `${docSnap.id}_${variation.size || ''}`,
+                size: variation.size || '',
+                quantity: vQty,
+                unit: variation.unit || '',
+                catalogueNumber: variation.catalogueNumber || data.catalogueNumber || '',
+                price: variation.price || data.price || 0,
+                status: varStatus
+              });
             });
 
             if (lowEntry.variations.length > 0) {
               lowList.push(lowEntry);
             }
+
+            const overallStatus = anyOut ? 'out' : anyLow ? 'low' : 'ok';
+            allEntry.base = {
+              quantity: aggregatedQty,
+              unit: data.unit || '',
+              price: data.price || 0,
+              status: overallStatus
+            };
+            allList.push(allEntry);
           } else {
             const isOut = totalQuantity === 0;
             const thresholdValid =
@@ -98,6 +138,15 @@ function PurchaseOrder() {
               };
               lowList.push(lowEntry);
             }
+
+            const overallStatus = isOut ? 'out' : isLow ? 'low' : 'ok';
+            allEntry.base = {
+              quantity: totalQuantity,
+              unit: data.unit || '',
+              price: data.price || 0,
+              status: overallStatus
+            };
+            allList.push(allEntry);
           }
         });
 
@@ -112,6 +161,19 @@ function PurchaseOrder() {
         });
 
         setLowStockProducts(lowList);
+
+        const statusPriority = { out: 0, low: 1, ok: 2 };
+        allList.sort((a, b) => {
+          const aStatus = a.base?.status || 'ok';
+          const bStatus = b.base?.status || 'ok';
+          const aP = statusPriority[aStatus] ?? 2;
+          const bP = statusPriority[bStatus] ?? 2;
+          if (aP !== bP) {
+            return aP - bP;
+          }
+          return (a.name || '').localeCompare(b.name || '');
+        });
+        setAllProducts(allList);
       } catch (error) {
         console.error('Error fetching low stock products for purchase order:', error);
       } finally {
@@ -161,16 +223,40 @@ function PurchaseOrder() {
   };
 
   const goToPreview = () => {
-    const chosen = lowStockProducts.filter((p) => selectedIds.includes(p.id));
-    if (chosen.length === 0) {
-      alert('Please select at least one product for the purchase order.');
+    const items = [];
+
+    allProducts.forEach((product) => {
+      // Base product (aggregated) selection
+      if (selectedIds.includes(product.id)) {
+        items.push({
+          id: product.id,
+          name: product.name,
+          catalogueNumber: product.catalogueNumber || '',
+          orderQuantity: '1'
+        });
+      }
+
+      // Individual variation selection
+      if (Array.isArray(product.variations)) {
+        product.variations.forEach((v) => {
+          if (selectedIds.includes(v.id)) {
+            items.push({
+              id: v.id,
+              name: v.size ? `${product.name} - ${v.size}` : product.name,
+              catalogueNumber: v.catalogueNumber || product.catalogueNumber || '',
+              orderQuantity: '1'
+            });
+          }
+        });
+      }
+    });
+
+    if (items.length === 0) {
+      alert('Please select at least one product or variation for the purchase order.');
       return;
     }
-    const withQty = chosen.map((p) => ({
-      ...p,
-      orderQuantity: '1'
-    }));
-    setSelectedProducts(withQty);
+
+    setSelectedProducts(items);
     setOrderStep('preview');
   };
 
@@ -408,8 +494,6 @@ function PurchaseOrder() {
                       product.base?.status ||
                       product.variations?.[0]?.status ||
                       'low';
-                    const quantity =
-                      product.base?.quantity ?? product.variations?.[0]?.quantity ?? 0;
                     const unit = product.base?.unit ?? product.variations?.[0]?.unit ?? '';
                     const price =
                       product.base?.price ?? product.variations?.[0]?.price ?? product.price ?? 0;
@@ -621,33 +705,202 @@ function PurchaseOrder() {
             {orderStep === 'select' && (
               <div>
                 <p style={{ marginBottom: '10px' }}>
-                  Select the low stock products you want to include in the purchase order.
+                  Select the products you want to include in the purchase order. Low stock items are
+                  highlighted in yellow and out-of-stock items in red.
                 </p>
                 <div className="products-table">
                   <table>
                     <thead>
                       <tr>
                         <th style={{ width: '40px' }}>Add</th>
-                        <th>Product Name</th>
+                        <th>Product / Variation</th>
                         <th>Brand</th>
                         <th>Current Stock</th>
+                        <th>Status</th>
                       </tr>
                     </thead>
                     <tbody>
-                      {lowStockProducts.map((product) => (
-                        <tr key={product.id}>
-                          <td style={{ textAlign: 'center' }}>
-                            <input
-                              type="checkbox"
-                              checked={selectedIds.includes(product.id)}
-                              onChange={() => toggleSelectProduct(product.id)}
-                            />
-                          </td>
-                          <td>{product.name}</td>
-                          <td>{product.category}</td>
-                          <td>{product.quantity}</td>
-                        </tr>
-                      ))}
+                      {allProducts.flatMap((product) => {
+                        const hasVariations =
+                          Array.isArray(product.variations) && product.variations.length > 0;
+                        const isOpen = openOrderVariationProductId === product.id;
+                        const status = product.base?.status || 'ok';
+
+                        const mainRow = (
+                          <tr
+                            key={product.id}
+                            className={
+                              status === 'out'
+                                ? 'status-critical'
+                                : status === 'low'
+                                ? 'status-warning'
+                                : ''
+                            }
+                          >
+                            <td style={{ textAlign: 'center' }}>
+                              <input
+                                type="checkbox"
+                                checked={selectedIds.includes(product.id)}
+                                onChange={() => toggleSelectProduct(product.id)}
+                              />
+                            </td>
+                            <td className="product-name" style={{ position: 'relative' }}>
+                              <div
+                                style={{
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  gap: '8px'
+                                }}
+                              >
+                                {hasVariations && (
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      setOpenOrderVariationProductId(
+                                        isOpen ? null : product.id
+                                      )
+                                    }
+                                    style={{
+                                      background: 'none',
+                                      border: 'none',
+                                      cursor: 'pointer',
+                                      padding: '4px',
+                                      display: 'flex',
+                                      alignItems: 'center',
+                                      fontSize: '16px',
+                                      color: '#667eea',
+                                      transition: 'transform 0.2s'
+                                    }}
+                                    title={isOpen ? 'Hide variations' : 'Show variations'}
+                                  >
+                                    <span
+                                      style={{
+                                        transform: isOpen ? 'rotate(90deg)' : 'rotate(0deg)',
+                                        transition: 'transform 0.2s'
+                                      }}
+                                    >
+                                      ▶
+                                    </span>
+                                  </button>
+                                )}
+                                <span>{product.name}</span>
+                              </div>
+                            </td>
+                            <td>{product.category}</td>
+                            <td>{product.base ? product.base.quantity : '-'}</td>
+                            <td>
+                              <span
+                                className={`status-badge ${
+                                  status === 'out' ? 'danger' : status === 'low' ? 'warning' : ''
+                                }`}
+                              >
+                                {status === 'out'
+                                  ? 'OUT OF STOCK'
+                                  : status === 'low'
+                                  ? 'LOW STOCK'
+                                  : 'OK'}
+                              </span>
+                            </td>
+                          </tr>
+                        );
+
+                        const variationRow =
+                          hasVariations && isOpen ? (
+                            <tr key={`${product.id}_order_vars`}>
+                              <td colSpan="5">
+                                <table
+                                  style={{
+                                    width: '100%',
+                                    borderCollapse: 'collapse',
+                                    marginTop: '6px',
+                                    backgroundColor: '#fafafa'
+                                  }}
+                                >
+                                  <thead>
+                                    <tr>
+                                      <th
+                                        style={{
+                                          padding: '6px',
+                                          border: '1px solid #ddd',
+                                          width: '40px'
+                                        }}
+                                      >
+                                        Add
+                                      </th>
+                                      <th style={{ padding: '6px', border: '1px solid #ddd' }}>
+                                        Size
+                                      </th>
+                                      <th style={{ padding: '6px', border: '1px solid #ddd' }}>
+                                        Quantity
+                                      </th>
+                                      <th style={{ padding: '6px', border: '1px solid #ddd' }}>
+                                        Unit
+                                      </th>
+                                      <th style={{ padding: '6px', border: '1px solid #ddd' }}>
+                                        Status
+                                      </th>
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    {product.variations.map((v) => (
+                                      <tr key={v.id}>
+                                        <td
+                                          style={{
+                                            padding: '6px',
+                                            border: '1px solid #ddd',
+                                            textAlign: 'center'
+                                          }}
+                                        >
+                                          <input
+                                            type="checkbox"
+                                            checked={selectedIds.includes(v.id)}
+                                            onChange={() => toggleSelectProduct(v.id)}
+                                          />
+                                        </td>
+                                        <td
+                                          style={{ padding: '6px', border: '1px solid #ddd' }}
+                                        >
+                                          {v.size || '-'}
+                                        </td>
+                                        <td
+                                          style={{ padding: '6px', border: '1px solid #ddd' }}
+                                        >
+                                          {v.quantity}
+                                        </td>
+                                        <td
+                                          style={{ padding: '6px', border: '1px solid #ddd' }}
+                                        >
+                                          {v.unit || '-'}
+                                        </td>
+                                        <td
+                                          style={{ padding: '6px', border: '1px solid #ddd' }}
+                                        >
+                                          <span
+                                            className={`status-badge ${
+                                              v.status === 'out'
+                                                ? 'danger'
+                                                : v.status === 'low'
+                                                ? 'warning'
+                                                : ''
+                                            }`}
+                                          >
+                                            {v.status === 'out'
+                                              ? 'OUT OF STOCK'
+                                              : v.status === 'low'
+                                              ? 'LOW STOCK'
+                                              : 'OK'}
+                                          </span>
+                                        </td>
+                                      </tr>
+                                    ))}
+                                  </tbody>
+                                </table>
+                              </td>
+                            </tr>
+                          ) : null;
+
+                        return variationRow ? [mainRow, variationRow] : [mainRow];
+                      })}
                     </tbody>
                   </table>
                 </div>

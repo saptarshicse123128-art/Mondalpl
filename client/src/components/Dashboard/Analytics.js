@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import { collection, onSnapshot, query, orderBy } from 'firebase/firestore';
+import { collection, onSnapshot, query, orderBy, getDocs } from 'firebase/firestore';
 import { db } from '../../firebase';
-import { analyticsUtils, searchUtils } from '../../utils/firebaseUtils';
+import { analyticsUtils } from '../../utils/firebaseUtils';
 import './Analytics.css';
 
 // Small inline SVG LineChart component — no external deps
@@ -111,9 +111,64 @@ function Analytics() {
       try {
         setLoading(true);
 
-        // Get low stock products
-        const lowStock = await searchUtils.getLowStockProducts(20);
-        setLowStockProducts(lowStock);
+        // Get low stock products based on per-product / per-variation lowStockQuantity
+        const productsSnapshot = await getDocs(collection(db, 'products'));
+        const lowItems = [];
+
+        productsSnapshot.forEach((docSnap) => {
+          const data = docSnap.data();
+          const name = data.name || '';
+
+          const totalQuantity = data.quantity || 0;
+          const productLowThreshold = data.lowStockQuantity
+            ? parseInt(data.lowStockQuantity, 10)
+            : null;
+
+          const hasVariations =
+            Array.isArray(data.variations) && data.variations.length > 0;
+
+          if (hasVariations) {
+            data.variations.forEach((variation) => {
+              const vQty = variation.quantity || 0;
+              const vLowRaw = variation.lowStockQuantity;
+              const vLow =
+                vLowRaw !== undefined && vLowRaw !== null && vLowRaw !== ''
+                  ? parseInt(vLowRaw, 10)
+                  : null;
+
+              const isOut = vQty === 0;
+              const isLow =
+                !isOut && vLow !== null && !Number.isNaN(vLow) && vQty <= vLow;
+
+              if (isOut || isLow) {
+                lowItems.push({
+                  id: `${docSnap.id}_${variation.size || ''}`,
+                  name: `${name}${variation.size ? ' ' + variation.size : ''}`,
+                  quantity: vQty,
+                  status: isOut ? 'out' : 'low'
+                });
+              }
+            });
+          } else {
+            const isOut = totalQuantity === 0;
+            const thresholdValid =
+              productLowThreshold !== null &&
+              !Number.isNaN(productLowThreshold);
+            const isLow =
+              !isOut && thresholdValid && totalQuantity <= productLowThreshold;
+
+            if (isOut || isLow) {
+              lowItems.push({
+                id: docSnap.id,
+                name,
+                quantity: totalQuantity,
+                status: isOut ? 'out' : 'low'
+              });
+            }
+          }
+        });
+
+        setLowStockProducts(lowItems);
 
         // Get inventory value
         const inventory = await analyticsUtils.getInventoryValue();
@@ -465,14 +520,30 @@ function Analytics() {
           </div>
           <div className="summary-item">
             <span className="summary-label">Out of Stock:</span>
-            <span className="summary-value" style={{ color: lowStockProducts.filter(p => p.quantity === 0).length > 0 ? '#dc3545' : '#28a745' }}>
-              {lowStockProducts.filter(p => p.quantity === 0).length}
+            <span
+              className="summary-value"
+              style={{
+                color:
+                  lowStockProducts.filter((p) => p.status === 'out').length > 0
+                    ? '#dc3545'
+                    : '#28a745'
+              }}
+            >
+              {lowStockProducts.filter((p) => p.status === 'out').length}
             </span>
           </div>
           <div className="summary-item">
             <span className="summary-label">Low Stock Count:</span>
-            <span className="summary-value" style={{ color: lowStockProducts.filter(p => p.quantity > 0).length > 0 ? '#ffc107' : '#28a745' }}>
-              {lowStockProducts.filter(p => p.quantity > 0).length}
+            <span
+              className="summary-value"
+              style={{
+                color:
+                  lowStockProducts.filter((p) => p.status === 'low').length > 0
+                    ? '#ffc107'
+                    : '#28a745'
+              }}
+            >
+              {lowStockProducts.filter((p) => p.status === 'low').length}
             </span>
           </div>
         </div>
