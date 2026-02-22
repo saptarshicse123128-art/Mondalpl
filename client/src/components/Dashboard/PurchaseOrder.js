@@ -5,10 +5,31 @@ import { collection, addDoc, onSnapshot, query, orderBy, serverTimestamp, getDoc
 import { db } from '../../firebase';
 import './Analytics.css';
 
+// Helper function to format date to dd.mm.yyyy
+const formatDateDDMMYYYY = (date) => {
+  if (!date) return '';
+  let dateObj;
+  if (date instanceof Date) {
+    dateObj = date;
+  } else if (date.toDate && typeof date.toDate === 'function') {
+    dateObj = date.toDate();
+  } else if (typeof date === 'string') {
+    dateObj = new Date(date);
+  } else {
+    return '';
+  }
+  
+  const day = String(dateObj.getDate()).padStart(2, '0');
+  const month = String(dateObj.getMonth() + 1).padStart(2, '0');
+  const year = dateObj.getFullYear();
+  return `${day}.${month}.${year}`;
+};
+
 function PurchaseOrder() {
   const [lowStockProducts, setLowStockProducts] = useState([]);
   const [allProducts, setAllProducts] = useState([]);
   const [lowStockSearch, setLowStockSearch] = useState('');
+  const [allProductsSearch, setAllProductsSearch] = useState('');
   const [loading, setLoading] = useState(true);
 
   const [isCreatingOrder, setIsCreatingOrder] = useState(false);
@@ -17,7 +38,11 @@ function PurchaseOrder() {
   const [selectedProducts, setSelectedProducts] = useState([]); // with orderQuantity (string) and optional isCustom
   const [orderName, setOrderName] = useState('');
   const [orderDate, setOrderDate] = useState(() => {
-    return new Date().toISOString().split('T')[0];
+    const today = new Date();
+    const day = String(today.getDate()).padStart(2, '0');
+    const month = String(today.getMonth() + 1).padStart(2, '0');
+    const year = today.getFullYear();
+    return `${day}.${month}.${year}`;
   });
 
   const [purchaseOrders, setPurchaseOrders] = useState([]);
@@ -94,6 +119,7 @@ function PurchaseOrder() {
                   unit: variation.unit || '',
                   catalogueNumber: variation.catalogueNumber || data.catalogueNumber || '',
                   price: variation.price || data.price || 0,
+                  purchasePrice: variation.purchasePrice || data.purchasePrice || 0,
                   status: varStatus
                 });
               }
@@ -106,6 +132,7 @@ function PurchaseOrder() {
                 unit: variation.unit || '',
                 catalogueNumber: variation.catalogueNumber || data.catalogueNumber || '',
                 price: variation.price || data.price || 0,
+                purchasePrice: variation.purchasePrice || data.purchasePrice || 0,
                 status: varStatus
               });
             });
@@ -119,6 +146,7 @@ function PurchaseOrder() {
               quantity: aggregatedQty,
               unit: data.unit || '',
               price: data.price || 0,
+              purchasePrice: data.purchasePrice || 0,
               status: overallStatus
             };
             allList.push(allEntry);
@@ -134,6 +162,7 @@ function PurchaseOrder() {
                 quantity: totalQuantity,
                 unit: data.unit || '',
                 price: data.price || 0,
+                purchasePrice: data.purchasePrice || 0,
                 status: isOut ? 'out' : 'low'
               };
               lowList.push(lowEntry);
@@ -144,6 +173,7 @@ function PurchaseOrder() {
               quantity: totalQuantity,
               unit: data.unit || '',
               price: data.price || 0,
+              purchasePrice: data.purchasePrice || 0,
               status: overallStatus
             };
             allList.push(allEntry);
@@ -205,6 +235,161 @@ function PurchaseOrder() {
 
     return () => unsubscribe();
   }, []);
+
+  // Search function (same as StockManagement)
+  const matchesSearch = (text, query) => {
+    if (!text || !query) return false;
+    
+    const lowerText = text.toLowerCase();
+    const lowerQuery = query.toLowerCase();
+    
+    const normalizeText = (str) => {
+      return str.replace(/[()\s]+/g, '').toLowerCase();
+    };
+    
+    const normalizedText = normalizeText(lowerText);
+    const normalizedQuery = normalizeText(lowerQuery);
+    
+    if (!lowerQuery.includes(' ') && lowerQuery.length >= 2) {
+      if (lowerText.includes(lowerQuery) || normalizedText.includes(normalizedQuery)) {
+        return true;
+      }
+      return false;
+    }
+    
+    if (normalizedText.includes(normalizedQuery)) return true;
+    
+    const queryWords = lowerQuery
+      .split(/\s+/)
+      .filter(word => word.length > 0)
+      .map(word => word.replace(/[()]/g, ''))
+      .filter(word => word.length >= 2);
+    
+    if (queryWords.length === 0) return false;
+    
+    const textWords = lowerText
+      .split(/\s+/)
+      .filter(word => word.length > 0)
+      .map(word => word.replace(/[()]/g, ''))
+      .filter(word => word.length > 0);
+    
+    const matchedWords = queryWords.filter(queryWord => {
+      const normalizedQueryWord = normalizeText(queryWord);
+      
+      if (normalizedText.includes(normalizedQueryWord)) return true;
+      if (lowerText.includes(queryWord)) return true;
+      
+      return textWords.some(textWord => {
+        const normalizedTextWord = normalizeText(textWord);
+        return normalizedTextWord.includes(normalizedQueryWord) || 
+               normalizedQueryWord.includes(normalizedTextWord) ||
+               textWord.includes(queryWord) || 
+               queryWord.includes(textWord);
+      });
+    });
+    
+    const matchThreshold = Math.max(1, Math.ceil(queryWords.length * 0.7));
+    return matchedWords.length >= matchThreshold;
+  };
+
+  const calculateRelevanceScore = (product, query) => {
+    if (!query.trim()) return 0;
+    
+    const lowerQuery = query.toLowerCase().trim();
+    const lowerName = (product.name || '').toLowerCase();
+    const lowerCategory = (product.category || '').toLowerCase();
+    
+    let score = 0;
+    
+    if (lowerName.includes(lowerQuery)) {
+      score += 1000;
+      if (lowerName.startsWith(lowerQuery)) {
+        score += 500;
+      }
+    }
+    
+    const queryWords = lowerQuery.split(/\s+/).filter(w => w.length > 0);
+    const nameWords = lowerName.split(/\s+/);
+    
+    if (queryWords.length > 1) {
+      let wordIndex = 0;
+      for (let i = 0; i < nameWords.length && wordIndex < queryWords.length; i++) {
+        if (nameWords[i].includes(queryWords[wordIndex])) {
+          wordIndex++;
+        }
+      }
+      if (wordIndex === queryWords.length) {
+        score += 800;
+        let adjacentCount = 0;
+        for (let i = 0; i < nameWords.length - 1; i++) {
+          const twoWords = nameWords[i] + ' ' + nameWords[i + 1];
+          if (lowerQuery.includes(twoWords) || twoWords.includes(lowerQuery)) {
+            adjacentCount++;
+          }
+        }
+        if (adjacentCount > 0) {
+          score += 300;
+        }
+      }
+    }
+    
+    const allWordsMatch = queryWords.every(qw => 
+      nameWords.some(nw => nw.includes(qw) || qw.includes(nw))
+    );
+    if (allWordsMatch) {
+      score += 400;
+    }
+    
+    if (lowerCategory.includes(lowerQuery)) {
+      score += 200;
+    }
+    
+    queryWords.forEach(qw => {
+      if (lowerName.includes(qw)) {
+        score += 100;
+      }
+    });
+    
+    return score;
+  };
+
+  // Filter and sort low stock products
+  const filteredLowStockProducts = (() => {
+    if (!lowStockSearch.trim()) return lowStockProducts;
+    
+    const query = lowStockSearch.trim();
+    const matching = lowStockProducts.filter(product => {
+      return (
+        matchesSearch(product.name, query) ||
+        matchesSearch(product.category, query)
+      );
+    });
+    
+    return matching.sort((a, b) => {
+      const scoreA = calculateRelevanceScore(a, query);
+      const scoreB = calculateRelevanceScore(b, query);
+      return scoreB - scoreA;
+    });
+  })();
+
+  // Filter and sort all products
+  const filteredAllProducts = (() => {
+    if (!allProductsSearch.trim()) return allProducts;
+    
+    const query = allProductsSearch.trim();
+    const matching = allProducts.filter(product => {
+      return (
+        matchesSearch(product.name, query) ||
+        matchesSearch(product.category, query)
+      );
+    });
+    
+    return matching.sort((a, b) => {
+      const scoreA = calculateRelevanceScore(a, query);
+      const scoreB = calculateRelevanceScore(b, query);
+      return scoreB - scoreA;
+    });
+  })();
 
   const toggleSelectProduct = (productId) => {
     setSelectedIds((prev) => {
@@ -299,7 +484,7 @@ function PurchaseOrder() {
     setSelectedIds([]);
     setSelectedProducts([]);
     setOrderName('');
-    setOrderDate(new Date().toISOString().split('T')[0]);
+    setOrderDate(formatDateDDMMYYYY(new Date()));
   };
 
   // Helper to build and download PDF from generic order data
@@ -314,10 +499,14 @@ function PurchaseOrder() {
     doc.setFontSize(10);
     doc.setFont('helvetica', 'normal');
 
-    // Name on left
-    doc.text(`[${displayName}]`, 20, 40);
-    // Date on right
-    doc.text(`[${displayDate}]`, 190, 40, { align: 'right' });
+    // Name on left (without brackets)
+    if (displayName && displayName.trim() && displayName !== '[Name]') {
+      doc.text(displayName.trim(), 20, 40);
+    }
+    // Date on right (without brackets)
+    if (displayDate) {
+      doc.text(displayDate, 190, 40, { align: 'right' });
+    }
 
     // Table
     const head = [['SL No.', 'Products', 'Catalogue No.', 'Qty.']];
@@ -368,8 +557,8 @@ function PurchaseOrder() {
       return;
     }
 
-    const displayName = orderName && orderName.trim().length > 0 ? orderName.trim() : '[Name]';
-    const displayDate = orderDate || new Date().toISOString().split('T')[0];
+    const displayName = orderName && orderName.trim().length > 0 ? orderName.trim() : '';
+    const displayDate = orderDate || formatDateDDMMYYYY(new Date());
 
     // Create and download PDF
     createOrderPDF(displayName, displayDate, itemsToOrder);
@@ -377,7 +566,7 @@ function PurchaseOrder() {
     // Save order to Firestore for future reference
     try {
       const orderDoc = {
-        name: displayName === '[Name]' ? '' : displayName,
+        name: displayName,
         date: displayDate,
         createdAt: serverTimestamp(),
         items: itemsToOrder.map((item) => ({
@@ -398,8 +587,20 @@ function PurchaseOrder() {
   };
 
   const downloadExistingOrderPDF = (order) => {
-    const displayName = order.name && order.name.trim().length > 0 ? order.name.trim() : '[Name]';
-    const dateFromDoc = order.date || (order.createdAt?.toDate ? order.createdAt.toDate().toISOString().split('T')[0] : new Date().toISOString().split('T')[0]);
+    const displayName = order.name && order.name.trim().length > 0 ? order.name.trim() : '';
+    let dateFromDoc = '';
+    if (order.date) {
+      // If date is already in dd.mm.yyyy format, use it; otherwise convert
+      if (order.date.includes('.')) {
+        dateFromDoc = order.date;
+      } else {
+        dateFromDoc = formatDateDDMMYYYY(new Date(order.date));
+      }
+    } else if (order.createdAt?.toDate) {
+      dateFromDoc = formatDateDDMMYYYY(order.createdAt.toDate());
+    } else {
+      dateFromDoc = formatDateDDMMYYYY(new Date());
+    }
     const items = Array.isArray(order.items) ? order.items : [];
     const itemsForPdf = items.filter((it) => {
       const qt = (it.quantityText != null ? it.quantityText : it.quantity);
@@ -468,13 +669,13 @@ function PurchaseOrder() {
                   <th>Brand</th>
                   <th>Current Stock</th>
                   <th>Unit</th>
-                  <th>Price</th>
+                  <th>Purchase Price</th>
                   <th>Status</th>
                 </tr>
               </thead>
               <tbody>
                 {(() => {
-                  const filtered = lowStockProducts;
+                  const filtered = filteredLowStockProducts;
 
                   if (filtered.length === 0) {
                     return (
@@ -495,8 +696,8 @@ function PurchaseOrder() {
                       product.variations?.[0]?.status ||
                       'low';
                     const unit = product.base?.unit ?? product.variations?.[0]?.unit ?? '';
-                    const price =
-                      product.base?.price ?? product.variations?.[0]?.price ?? product.price ?? 0;
+                    const purchasePrice =
+                      product.base?.purchasePrice ?? product.variations?.[0]?.purchasePrice ?? product.purchasePrice ?? 0;
 
                     const mainRow = (
                       <tr
@@ -552,7 +753,7 @@ function PurchaseOrder() {
                           )}
                         </td>
                         <td>{unit || '-'}</td>
-                        <td className="price">₹{(price || 0).toFixed(2)}</td>
+                        <td className="price">₹{(purchasePrice || 0).toFixed(2)}</td>
                         <td className="status-cell">
                           {product.base ? (
                             product.base.status === 'out' ? (
@@ -591,7 +792,7 @@ function PurchaseOrder() {
                                     Unit
                                   </th>
                                   <th style={{ padding: '6px', border: '1px solid #ddd' }}>
-                                    Price
+                                    Purchase Price
                                   </th>
                                   <th style={{ padding: '6px', border: '1px solid #ddd' }}>
                                     Status
@@ -611,7 +812,7 @@ function PurchaseOrder() {
                                       {v.unit || '-'}
                                     </td>
                                     <td style={{ padding: '6px', border: '1px solid #ddd' }}>
-                                      ₹{(v.price || 0).toFixed(2)}
+                                      ₹{(v.purchasePrice || 0).toFixed(2)}
                                     </td>
                                     <td style={{ padding: '6px', border: '1px solid #ddd' }}>
                                       {v.status === 'out' ? (
@@ -708,6 +909,16 @@ function PurchaseOrder() {
                   Select the products you want to include in the purchase order. Low stock items are
                   highlighted in yellow and out-of-stock items in red.
                 </p>
+                <div style={{ marginBottom: '10px' }}>
+                  <input
+                    type="text"
+                    placeholder="Search products by name, brand, or category..."
+                    value={allProductsSearch}
+                    onChange={(e) => setAllProductsSearch(e.target.value)}
+                    className="low-stock-search-input"
+                    style={{ width: '100%', maxWidth: '500px' }}
+                  />
+                </div>
                 <div className="products-table">
                   <table>
                     <thead>
@@ -716,11 +927,12 @@ function PurchaseOrder() {
                         <th>Product / Variation</th>
                         <th>Brand</th>
                         <th>Current Stock</th>
+                        <th>Unit</th>
                         <th>Status</th>
                       </tr>
                     </thead>
                     <tbody>
-                      {allProducts.flatMap((product) => {
+                      {filteredAllProducts.flatMap((product) => {
                         const hasVariations =
                           Array.isArray(product.variations) && product.variations.length > 0;
                         const isOpen = openOrderVariationProductId === product.id;
@@ -788,6 +1000,7 @@ function PurchaseOrder() {
                             </td>
                             <td>{product.category}</td>
                             <td>{product.base ? product.base.quantity : '-'}</td>
+                            <td>{product.base?.unit ?? product.variations?.[0]?.unit ?? '-'}</td>
                             <td>
                               <span
                                 className={`status-badge ${
@@ -943,11 +1156,19 @@ function PurchaseOrder() {
                     />
                   </div>
                   <div className="form-group" style={{ minWidth: '160px' }}>
-                    <label>Date</label>
+                    <label>Date (dd.mm.yyyy)</label>
                     <input
-                      type="date"
+                      type="text"
                       value={orderDate}
-                      onChange={(e) => setOrderDate(e.target.value)}
+                      onChange={(e) => {
+                        const value = e.target.value;
+                        // Allow only digits and dots
+                        if (/^[\d.]*$/.test(value) || value === '') {
+                          setOrderDate(value);
+                        }
+                      }}
+                      placeholder="dd.mm.yyyy"
+                      pattern="\d{2}\.\d{2}\.\d{4}"
                     />
                   </div>
                 </div>
@@ -964,7 +1185,10 @@ function PurchaseOrder() {
                       </tr>
                     </thead>
                     <tbody>
-                      {selectedProducts.map((product, index) => (
+                      {selectedProducts.filter(product => {
+                        // Only show products that have catalogue number
+                        return product.catalogueNumber && product.catalogueNumber.trim().length > 0;
+                      }).map((product, index) => (
                         <tr key={product.id}>
                           <td>{index + 1}</td>
                           <td>
@@ -1132,10 +1356,16 @@ function PurchaseOrder() {
                   </thead>
                   <tbody>
                     {purchaseOrders.map((order) => {
-                      const createdAt = order.createdAt?.toDate
-                        ? order.createdAt.toDate().toLocaleDateString('en-GB')
-                        : '';
-                      const dateLabel = order.date || createdAt || '-';
+                      let dateLabel = '-';
+                      if (order.date) {
+                        if (order.date.includes('.')) {
+                          dateLabel = order.date;
+                        } else {
+                          dateLabel = formatDateDDMMYYYY(new Date(order.date));
+                        }
+                      } else if (order.createdAt?.toDate) {
+                        dateLabel = formatDateDDMMYYYY(order.createdAt.toDate());
+                      }
                       const nameLabel = order.name || '[Name]';
                       const itemCount = Array.isArray(order.items) ? order.items.length : 0;
                       return (
