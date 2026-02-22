@@ -520,7 +520,6 @@ function StockManagement() {
     if (queryWords.length > 1) {
       // Check if words appear in order
       let wordIndex = 0;
-      let foundInOrder = true;
       for (let i = 0; i < nameWords.length && wordIndex < queryWords.length; i++) {
         if (nameWords[i].includes(queryWords[wordIndex])) {
           wordIndex++;
