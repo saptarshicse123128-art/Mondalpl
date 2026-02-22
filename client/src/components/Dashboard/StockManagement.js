@@ -151,7 +151,6 @@ function StockManagement() {
             purchasePrice: v.purchasePrice ? parseFloat(v.purchasePrice) : null,
             quantity: parseInt(v.quantity),
             lowStockQuantity: v.lowStockQuantity ? parseInt(v.lowStockQuantity) : null,
-            unit: v.unit?.trim() || '',
             catalogueNumber: v.catalogueNumber?.trim() || ''
           }));
         
@@ -166,6 +165,8 @@ function StockManagement() {
         productData.quantity = validVariations.reduce((sum, v) => sum + (v.quantity || 0), 0);
         // Use first variation's price as base price (or calculate average)
         productData.price = validVariations[0].price;
+        // Unit is at product level, same for all variations
+        productData.unit = formData.unit?.trim() || '';
       } else {
         // Single product without variations
         productData.price = parseFloat(formData.price);
@@ -240,7 +241,6 @@ function StockManagement() {
         purchasePrice: v.purchasePrice?.toString() || '',
         quantity: v.quantity?.toString() || '',
         lowStockQuantity: v.lowStockQuantity?.toString() || '',
-        unit: v.unit || '',
         catalogueNumber: v.catalogueNumber || ''
       })));
     } else {
@@ -297,7 +297,6 @@ function StockManagement() {
             purchasePrice: v.purchasePrice ? parseFloat(v.purchasePrice) : null,
             quantity: parseInt(v.quantity),
             lowStockQuantity: v.lowStockQuantity ? parseInt(v.lowStockQuantity) : null,
-            unit: v.unit?.trim() || '',
             catalogueNumber: v.catalogueNumber?.trim() || ''
           }));
         
@@ -312,6 +311,8 @@ function StockManagement() {
         updateData.quantity = validVariations.reduce((sum, v) => sum + (v.quantity || 0), 0);
         // Use first variation's price as base price
         updateData.price = validVariations[0].price;
+        // Unit is at product level, same for all variations
+        updateData.unit = formData.unit?.trim() || '';
       } else {
         // Single product without variations
         updateData.price = parseFloat(formData.price);
@@ -372,7 +373,7 @@ function StockManagement() {
 
   // Variation management helpers
   const handleAddVariation = () => {
-    setVariations([...variations, { size: '', price: '', purchasePrice: '', quantity: '', lowStockQuantity: '', unit: '', catalogueNumber: '' }]);
+    setVariations([...variations, { size: '', price: '', purchasePrice: '', quantity: '', lowStockQuantity: '', catalogueNumber: '' }]);
   };
 
   const handleRemoveVariation = (index) => {
@@ -492,21 +493,105 @@ function StockManagement() {
 
   };
 
-  // Filter products based on search query
-  const filteredProducts = products.filter(product => {
-    if (!searchQuery.trim()) return true;
+  // Calculate relevance score for sorting
+  const calculateRelevanceScore = (product, query) => {
+    if (!query.trim()) return 0;
+    
+    const lowerQuery = query.toLowerCase().trim();
+    const lowerName = (product.name || '').toLowerCase();
+    const lowerCategory = (product.category || '').toLowerCase();
+    const lowerSubcategory = (product.subcategory || '').toLowerCase();
+    
+    let score = 0;
+    
+    // Exact phrase match in name (highest priority)
+    if (lowerName.includes(lowerQuery)) {
+      score += 1000;
+      // Bonus if it starts with the query
+      if (lowerName.startsWith(lowerQuery)) {
+        score += 500;
+      }
+    }
+    
+    // Check if query words appear in order in name
+    const queryWords = lowerQuery.split(/\s+/).filter(w => w.length > 0);
+    const nameWords = lowerName.split(/\s+/);
+    
+    if (queryWords.length > 1) {
+      // Check if words appear in order
+      let wordIndex = 0;
+      let foundInOrder = true;
+      for (let i = 0; i < nameWords.length && wordIndex < queryWords.length; i++) {
+        if (nameWords[i].includes(queryWords[wordIndex])) {
+          wordIndex++;
+        }
+      }
+      if (wordIndex === queryWords.length) {
+        score += 800;
+        // Bonus if words are adjacent
+        let adjacentCount = 0;
+        for (let i = 0; i < nameWords.length - 1; i++) {
+          const twoWords = nameWords[i] + ' ' + nameWords[i + 1];
+          if (lowerQuery.includes(twoWords) || twoWords.includes(lowerQuery)) {
+            adjacentCount++;
+          }
+        }
+        if (adjacentCount > 0) {
+          score += 300;
+        }
+      }
+    }
+    
+    // All query words appear in name (even if not in order)
+    const allWordsMatch = queryWords.every(qw => 
+      nameWords.some(nw => nw.includes(qw) || qw.includes(nw))
+    );
+    if (allWordsMatch) {
+      score += 400;
+    }
+    
+    // Category matches
+    if (lowerCategory.includes(lowerQuery)) {
+      score += 200;
+    }
+    if (lowerSubcategory.includes(lowerQuery)) {
+      score += 150;
+    }
+    
+    // Partial matches in name
+    queryWords.forEach(qw => {
+      if (lowerName.includes(qw)) {
+        score += 100;
+      }
+    });
+    
+    return score;
+  };
+
+  // Filter and sort products based on search query
+  const filteredProducts = (() => {
+    if (!searchQuery.trim()) return products;
     
     const query = searchQuery.trim();
     
-    // Check name, category, description, and price
-    return (
-      matchesSearch(product.name, query) ||
-      matchesSearch(product.category, query) ||
-      matchesSearch(product.subcategory, query) ||
-      matchesSearch(product.description, query) ||
-      product.price?.toString().includes(query)
-    );
-  });
+    // Filter products that match the search
+    const matching = products.filter(product => {
+      return (
+        matchesSearch(product.name, query) ||
+        matchesSearch(product.category, query) ||
+        matchesSearch(product.subcategory, query) ||
+        matchesSearch(product.description, query) ||
+        product.price?.toString().includes(query)
+      );
+    });
+    
+    // Sort by relevance score (highest first)
+    return matching.sort((a, b) => {
+      const scoreA = calculateRelevanceScore(a, query);
+      const scoreB = calculateRelevanceScore(b, query);
+      return scoreB - scoreA; // Descending order
+    });
+  })();
 
   return (
     <div className="stock-management">
@@ -543,106 +628,190 @@ function StockManagement() {
         <div className="add-product-form" ref={formRef}>
           <h3>{editingProduct ? 'Edit Product' : 'Add New Product'}</h3>
           <form onSubmit={editingProduct ? handleUpdateProduct : handleAddProduct}>
-            <div className="form-row">
-              <div className="form-group">
-                <label>Product Name *</label>
-                <input
-                  type="text"
-                  name="name"
-                  value={formData.name}
-                  onChange={handleInputChange}
-                  required
-                />
-              </div>
-              <div className="form-group">
-                <label>Brand</label>
-                <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-                  <select
-                    name="categoryId"
-                    value={selectedCategoryId}
-                    onChange={handleCategorySelect}
-                  >
-                    <option value="">Select brand</option>
-                    {categories.map((c) => (
-                      <option key={c.id} value={c.id}>{c.name}</option>
-                    ))}
-                  </select>
-                  <select
-                    name="subcategory"
-                    value={formData.subcategory}
-                    onChange={handleInputChange}
-                    style={{ minWidth: 160 }}
-                  >
-                    <option value="">No category</option>
-                    {subcategories.map((s) => (
-                      <option key={s} value={s}>{s}</option>
-                    ))}
-                  </select>
-                  <button type="button" className="small-btn" onClick={() => setShowCategoryPanel((v) => !v)}>
-                    Manage
-                  </button>
-                </div>
-              </div>
-              <div className="form-group">
-                <label>HSN Code</label>
-                <input
-                  type="text"
-                  name="hsnCode"
-                  value={formData.hsnCode}
-                  onChange={handleInputChange}
-                  placeholder="Enter HSN code"
-                />
-              </div>
-              {!variationEnabled && (
-                <div className="form-group">
-                  <label>Catalogue Number</label>
-                  <input
-                    type="text"
-                    name="catalogueNumber"
-                    value={formData.catalogueNumber}
-                    onChange={handleInputChange}
-                    placeholder="Enter catalogue number"
-                  />
-                </div>
-              )}
-            </div>
-            <div className="form-row">
-              <div className="form-group" style={{ width: '100%' }}>
-                <label style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                  <input
-                    type="checkbox"
-                    checked={variationEnabled}
-                    onChange={(e) => {
-                      setVariationEnabled(e.target.checked);
-                      if (!e.target.checked) {
-                        setVariations([]);
-                      } else if (variations.length === 0) {
-                        setVariations([{ size: '', price: '', purchasePrice: '', quantity: '', lowStockQuantity: '', unit: '', catalogueNumber: '' }]);
-                      }
-                    }}
-                    style={{ width: 'auto', margin: 0 }}
-                  />
-                  <span>Enable Variations</span>
-                </label>
-              </div>
-            </div>
-            
-            {!variationEnabled ? (
+            {variationEnabled ? (
               <>
+                {/* When Variations Enabled: Product Name, Brand, HSN Code, Unit in first row */}
                 <div className="form-row">
                   <div className="form-group">
-                    <label>Price *</label>
+                    <label>Product Name *</label>
+                    <input
+                      type="text"
+                      name="name"
+                      value={formData.name}
+                      onChange={handleInputChange}
+                      required
+                    />
+                  </div>
+                  <div className="form-group">
+                    <label>Brand</label>
+                    <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                      <select
+                        name="categoryId"
+                        value={selectedCategoryId}
+                        onChange={handleCategorySelect}
+                      >
+                        <option value="">Select brand</option>
+                        {categories.map((c) => (
+                          <option key={c.id} value={c.id}>{c.name}</option>
+                        ))}
+                      </select>
+                      <select
+                        name="subcategory"
+                        value={formData.subcategory}
+                        onChange={handleInputChange}
+                        style={{ minWidth: 160 }}
+                      >
+                        <option value="">No category</option>
+                        {subcategories.map((s) => (
+                          <option key={s} value={s}>{s}</option>
+                        ))}
+                      </select>
+                      <button type="button" className="small-btn" onClick={() => setShowCategoryPanel((v) => !v)}>
+                        Manage
+                      </button>
+                    </div>
+                  </div>
+                  <div className="form-group">
+                    <label>HSN Code</label>
+                    <input
+                      type="text"
+                      name="hsnCode"
+                      value={formData.hsnCode}
+                      onChange={handleInputChange}
+                      placeholder="Enter HSN code"
+                    />
+                  </div>
+                  <div className="form-group">
+                    <label>Unit</label>
+                    <input
+                      type="text"
+                      name="unit"
+                      value={formData.unit}
+                      onChange={handleInputChange}
+                      placeholder="e.g., kg, pcs, liters"
+                    />
+                  </div>
+                </div>
+                <div className="form-row">
+                  <div className="form-group" style={{ width: '100%' }}>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                      <input
+                        type="checkbox"
+                        checked={variationEnabled}
+                        onChange={(e) => {
+                          setVariationEnabled(e.target.checked);
+                          if (!e.target.checked) {
+                            setVariations([]);
+                          } else if (variations.length === 0) {
+                            setVariations([{ size: '', price: '', purchasePrice: '', quantity: '', lowStockQuantity: '', catalogueNumber: '' }]);
+                          }
+                        }}
+                        style={{ width: 'auto', margin: 0 }}
+                      />
+                      <span>Enable Variations</span>
+                    </label>
+                  </div>
+                </div>
+              </>
+            ) : (
+              <>
+                {/* When Variations Disabled: Two column layout matching the image */}
+                <div className="form-row">
+                  <div className="form-group">
+                    <label>Product Name *</label>
+                    <input
+                      type="text"
+                      name="name"
+                      value={formData.name}
+                      onChange={handleInputChange}
+                      required
+                    />
+                  </div>
+                  <div className="form-group">
+                    <label>Brand</label>
+                    <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                      <select
+                        name="categoryId"
+                        value={selectedCategoryId}
+                        onChange={handleCategorySelect}
+                      >
+                        <option value="">Select brand</option>
+                        {categories.map((c) => (
+                          <option key={c.id} value={c.id}>{c.name}</option>
+                        ))}
+                      </select>
+                      <select
+                        name="subcategory"
+                        value={formData.subcategory}
+                        onChange={handleInputChange}
+                        style={{ minWidth: 160 }}
+                      >
+                        <option value="">No category</option>
+                        {subcategories.map((s) => (
+                          <option key={s} value={s}>{s}</option>
+                        ))}
+                      </select>
+                      <button type="button" className="small-btn" onClick={() => setShowCategoryPanel((v) => !v)}>
+                        Manage
+                      </button>
+                    </div>
+                  </div>
+                </div>
+                <div className="form-row">
+                  <div className="form-group">
+                    <label>HSN Code</label>
+                    <input
+                      type="text"
+                      name="hsnCode"
+                      value={formData.hsnCode}
+                      onChange={handleInputChange}
+                      placeholder="Enter HSN code"
+                    />
+                  </div>
+                  <div className="form-group">
+                    <label>Unit</label>
+                    <input
+                      type="text"
+                      name="unit"
+                      value={formData.unit}
+                      onChange={handleInputChange}
+                      placeholder="e.g., kg, pcs, liters"
+                    />
+                  </div>
+                </div>
+                <div className="form-row">
+                  <div className="form-group">
+                    <label style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                      <input
+                        type="checkbox"
+                        checked={variationEnabled}
+                        onChange={(e) => {
+                          setVariationEnabled(e.target.checked);
+                          if (!e.target.checked) {
+                            setVariations([]);
+                          } else if (variations.length === 0) {
+                            setVariations([{ size: '', price: '', purchasePrice: '', quantity: '', lowStockQuantity: '', catalogueNumber: '' }]);
+                          }
+                        }}
+                        style={{ width: 'auto', margin: 0 }}
+                      />
+                      <span>Enable Variations</span>
+                    </label>
+                  </div>
+                  <div className="form-group">
+                    <label>Quantity *</label>
                     <input
                       type="number"
-                      name="price"
-                      value={formData.price}
+                      name="quantity"
+                      value={formData.quantity}
                       onChange={handleInputChange}
                       onWheel={handleNumberInputWheel}
-                      step="0.01"
                       min="0"
                       required={!variationEnabled}
                     />
                   </div>
+                </div>
+                <div className="form-row">
                   <div className="form-group">
                     <label>Purchase Price</label>
                     <input
@@ -657,13 +826,14 @@ function StockManagement() {
                     />
                   </div>
                   <div className="form-group">
-                    <label>Quantity *</label>
+                    <label>Price *</label>
                     <input
                       type="number"
-                      name="quantity"
-                      value={formData.quantity}
+                      name="price"
+                      value={formData.price}
                       onChange={handleInputChange}
                       onWheel={handleNumberInputWheel}
+                      step="0.01"
                       min="0"
                       required={!variationEnabled}
                     />
@@ -683,18 +853,20 @@ function StockManagement() {
                     />
                   </div>
                   <div className="form-group">
-                    <label>Unit</label>
+                    <label>Catalogue Number</label>
                     <input
                       type="text"
-                      name="unit"
-                      value={formData.unit}
+                      name="catalogueNumber"
+                      value={formData.catalogueNumber}
                       onChange={handleInputChange}
-                      placeholder="e.g., kg, pcs, liters"
+                      placeholder="Enter catalogue number"
                     />
                   </div>
                 </div>
               </>
-            ) : (
+            )}
+            
+            {variationEnabled ? (
               <div className="variations-section" style={{ marginTop: '15px', marginBottom: '15px' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
                   <label style={{ fontWeight: 'bold' }}>Product Variations</label>
@@ -744,15 +916,14 @@ function StockManagement() {
                             />
                           </div>
                           <div className="form-group">
-                            <label>Price *</label>
+                            <label>Quantity *</label>
                             <input
                               type="number"
-                              value={variation.price}
-                              onChange={(e) => handleVariationChange(index, 'price', e.target.value)}
+                              value={variation.quantity}
+                              onChange={(e) => handleVariationChange(index, 'quantity', e.target.value)}
                               onWheel={handleNumberInputWheel}
-                              step="0.01"
                               min="0"
-                              placeholder="0.00"
+                              placeholder="0"
                               required
                             />
                           </div>
@@ -769,14 +940,15 @@ function StockManagement() {
                             />
                           </div>
                           <div className="form-group">
-                            <label>Quantity *</label>
+                            <label>Price *</label>
                             <input
                               type="number"
-                              value={variation.quantity}
-                              onChange={(e) => handleVariationChange(index, 'quantity', e.target.value)}
+                              value={variation.price}
+                              onChange={(e) => handleVariationChange(index, 'price', e.target.value)}
                               onWheel={handleNumberInputWheel}
+                              step="0.01"
                               min="0"
-                              placeholder="0"
+                              placeholder="0.00"
                               required
                             />
                           </div>
@@ -794,15 +966,6 @@ function StockManagement() {
                             />
                           </div>
                           <div className="form-group">
-                            <label>Unit</label>
-                            <input
-                              type="text"
-                              value={variation.unit || ''}
-                              onChange={(e) => handleVariationChange(index, 'unit', e.target.value)}
-                              placeholder="e.g., kg, pcs, liters"
-                            />
-                          </div>
-                          <div className="form-group">
                             <label>Catalogue Number</label>
                             <input
                               type="text"
@@ -817,7 +980,7 @@ function StockManagement() {
                   </div>
                 )}
               </div>
-            )}
+            ) : null}
             
             <div style={{ display: 'flex', gap: '10px', alignItems: 'center', marginTop: '20px' }}>
               {variationEnabled && (
