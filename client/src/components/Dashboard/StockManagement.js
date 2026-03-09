@@ -604,6 +604,30 @@ function StockManagement() {
             } else {
               setShowAddForm(true);
               setEditingProduct(null);
+              // When adding a fresh product, start with one default variation row
+              setVariationEnabled(true);
+              setVariations([{
+                size: '',
+                price: '',
+                purchasePrice: '',
+                quantity: '',
+                lowStockQuantity: '',
+                catalogueNumber: ''
+              }]);
+              setFormData({
+                name: '',
+                price: '',
+                purchasePrice: '',
+                quantity: '',
+                category: '',
+                subcategory: '',
+                hsnCode: '',
+                catalogueNumber: '',
+                lowStockQuantity: '',
+                unit: ''
+              });
+              setSelectedCategoryId('');
+              setSubcategories([]);
               // Scroll to form after a short delay to ensure DOM is updated
               setTimeout(() => {
                 if (formRef.current) {
@@ -1081,9 +1105,12 @@ function StockManagement() {
               <tr>
                 <th>Name</th>
                 <th>Brand</th>
+                <th>Catalogue No.</th>
+                <th>HSN</th>
+                <th>Low Alert Qty</th>
                 <th>Purchase Price</th>
                 <th>Price</th>
-                <th>Quantity</th>
+                <th>Quantity (Unit)</th>
                 <th>Actions</th>
               </tr>
             </thead>
@@ -1126,6 +1153,21 @@ function StockManagement() {
                         </div>
                       </td>
                       <td data-label="Brand">{product.category}{product.subcategory ? ' / ' + product.subcategory : ''}</td>
+                      <td data-label="Catalogue No.">
+                        {hasVariations ? (
+                          <span style={{ color: '#999', fontStyle: 'italic' }}>See variations</span>
+                        ) : (
+                          <>{product.catalogueNumber || '-'}</>
+                        )}
+                      </td>
+                      <td data-label="HSN">{product.hsnCode || '-'}</td>
+                      <td data-label="Low Alert Qty">
+                        {hasVariations ? (
+                          <span style={{ color: '#999', fontStyle: 'italic' }}>See variations</span>
+                        ) : (
+                          <>{product.lowStockQuantity ?? '-'}</>
+                        )}
+                      </td>
                       <td data-label="Purchase Price">
                         {hasVariations ? (
                           <span style={{ color: '#999', fontStyle: 'italic' }}>See variations</span>
@@ -1140,11 +1182,14 @@ function StockManagement() {
                           <>₹{product.price?.toFixed(2) || '0.00'}</>
                         )}
                       </td>
-                      <td data-label="Quantity">
+                      <td data-label="Quantity (Unit)">
                         {hasVariations ? (
                           <span style={{ color: '#999', fontStyle: 'italic' }}>See variations</span>
                         ) : (
-                          <>{product.quantity || 0}</>
+                          <>
+                            {product.quantity || 0}{' '}
+                            {product.unit || ''}
+                          </>
                         )}
                       </td>
                       <td data-label="Actions">
@@ -1166,7 +1211,7 @@ function StockManagement() {
                     </tr>
                     {hasVariations && isVariationOpen && (
                       <tr>
-                        <td colSpan="6" style={{ padding: '0', backgroundColor: '#f5f5f5' }}>
+                        <td colSpan="9" style={{ padding: '0', backgroundColor: '#f5f5f5' }}>
                           <div style={{ padding: '15px', marginLeft: '30px' }}>
                             <h4 style={{ margin: '0 0 10px 0', color: '#333', fontSize: '14px', fontWeight: 'bold' }}>
                               Product Variations:
@@ -1175,18 +1220,31 @@ function StockManagement() {
                               <thead>
                                 <tr style={{ backgroundColor: '#f0f0f0' }}>
                                   <th style={{ padding: '8px', textAlign: 'left', border: '1px solid #ddd', fontSize: '13px' }}>Size</th>
+                                  <th style={{ padding: '8px', textAlign: 'left', border: '1px solid #ddd', fontSize: '13px' }}>Catalogue No.</th>
+                                  <th style={{ padding: '8px', textAlign: 'left', border: '1px solid #ddd', fontSize: '13px' }}>HSN</th>
+                                  <th style={{ padding: '8px', textAlign: 'right', border: '1px solid #ddd', fontSize: '13px' }}>Low Alert Qty</th>
                                   <th style={{ padding: '8px', textAlign: 'right', border: '1px solid #ddd', fontSize: '13px' }}>Purchase Price</th>
                                   <th style={{ padding: '8px', textAlign: 'right', border: '1px solid #ddd', fontSize: '13px' }}>Price</th>
-                                  <th style={{ padding: '8px', textAlign: 'right', border: '1px solid #ddd', fontSize: '13px' }}>Quantity</th>
+                                  <th style={{ padding: '8px', textAlign: 'right', border: '1px solid #ddd', fontSize: '13px' }}>Qty (Unit)</th>
                                 </tr>
                               </thead>
                               <tbody>
                                 {product.variations.map((variation, index) => (
                                   <tr key={index}>
                                     <td style={{ padding: '8px', border: '1px solid #ddd', fontSize: '13px' }}>{variation.size || '-'}</td>
-                                    <td style={{ padding: '8px', textAlign: 'right', border: '1px solid #ddd', fontSize: '13px' }}>₹{variation.purchasePrice?.toFixed(2) || '-'}</td>
-                                    <td style={{ padding: '8px', textAlign: 'right', border: '1px solid #ddd', fontSize: '13px' }}>₹{variation.price?.toFixed(2) || '0.00'}</td>
-                                    <td style={{ padding: '8px', textAlign: 'right', border: '1px solid #ddd', fontSize: '13px' }}>{variation.quantity || 0}</td>
+                                    <td style={{ padding: '8px', border: '1px solid #ddd', fontSize: '13px' }}>{variation.catalogueNumber || '-'}</td>
+                                    <td style={{ padding: '8px', border: '1px solid #ddd', fontSize: '13px' }}>{product.hsnCode || '-'}</td>
+                                    <td style={{ padding: '8px', textAlign: 'right', border: '1px solid #ddd', fontSize: '13px' }}>{variation.lowStockQuantity ?? '-'}</td>
+                                    <td style={{ padding: '8px', textAlign: 'right', border: '1px solid #ddd', fontSize: '13px' }}>
+                                      ₹{typeof variation.purchasePrice === 'number' ? variation.purchasePrice.toFixed(2) : '-'}
+                                    </td>
+                                    <td style={{ padding: '8px', textAlign: 'right', border: '1px solid #ddd', fontSize: '13px' }}>
+                                      ₹{typeof variation.price === 'number' ? variation.price.toFixed(2) : '0.00'}
+                                    </td>
+                                    <td style={{ padding: '8px', textAlign: 'right', border: '1px solid #ddd', fontSize: '13px' }}>
+                                      {variation.quantity || 0}{' '}
+                                      {product.unit || ''}
+                                    </td>
                                   </tr>
                                 ))}
                               </tbody>

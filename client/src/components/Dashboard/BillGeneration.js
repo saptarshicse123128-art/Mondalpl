@@ -1758,6 +1758,73 @@ function BillGeneration() {
     return matchedWords.length >= matchThreshold;
   };
 
+  // Relevance scoring similar to Stock Management search
+  const calculateProductSearchRelevance = (product, query) => {
+    if (!query.trim()) return 0;
+    
+    const lowerQuery = query.toLowerCase().trim();
+    const lowerName = (product.name || '').toLowerCase();
+    const lowerCategory = (product.category || '').toLowerCase();
+    const lowerSubcategory = (product.subcategory || '').toLowerCase();
+    
+    let score = 0;
+    
+    // Exact phrase match in name
+    if (lowerName.includes(lowerQuery)) {
+      score += 1000;
+      if (lowerName.startsWith(lowerQuery)) {
+        score += 500;
+      }
+    }
+    
+    const queryWords = lowerQuery.split(/\s+/).filter(w => w.length > 0);
+    const nameWords = lowerName.split(/\s+/);
+    
+    if (queryWords.length > 1) {
+      let wordIndex = 0;
+      for (let i = 0; i < nameWords.length && wordIndex < queryWords.length; i++) {
+        if (nameWords[i].includes(queryWords[wordIndex])) {
+          wordIndex++;
+        }
+      }
+      if (wordIndex === queryWords.length) {
+        score += 800;
+        let adjacentCount = 0;
+        for (let i = 0; i < nameWords.length - 1; i++) {
+          const twoWords = nameWords[i] + ' ' + nameWords[i + 1];
+          if (lowerQuery.includes(twoWords) || twoWords.includes(lowerQuery)) {
+            adjacentCount++;
+          }
+        }
+        if (adjacentCount > 0) {
+          score += 300;
+        }
+      }
+    }
+    
+    const allWordsMatch = queryWords.every(qw =>
+      nameWords.some(nw => nw.includes(qw) || qw.includes(nw))
+    );
+    if (allWordsMatch) {
+      score += 400;
+    }
+    
+    if (lowerCategory.includes(lowerQuery)) {
+      score += 200;
+    }
+    if (lowerSubcategory.includes(lowerQuery)) {
+      score += 150;
+    }
+    
+    queryWords.forEach(qw => {
+      if (lowerName.includes(qw)) {
+        score += 100;
+      }
+    });
+    
+    return score;
+  };
+
   return (
     <div className="bill-generation">
       <div className="bill-header">
@@ -2109,14 +2176,14 @@ function BillGeneration() {
                     placeholder="Enter phone number"
                   />
                 </div>
-                <div className="form-group full-width">
+                <div className="form-group">
                   <label>Address</label>
-                  <textarea
+                  <input
+                    type="text"
                     name="address"
                     value={billForm.address}
                     onChange={handleFormChange}
                     placeholder="Enter customer address"
-                    rows="3"
                   />
                 </div>
               </div>
@@ -2241,14 +2308,34 @@ function BillGeneration() {
                       />
                       {showProductDropdown && (
                         <div className="product-dropdown">
-                          {products
-                            .filter(p => p.quantity > 0 && (!productSearchQuery || 
-                              matchesProductSearch(p.name, productSearchQuery) || 
-                              (p.category && matchesProductSearch(p.category, productSearchQuery)) ||
-                              (p.subcategory && matchesProductSearch(p.subcategory, productSearchQuery))
-                            ))
-                            .slice(0, 10)
-                            .map((product) => (
+                          {(() => {
+                            const trimmedQuery = (productSearchQuery || '').trim();
+                            const matching = products.filter(p =>
+                              p.quantity > 0 &&
+                              (
+                                !trimmedQuery ||
+                                matchesProductSearch(p.name, trimmedQuery) ||
+                                (p.category && matchesProductSearch(p.category, trimmedQuery)) ||
+                                (p.subcategory && matchesProductSearch(p.subcategory, trimmedQuery))
+                              )
+                            );
+                            
+                            if (matching.length === 0) {
+                              return (
+                                <div className="product-dropdown-item no-results">
+                                  No products found
+                                </div>
+                              );
+                            }
+                            
+                            const sorted = trimmedQuery
+                              ? matching.sort((a, b) =>
+                                  calculateProductSearchRelevance(b, trimmedQuery) -
+                                  calculateProductSearchRelevance(a, trimmedQuery)
+                                )
+                              : matching;
+                            
+                            return sorted.slice(0, 30).map((product) => (
                               <div
                                 key={product.id}
                                 className="product-dropdown-item"
@@ -2261,27 +2348,15 @@ function BillGeneration() {
                                 }}
                               >
                                 <span className="product-name">{product.name}</span>
-                                {product.category && (
-                                  <span className="product-category">({product.category}{product.subcategory ? ` - ${product.subcategory}` : ''})</span>
-                                )}
                                 {(!product.variations || !Array.isArray(product.variations) || product.variations.length === 0) && (
-                                  <>
-                                    <span className="product-price">₹{product.price?.toFixed(2)}</span>
-                                    <span className="product-stock">Stock: {product.quantity}</span>
-                                  </>
+                                  <span className="product-price">₹{product.price?.toFixed(2)}</span>
                                 )}
                                 {product.variations && Array.isArray(product.variations) && product.variations.length > 0 && (
                                   <span className="product-stock" style={{ color: '#667eea' }}>Has variations - Select size</span>
                                 )}
                               </div>
-                            ))}
-                          {products.filter(p => p.quantity > 0 && (!productSearchQuery || 
-                            matchesProductSearch(p.name, productSearchQuery) || 
-                            (p.category && matchesProductSearch(p.category, productSearchQuery)) ||
-                            (p.subcategory && matchesProductSearch(p.subcategory, productSearchQuery))
-                          )).length === 0 && (
-                            <div className="product-dropdown-item no-results">No products found</div>
-                          )}
+                            ));
+                          })()}
                         </div>
                       )}
                     </div>
@@ -2308,7 +2383,7 @@ function BillGeneration() {
                               .filter(v => (v.quantity || 0) > 0) // Only show variations with stock
                               .map((variation, index) => (
                                 <option key={index} value={variation.size}>
-                                  {variation.size} (Stock: {variation.quantity || 0})
+                                  {variation.size}
                                 </option>
                               ))}
                           </select>
@@ -2317,7 +2392,7 @@ function BillGeneration() {
                     }
                     return null;
                   })()}
-                  <div className="form-group">
+                  <div className="form-group quantity-group">
                     <label>Quantity *</label>
                     <input
                       type="number"
