@@ -3,6 +3,7 @@ import jsPDF from 'jspdf';
 import 'jspdf-autotable';
 import { collection, addDoc, onSnapshot, query, orderBy, serverTimestamp, getDocs, deleteDoc, doc, getDoc, updateDoc } from 'firebase/firestore';
 import { db } from '../../firebase';
+import { formatProductWithVariation, normalizeSizeNamePosition } from '../../utils/productDisplay';
 import './Analytics.css';
 
 // Helper function to format date to dd.mm.yyyy
@@ -55,11 +56,31 @@ function PurchaseOrder() {
   const [selectedRestockOrderId, setSelectedRestockOrderId] = useState('');
   const [restockLoading, setRestockLoading] = useState(false);
   const [restockQuantities, setRestockQuantities] = useState({});
+  const [sizeNamePosition, setSizeNamePosition] = useState('left');
   const smallActionButtonStyle = {
     padding: '0.35rem 0.8rem',
     fontSize: '0.8rem',
     minWidth: '70px'
   };
+
+  useEffect(() => {
+    const settingsRef = doc(db, 'settings', 'app');
+    const unsub = onSnapshot(
+      settingsRef,
+      (snapshot) => {
+        if (snapshot.exists()) {
+          setSizeNamePosition(normalizeSizeNamePosition(snapshot.data().sizeNamePosition));
+        } else {
+          setSizeNamePosition('left');
+        }
+      },
+      (err) => {
+        console.error('Failed to listen to app settings:', err);
+        setSizeNamePosition('left');
+      }
+    );
+    return () => unsub();
+  }, []);
 
   useEffect(() => {
     const fetchLowStock = async () => {
@@ -439,7 +460,9 @@ function PurchaseOrder() {
           if (selectedIds.includes(v.id)) {
             items.push({
               id: v.id,
-              name: v.size ? `${product.name} - ${v.size}` : product.name,
+              name: v.size
+                ? formatProductWithVariation(product.name, v.size, sizeNamePosition)
+                : product.name,
               catalogueNumber: v.catalogueNumber || product.catalogueNumber || '',
               orderQuantity: '1'
             });

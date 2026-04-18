@@ -6,10 +6,12 @@ import {
   doc, 
   updateDoc,
   onSnapshot,
-  serverTimestamp
+  serverTimestamp,
+  setDoc
 } from 'firebase/firestore';
 import { db } from '../../firebase';
 import { categoryService } from '../../services/firebaseService';
+import { normalizeSizeNamePosition } from '../../utils/productDisplay';
 import './StockManagement.css';
 
 function StockManagement() {
@@ -41,6 +43,7 @@ function StockManagement() {
   const [variationEnabled, setVariationEnabled] = useState(true);
   const [variations, setVariations] = useState([]);
   const [openVariationProductId, setOpenVariationProductId] = useState(null);
+  const [sizeNamePosition, setSizeNamePosition] = useState('left');
   const formRef = useRef(null);
 
   useEffect(() => {
@@ -89,6 +92,25 @@ function StockManagement() {
     };
   }, []);
 
+  useEffect(() => {
+    const settingsRef = doc(db, 'settings', 'app');
+    const unsub = onSnapshot(
+      settingsRef,
+      (snapshot) => {
+        if (snapshot.exists()) {
+          setSizeNamePosition(normalizeSizeNamePosition(snapshot.data().sizeNamePosition));
+        } else {
+          setSizeNamePosition('left');
+        }
+      },
+      (err) => {
+        console.error('Failed to listen to app settings:', err);
+        setSizeNamePosition('left');
+      }
+    );
+    return () => unsub();
+  }, []);
+
   // When categories change, if current selectedCategoryId exists update its subcategories
   useEffect(() => {
     if (!selectedCategoryId) return;
@@ -106,6 +128,16 @@ function StockManagement() {
   // Prevent number input from changing value on scroll
   const handleNumberInputWheel = (e) => {
     e.target.blur();
+  };
+
+  const persistSizeNamePosition = async (next) => {
+    const value = normalizeSizeNamePosition(next);
+    try {
+      await setDoc(doc(db, 'settings', 'app'), { sizeNamePosition: value }, { merge: true });
+    } catch (e) {
+      console.error(e);
+      setMessage({ type: 'error', text: 'Could not save size name position.' });
+    }
   };
 
   const handleCategorySelect = (e) => {
@@ -639,6 +671,65 @@ function StockManagement() {
         >
           {showAddForm ? 'Cancel' : '+ Add New Product'}
         </button>
+      </div>
+
+      <div
+        className="size-name-position-settings"
+        style={{
+          marginBottom: '1rem',
+          padding: '12px 16px',
+          background: '#f8f9fa',
+          borderRadius: '8px',
+          border: '1px solid #e9ecef',
+          display: 'flex',
+          flexWrap: 'wrap',
+          alignItems: 'center',
+          gap: '12px'
+        }}
+      >
+        <span style={{ fontWeight: 600 }}>Size name position</span>
+        <span style={{ color: '#555', fontSize: '0.9rem', maxWidth: '420px' }}>
+          On bills and purchase orders, show the variation size before or after the product name (default: left = size first).
+        </span>
+        <div
+          style={{
+            display: 'inline-flex',
+            borderRadius: '8px',
+            overflow: 'hidden',
+            border: '1px solid #ccc',
+            marginLeft: 'auto'
+          }}
+        >
+          <button
+            type="button"
+            onClick={() => persistSizeNamePosition('left')}
+            style={{
+              padding: '8px 16px',
+              border: 'none',
+              cursor: 'pointer',
+              fontWeight: 600,
+              background: sizeNamePosition === 'left' ? '#667eea' : '#fff',
+              color: sizeNamePosition === 'left' ? '#fff' : '#333'
+            }}
+          >
+            Left
+          </button>
+          <button
+            type="button"
+            onClick={() => persistSizeNamePosition('right')}
+            style={{
+              padding: '8px 16px',
+              border: 'none',
+              borderLeft: '1px solid #ccc',
+              cursor: 'pointer',
+              fontWeight: 600,
+              background: sizeNamePosition === 'right' ? '#667eea' : '#fff',
+              color: sizeNamePosition === 'right' ? '#fff' : '#333'
+            }}
+          >
+            Right
+          </button>
+        </div>
       </div>
 
       {message.text && (

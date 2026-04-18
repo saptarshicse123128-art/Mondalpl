@@ -3,6 +3,7 @@ import { collection, addDoc, getDocs, onSnapshot, serverTimestamp, doc, updateDo
 import { db } from '../../firebase';
 import jsPDF from 'jspdf';
 import 'jspdf-autotable';
+import { formatProductWithVariation, normalizeSizeNamePosition } from '../../utils/productDisplay';
 import './BillGeneration.css';
 
 function BillGeneration() {
@@ -42,6 +43,7 @@ function BillGeneration() {
   const [openMenuBillId, setOpenMenuBillId] = useState(null);
   const [returningBillId, setReturningBillId] = useState(null);
   const [returnItems, setReturnItems] = useState([]);
+  const [sizeNamePosition, setSizeNamePosition] = useState('left');
 
   useEffect(() => {
     const unsubscribe = onSnapshot(collection(db, 'products'), (snapshot) => {
@@ -53,6 +55,25 @@ function BillGeneration() {
     });
 
     return () => unsubscribe();
+  }, []);
+
+  useEffect(() => {
+    const settingsRef = doc(db, 'settings', 'app');
+    const unsub = onSnapshot(
+      settingsRef,
+      (snapshot) => {
+        if (snapshot.exists()) {
+          setSizeNamePosition(normalizeSizeNamePosition(snapshot.data().sizeNamePosition));
+        } else {
+          setSizeNamePosition('left');
+        }
+      },
+      (err) => {
+        console.error('Failed to listen to app settings:', err);
+        setSizeNamePosition('left');
+      }
+    );
+    return () => unsub();
   }, []);
 
   // Close menu when clicking outside
@@ -968,11 +989,11 @@ function BillGeneration() {
         const quantity = parseInt(item.quantity || 0);
         const amount = parseFloat(item.subtotal || (price * quantity));
         
-        // Include variation size in product name if it exists
-        let productName = String(item.productName || 'N/A');
-        if (item.variationSize) {
-          productName = `${productName} ${item.variationSize}`;
-        }
+        const productName = formatProductWithVariation(
+          item.productName || 'N/A',
+          item.variationSize,
+          sizeNamePosition
+        );
         
         return [
           String(index + 1), // SL No.
@@ -1055,11 +1076,11 @@ function BillGeneration() {
           const quantity = parseInt(item.quantity || 0);
           const amount = parseFloat(item.subtotal || (price * quantity));
           
-          // Include variation size in product name if it exists
-          let productName = String(item.productName || 'N/A');
-          if (item.variationSize) {
-            productName = `${productName} ${item.variationSize}`;
-          }
+          const productName = formatProductWithVariation(
+            item.productName || 'N/A',
+            item.variationSize,
+            sizeNamePosition
+          );
           
           return [
             String(index + 1), // SL No.
@@ -1356,11 +1377,11 @@ function BillGeneration() {
         const quantity = parseInt(item.quantity || 0);
         const amount = parseFloat(item.subtotal || (price * quantity));
         
-        // Include variation size in product name if it exists
-        let productName = String(item.productName || 'N/A');
-        if (item.variationSize) {
-          productName = `${productName} ${item.variationSize}`;
-        }
+        const productName = formatProductWithVariation(
+          item.productName || 'N/A',
+          item.variationSize,
+          sizeNamePosition
+        );
         
         return [
           String(index + 1), // SL No.
@@ -1443,11 +1464,11 @@ function BillGeneration() {
           const quantity = parseInt(item.quantity || 0);
           const amount = parseFloat(item.subtotal || (price * quantity));
           
-          // Include variation size in product name if it exists
-          let productName = String(item.productName || 'N/A');
-          if (item.variationSize) {
-            productName = `${productName} ${item.variationSize}`;
-          }
+          const productName = formatProductWithVariation(
+            item.productName || 'N/A',
+            item.variationSize,
+            sizeNamePosition
+          );
           
           return [
             String(index + 1), // SL No.
@@ -2465,8 +2486,7 @@ function BillGeneration() {
                         <tr key={item.id}>
                             <td data-label="SL No.">{index + 1}</td>
                           <td data-label="Product">
-                            {item.name}
-                            {item.variationSize && <span style={{ color: '#666', fontSize: '0.9em', marginLeft: '4px' }}> {item.variationSize}</span>}
+                            {formatProductWithVariation(item.name, item.variationSize, sizeNamePosition)}
                           </td>
                           <td data-label="Brand">{item.category || '-'}</td>
                           <td data-label="Category">{item.subcategory || '-'}</td>
@@ -2808,8 +2828,7 @@ function BillGeneration() {
                       <tr key={item.originalIndex || index} style={{ backgroundColor: item.returnQuantity > 0 ? '#fff9e6' : 'white' }}>
                         <td style={{ padding: '12px', border: '1px solid #ddd' }}>
                           <div style={{ fontWeight: '500' }}>
-                            {item.productName || item.name}
-                            {item.variationSize && <span style={{ color: '#666', fontSize: '0.9em', marginLeft: '4px' }}> {item.variationSize}</span>}
+                            {formatProductWithVariation(item.productName || item.name, item.variationSize, sizeNamePosition)}
                           </div>
                           {item.alreadyReturned > 0 && (
                             <span style={{ color: '#999', fontSize: '0.85em', display: 'block', marginTop: '4px' }}>
