@@ -43,7 +43,6 @@ function BillGeneration() {
   const [openMenuBillId, setOpenMenuBillId] = useState(null);
   const [returningBillId, setReturningBillId] = useState(null);
   const [returnItems, setReturnItems] = useState([]);
-  const [sizeNamePosition, setSizeNamePosition] = useState('left');
 
   useEffect(() => {
     const unsubscribe = onSnapshot(collection(db, 'products'), (snapshot) => {
@@ -57,24 +56,18 @@ function BillGeneration() {
     return () => unsubscribe();
   }, []);
 
-  useEffect(() => {
-    const settingsRef = doc(db, 'settings', 'app');
-    const unsub = onSnapshot(
-      settingsRef,
-      (snapshot) => {
-        if (snapshot.exists()) {
-          setSizeNamePosition(normalizeSizeNamePosition(snapshot.data().sizeNamePosition));
-        } else {
-          setSizeNamePosition('left');
-        }
-      },
-      (err) => {
-        console.error('Failed to listen to app settings:', err);
-        setSizeNamePosition('left');
-      }
-    );
-    return () => unsub();
-  }, []);
+  const positionForSavedBillItem = (item) => {
+    const pid = item.productId;
+    if (!pid) return 'left';
+    const p = products.find((x) => x.id === pid);
+    return normalizeSizeNamePosition(p?.sizeNamePosition);
+  };
+
+  const positionForCartItem = (item) => {
+    if (item.isCustomProduct) return 'left';
+    const p = products.find((x) => x.id === item.id);
+    return normalizeSizeNamePosition(p?.sizeNamePosition);
+  };
 
   // Close menu when clicking outside
   useEffect(() => {
@@ -992,7 +985,7 @@ function BillGeneration() {
         const productName = formatProductWithVariation(
           item.productName || 'N/A',
           item.variationSize,
-          sizeNamePosition
+          positionForSavedBillItem(item)
         );
         
         return [
@@ -1079,7 +1072,7 @@ function BillGeneration() {
           const productName = formatProductWithVariation(
             item.productName || 'N/A',
             item.variationSize,
-            sizeNamePosition
+            positionForSavedBillItem(item)
           );
           
           return [
@@ -1380,7 +1373,7 @@ function BillGeneration() {
         const productName = formatProductWithVariation(
           item.productName || 'N/A',
           item.variationSize,
-          sizeNamePosition
+          positionForSavedBillItem(item)
         );
         
         return [
@@ -1467,7 +1460,7 @@ function BillGeneration() {
           const productName = formatProductWithVariation(
             item.productName || 'N/A',
             item.variationSize,
-            sizeNamePosition
+            positionForSavedBillItem(item)
           );
           
           return [
@@ -2486,7 +2479,7 @@ function BillGeneration() {
                         <tr key={item.id}>
                             <td data-label="SL No.">{index + 1}</td>
                           <td data-label="Product">
-                            {formatProductWithVariation(item.name, item.variationSize, sizeNamePosition)}
+                            {formatProductWithVariation(item.name, item.variationSize, positionForCartItem(item))}
                           </td>
                           <td data-label="Brand">{item.category || '-'}</td>
                           <td data-label="Category">{item.subcategory || '-'}</td>
@@ -2828,7 +2821,7 @@ function BillGeneration() {
                       <tr key={item.originalIndex || index} style={{ backgroundColor: item.returnQuantity > 0 ? '#fff9e6' : 'white' }}>
                         <td style={{ padding: '12px', border: '1px solid #ddd' }}>
                           <div style={{ fontWeight: '500' }}>
-                            {formatProductWithVariation(item.productName || item.name, item.variationSize, sizeNamePosition)}
+                            {formatProductWithVariation(item.productName || item.name, item.variationSize, positionForSavedBillItem(item))}
                           </div>
                           {item.alreadyReturned > 0 && (
                             <span style={{ color: '#999', fontSize: '0.85em', display: 'block', marginTop: '4px' }}>

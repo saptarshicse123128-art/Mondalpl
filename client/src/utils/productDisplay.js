@@ -1,5 +1,5 @@
 /**
- * Controls how a variation size is shown together with the product name.
+ * Controls how a variation size is shown with the product name (stored per product on `products` as `sizeNamePosition`).
  * - left: size before the product name (e.g. '½" GI Nipple')
  * - right: size after the product name (e.g. 'GI Nipple ½"')
  */

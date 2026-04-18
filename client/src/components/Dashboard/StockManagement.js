@@ -7,7 +7,7 @@ import {
   updateDoc,
   onSnapshot,
   serverTimestamp,
-  setDoc
+  deleteField
 } from 'firebase/firestore';
 import { db } from '../../firebase';
 import { categoryService } from '../../services/firebaseService';
@@ -43,7 +43,8 @@ function StockManagement() {
   const [variationEnabled, setVariationEnabled] = useState(true);
   const [variations, setVariations] = useState([]);
   const [openVariationProductId, setOpenVariationProductId] = useState(null);
-  const [sizeNamePosition, setSizeNamePosition] = useState('left');
+  /** Per-product setting: applies to all variations of this product on bills and POs */
+  const [productSizeNamePosition, setProductSizeNamePosition] = useState('left');
   const formRef = useRef(null);
 
   useEffect(() => {
@@ -92,25 +93,6 @@ function StockManagement() {
     };
   }, []);
 
-  useEffect(() => {
-    const settingsRef = doc(db, 'settings', 'app');
-    const unsub = onSnapshot(
-      settingsRef,
-      (snapshot) => {
-        if (snapshot.exists()) {
-          setSizeNamePosition(normalizeSizeNamePosition(snapshot.data().sizeNamePosition));
-        } else {
-          setSizeNamePosition('left');
-        }
-      },
-      (err) => {
-        console.error('Failed to listen to app settings:', err);
-        setSizeNamePosition('left');
-      }
-    );
-    return () => unsub();
-  }, []);
-
   // When categories change, if current selectedCategoryId exists update its subcategories
   useEffect(() => {
     if (!selectedCategoryId) return;
@@ -128,16 +110,6 @@ function StockManagement() {
   // Prevent number input from changing value on scroll
   const handleNumberInputWheel = (e) => {
     e.target.blur();
-  };
-
-  const persistSizeNamePosition = async (next) => {
-    const value = normalizeSizeNamePosition(next);
-    try {
-      await setDoc(doc(db, 'settings', 'app'), { sizeNamePosition: value }, { merge: true });
-    } catch (e) {
-      console.error(e);
-      setMessage({ type: 'error', text: 'Could not save size name position.' });
-    }
   };
 
   const handleCategorySelect = (e) => {
@@ -199,6 +171,7 @@ function StockManagement() {
         productData.price = validVariations[0].price;
         // Unit is at product level, same for all variations
         productData.unit = formData.unit?.trim() || '';
+        productData.sizeNamePosition = normalizeSizeNamePosition(productSizeNamePosition);
       } else {
         // Single product without variations
         productData.price = parseFloat(formData.price);
@@ -225,6 +198,7 @@ function StockManagement() {
       setSelectedCategoryId('');
       setVariationEnabled(true);
       setVariations([]);
+      setProductSizeNamePosition('left');
       setShowAddForm(false);
       setMessage({ type: 'success', text: 'Product added successfully!' });
       
@@ -279,6 +253,7 @@ function StockManagement() {
       setVariationEnabled(false);
       setVariations([]);
     }
+    setProductSizeNamePosition(normalizeSizeNamePosition(product.sizeNamePosition));
     // try to find category id by name
     const matched = categories.find((c) => c.name === (product.category || ''));
     if (matched) {
@@ -345,6 +320,7 @@ function StockManagement() {
         updateData.price = validVariations[0].price;
         // Unit is at product level, same for all variations
         updateData.unit = formData.unit?.trim() || '';
+        updateData.sizeNamePosition = normalizeSizeNamePosition(productSizeNamePosition);
       } else {
         // Single product without variations
         updateData.price = parseFloat(formData.price);
@@ -354,6 +330,7 @@ function StockManagement() {
         updateData.unit = formData.unit?.trim() || '';
         // Remove variations if switching from variations to single product
         updateData.variations = null;
+        updateData.sizeNamePosition = deleteField();
       }
 
       await updateDoc(productRef, updateData);
@@ -373,6 +350,7 @@ function StockManagement() {
       setSelectedCategoryId('');
       setVariationEnabled(true);
       setVariations([]);
+      setProductSizeNamePosition('left');
       setShowAddForm(false);
       setEditingProduct(null);
       setMessage({ type: 'success', text: 'Product updated successfully!' });
@@ -401,6 +379,7 @@ function StockManagement() {
     setMessage({ type: '', text: '' });
     setVariationEnabled(true);
     setVariations([]);
+    setProductSizeNamePosition('left');
   };
 
   // Variation management helpers
@@ -638,6 +617,7 @@ function StockManagement() {
               setEditingProduct(null);
               // When adding a fresh product, start with one default variation row
               setVariationEnabled(true);
+              setProductSizeNamePosition('left');
               setVariations([{
                 size: '',
                 price: '',
@@ -671,65 +651,6 @@ function StockManagement() {
         >
           {showAddForm ? 'Cancel' : '+ Add New Product'}
         </button>
-      </div>
-
-      <div
-        className="size-name-position-settings"
-        style={{
-          marginBottom: '1rem',
-          padding: '12px 16px',
-          background: '#f8f9fa',
-          borderRadius: '8px',
-          border: '1px solid #e9ecef',
-          display: 'flex',
-          flexWrap: 'wrap',
-          alignItems: 'center',
-          gap: '12px'
-        }}
-      >
-        <span style={{ fontWeight: 600 }}>Size name position</span>
-        <span style={{ color: '#555', fontSize: '0.9rem', maxWidth: '420px' }}>
-          On bills and purchase orders, show the variation size before or after the product name (default: left = size first).
-        </span>
-        <div
-          style={{
-            display: 'inline-flex',
-            borderRadius: '8px',
-            overflow: 'hidden',
-            border: '1px solid #ccc',
-            marginLeft: 'auto'
-          }}
-        >
-          <button
-            type="button"
-            onClick={() => persistSizeNamePosition('left')}
-            style={{
-              padding: '8px 16px',
-              border: 'none',
-              cursor: 'pointer',
-              fontWeight: 600,
-              background: sizeNamePosition === 'left' ? '#667eea' : '#fff',
-              color: sizeNamePosition === 'left' ? '#fff' : '#333'
-            }}
-          >
-            Left
-          </button>
-          <button
-            type="button"
-            onClick={() => persistSizeNamePosition('right')}
-            style={{
-              padding: '8px 16px',
-              border: 'none',
-              borderLeft: '1px solid #ccc',
-              cursor: 'pointer',
-              fontWeight: 600,
-              background: sizeNamePosition === 'right' ? '#667eea' : '#fff',
-              color: sizeNamePosition === 'right' ? '#fff' : '#333'
-            }}
-          >
-            Right
-          </button>
-        </div>
       </div>
 
       {message.text && (
@@ -984,6 +905,64 @@ function StockManagement() {
               <div className="variations-section" style={{ marginTop: '15px', marginBottom: '15px' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
                   <label style={{ fontWeight: 'bold' }}>Product Variations</label>
+                </div>
+                <div
+                  style={{
+                    marginBottom: '14px',
+                    padding: '10px 12px',
+                    background: '#f0f4ff',
+                    borderRadius: '6px',
+                    border: '1px solid #dde4f7',
+                    display: 'flex',
+                    flexWrap: 'wrap',
+                    alignItems: 'center',
+                    gap: '10px'
+                  }}
+                >
+                  <div style={{ flex: '1 1 200px' }}>
+                    <div style={{ fontWeight: 600, marginBottom: '4px' }}>Size name on bills &amp; purchase orders</div>
+                    <div style={{ fontSize: '0.88rem', color: '#555' }}>
+                      For <strong>this product only</strong>: size before or after the name for <strong>every variation</strong> (not a global setting).
+                    </div>
+                  </div>
+                  <div
+                    style={{
+                      display: 'inline-flex',
+                      borderRadius: '8px',
+                      overflow: 'hidden',
+                      border: '1px solid #ccc'
+                    }}
+                  >
+                    <button
+                      type="button"
+                      onClick={() => setProductSizeNamePosition('left')}
+                      style={{
+                        padding: '8px 14px',
+                        border: 'none',
+                        cursor: 'pointer',
+                        fontWeight: 600,
+                        background: productSizeNamePosition === 'left' ? '#667eea' : '#fff',
+                        color: productSizeNamePosition === 'left' ? '#fff' : '#333'
+                      }}
+                    >
+                      Left
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setProductSizeNamePosition('right')}
+                      style={{
+                        padding: '8px 14px',
+                        border: 'none',
+                        borderLeft: '1px solid #ccc',
+                        cursor: 'pointer',
+                        fontWeight: 600,
+                        background: productSizeNamePosition === 'right' ? '#667eea' : '#fff',
+                        color: productSizeNamePosition === 'right' ? '#fff' : '#333'
+                      }}
+                    >
+                      Right
+                    </button>
+                  </div>
                 </div>
                 
                 {variations.length === 0 ? (
