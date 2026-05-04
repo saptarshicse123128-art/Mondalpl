@@ -4,9 +4,8 @@ import { db } from '../firebase';
 const SETTINGS_COLLECTION = 'appSettings';
 const GLOBAL_SETTINGS_DOC = 'global';
 
-export const DEFAULT_APP_SETTINGS = {
-  enableDualUnitSystem: false
-};
+/** Default values merged with `appSettings/global` (optional app-wide prefs). */
+export const DEFAULT_APP_SETTINGS = {};
 
 const getSettingsRef = () => doc(db, SETTINGS_COLLECTION, GLOBAL_SETTINGS_DOC);
 

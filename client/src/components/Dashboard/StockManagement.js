@@ -11,7 +11,6 @@ import {
 } from 'firebase/firestore';
 import { db } from '../../firebase';
 import { categoryService } from '../../services/firebaseService';
-import { appSettingsService, DEFAULT_APP_SETTINGS } from '../../services/appSettingsService';
 import { normalizeSizeNamePosition } from '../../utils/productDisplay';
 import './StockManagement.css';
 
@@ -43,7 +42,8 @@ function StockManagement() {
   const [newSubcategoryName, setNewSubcategoryName] = useState('');
   const [variationEnabled, setVariationEnabled] = useState(true);
   const [variations, setVariations] = useState([]);
-  const [appSettings, setAppSettings] = useState(DEFAULT_APP_SETTINGS);
+  /** Per product: when true, variations use primary/secondary units and POs use secondary qty. */
+  const [enableDualUnit, setEnableDualUnit] = useState(true);
   const [openVariationProductId, setOpenVariationProductId] = useState(null);
   /** Per-product setting: applies to all variations of this product on bills and POs */
   const [productSizeNamePosition, setProductSizeNamePosition] = useState('left');
@@ -94,17 +94,6 @@ function StockManagement() {
       if (typeof unsubscribeCategories === 'function') unsubscribeCategories();
     };
   }, []);
-
-  useEffect(() => {
-    const unsubscribeSettings = appSettingsService.onSettingsChange((settings) => {
-      setAppSettings(settings || DEFAULT_APP_SETTINGS);
-    });
-    return () => {
-      if (typeof unsubscribeSettings === 'function') unsubscribeSettings();
-    };
-  }, []);
-
-  const dualUnitEnabled = Boolean(appSettings?.enableDualUnitSystem);
 
   // When categories change, if current selectedCategoryId exists update its subcategories
   useEffect(() => {
@@ -169,7 +158,7 @@ function StockManagement() {
             quantity: parseInt(v.quantity),
             lowStockQuantity: v.lowStockQuantity ? parseInt(v.lowStockQuantity) : null,
             catalogueNumber: v.catalogueNumber?.trim() || '',
-            ...(dualUnitEnabled
+            ...(enableDualUnit
               ? {
                   primaryUnit: v.primaryUnit?.trim() || '',
                   secondaryUnit: v.secondaryUnit?.trim() || '',
@@ -183,7 +172,7 @@ function StockManagement() {
           setLoading(false);
           return;
         }
-        if (dualUnitEnabled) {
+        if (enableDualUnit) {
           const invalidDualUnit = validVariations.some(
             (v) => !v.primaryUnit || !v.secondaryUnit || !v.conversionFactor || v.conversionFactor <= 0
           );
@@ -202,6 +191,7 @@ function StockManagement() {
         // Unit is at product level, same for all variations
         productData.unit = formData.unit?.trim() || '';
         productData.sizeNamePosition = normalizeSizeNamePosition(productSizeNamePosition);
+        productData.enableDualUnit = Boolean(enableDualUnit);
       } else {
         // Single product without variations
         productData.price = parseFloat(formData.price);
@@ -209,6 +199,7 @@ function StockManagement() {
         productData.catalogueNumber = formData.catalogueNumber?.trim() || '';
         productData.lowStockQuantity = formData.lowStockQuantity ? parseInt(formData.lowStockQuantity) : null;
         productData.unit = formData.unit?.trim() || '';
+        productData.enableDualUnit = false;
       }
 
       await addDoc(collection(db, 'products'), productData);
@@ -229,6 +220,7 @@ function StockManagement() {
       setVariationEnabled(true);
       setVariations([]);
       setProductSizeNamePosition('left');
+      setEnableDualUnit(true);
       setShowAddForm(false);
       setMessage({ type: 'success', text: 'Product added successfully!' });
       
@@ -286,6 +278,7 @@ function StockManagement() {
       setVariationEnabled(false);
       setVariations([]);
     }
+    setEnableDualUnit(product.enableDualUnit === undefined ? true : Boolean(product.enableDualUnit));
     setProductSizeNamePosition(normalizeSizeNamePosition(product.sizeNamePosition));
     // try to find category id by name
     const matched = categories.find((c) => c.name === (product.category || ''));
@@ -338,7 +331,7 @@ function StockManagement() {
             quantity: parseInt(v.quantity),
             lowStockQuantity: v.lowStockQuantity ? parseInt(v.lowStockQuantity) : null,
             catalogueNumber: v.catalogueNumber?.trim() || '',
-            ...(dualUnitEnabled
+            ...(enableDualUnit
               ? {
                   primaryUnit: v.primaryUnit?.trim() || '',
                   secondaryUnit: v.secondaryUnit?.trim() || '',
@@ -352,7 +345,7 @@ function StockManagement() {
           setLoading(false);
           return;
         }
-        if (dualUnitEnabled) {
+        if (enableDualUnit) {
           const invalidDualUnit = validVariations.some(
             (v) => !v.primaryUnit || !v.secondaryUnit || !v.conversionFactor || v.conversionFactor <= 0
           );
@@ -371,6 +364,7 @@ function StockManagement() {
         // Unit is at product level, same for all variations
         updateData.unit = formData.unit?.trim() || '';
         updateData.sizeNamePosition = normalizeSizeNamePosition(productSizeNamePosition);
+        updateData.enableDualUnit = Boolean(enableDualUnit);
       } else {
         // Single product without variations
         updateData.price = parseFloat(formData.price);
@@ -378,6 +372,7 @@ function StockManagement() {
         updateData.catalogueNumber = formData.catalogueNumber?.trim() || '';
         updateData.lowStockQuantity = formData.lowStockQuantity ? parseInt(formData.lowStockQuantity) : null;
         updateData.unit = formData.unit?.trim() || '';
+        updateData.enableDualUnit = false;
         // Remove variations if switching from variations to single product
         updateData.variations = null;
         updateData.sizeNamePosition = deleteField();
@@ -401,6 +396,7 @@ function StockManagement() {
       setVariationEnabled(true);
       setVariations([]);
       setProductSizeNamePosition('left');
+      setEnableDualUnit(true);
       setShowAddForm(false);
       setEditingProduct(null);
       setMessage({ type: 'success', text: 'Product updated successfully!' });
@@ -430,6 +426,7 @@ function StockManagement() {
     setVariationEnabled(true);
     setVariations([]);
     setProductSizeNamePosition('left');
+    setEnableDualUnit(true);
   };
 
   // Variation management helpers
@@ -448,17 +445,6 @@ function StockManagement() {
       [field]: value
     };
     setVariations(updatedVariations);
-  };
-
-  const handleDualUnitToggle = async (enabled) => {
-    try {
-      await appSettingsService.updateSettings({ enableDualUnitSystem: enabled });
-      setMessage({ type: 'success', text: `Dual unit system ${enabled ? 'enabled' : 'disabled'} successfully.` });
-      setTimeout(() => setMessage({ type: '', text: '' }), 2500);
-    } catch (error) {
-      console.error('Failed to update dual unit setting:', error);
-      setMessage({ type: 'error', text: 'Failed to update dual unit setting.' });
-    }
   };
 
   // Brand & Category management helpers
@@ -668,15 +654,6 @@ function StockManagement() {
     <div className="stock-management">
       <div className="stock-header">
         <h2>Stock Management</h2>
-        <label style={{ display: 'inline-flex', alignItems: 'center', gap: '8px', fontWeight: 500 }}>
-          <input
-            type="checkbox"
-            checked={dualUnitEnabled}
-            onChange={(e) => handleDualUnitToggle(e.target.checked)}
-            style={{ width: 'auto', margin: 0 }}
-          />
-          Enable Dual Unit System
-        </label>
         <button
           className="add-product-btn"
           onClick={() => {
@@ -688,6 +665,7 @@ function StockManagement() {
               // When adding a fresh product, start with one default variation row
               setVariationEnabled(true);
               setProductSizeNamePosition('left');
+              setEnableDualUnit(true);
               setVariations([{
                 size: '',
                 price: '',
@@ -800,8 +778,11 @@ function StockManagement() {
                     />
                   </div>
                 </div>
-                <div className="form-row">
-                  <div className="form-group" style={{ width: '100%' }}>
+                <div
+                  className="form-row"
+                  style={{ display: 'flex', flexWrap: 'wrap', gap: '20px', alignItems: 'flex-start' }}
+                >
+                  <div className="form-group" style={{ flex: '1 1 200px', marginBottom: 0 }}>
                     <label style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
                       <input
                         type="checkbox"
@@ -810,13 +791,34 @@ function StockManagement() {
                           setVariationEnabled(e.target.checked);
                           if (!e.target.checked) {
                             setVariations([]);
-                          } else if (variations.length === 0) {
-                            setVariations([{ size: '', price: '', purchasePrice: '', quantity: '', lowStockQuantity: '', catalogueNumber: '', primaryUnit: formData.unit || '', secondaryUnit: '', conversionFactor: '' }]);
+                            setEnableDualUnit(false);
+                          } else {
+                            if (variations.length === 0) {
+                              setVariations([{ size: '', price: '', purchasePrice: '', quantity: '', lowStockQuantity: '', catalogueNumber: '', primaryUnit: formData.unit || '', secondaryUnit: '', conversionFactor: '' }]);
+                            }
+                            setEnableDualUnit(true);
                           }
                         }}
                         style={{ width: 'auto', margin: 0 }}
                       />
                       <span>Enable Variations</span>
+                    </label>
+                  </div>
+                  <div className="form-group" style={{ flex: '1 1 260px', marginBottom: 0 }}>
+                    <label style={{ display: 'flex', alignItems: 'flex-start', gap: '10px', cursor: 'pointer' }}>
+                      <input
+                        type="checkbox"
+                        checked={enableDualUnit}
+                        onChange={(e) => setEnableDualUnit(e.target.checked)}
+                        disabled={!variationEnabled}
+                        style={{ width: 'auto', marginTop: '3px' }}
+                      />
+                      <span>
+                        <strong>Enable dual unit</strong>
+                        <span style={{ display: 'block', fontSize: '0.82rem', color: '#555', fontWeight: 400, marginTop: '4px' }}>
+                          Secondary unit + conversion to primary stock; purchase orders use secondary qty.
+                        </span>
+                      </span>
                     </label>
                   </div>
                 </div>
@@ -887,8 +889,11 @@ function StockManagement() {
                     />
                   </div>
                 </div>
-                <div className="form-row">
-                  <div className="form-group">
+                <div
+                  className="form-row"
+                  style={{ display: 'flex', flexWrap: 'wrap', gap: '16px', alignItems: 'flex-start' }}
+                >
+                  <div className="form-group" style={{ flex: '1 1 180px', marginBottom: 0 }}>
                     <label style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
                       <input
                         type="checkbox"
@@ -897,8 +902,12 @@ function StockManagement() {
                           setVariationEnabled(e.target.checked);
                           if (!e.target.checked) {
                             setVariations([]);
-                          } else if (variations.length === 0) {
-                            setVariations([{ size: '', price: '', purchasePrice: '', quantity: '', lowStockQuantity: '', catalogueNumber: '', primaryUnit: formData.unit || '', secondaryUnit: '', conversionFactor: '' }]);
+                            setEnableDualUnit(false);
+                          } else {
+                            if (variations.length === 0) {
+                              setVariations([{ size: '', price: '', purchasePrice: '', quantity: '', lowStockQuantity: '', catalogueNumber: '', primaryUnit: formData.unit || '', secondaryUnit: '', conversionFactor: '' }]);
+                            }
+                            setEnableDualUnit(true);
                           }
                         }}
                         style={{ width: 'auto', margin: 0 }}
@@ -906,7 +915,33 @@ function StockManagement() {
                       <span>Enable Variations</span>
                     </label>
                   </div>
-                  <div className="form-group">
+                  <div className="form-group" style={{ flex: '1 1 240px', marginBottom: 0 }}>
+                    <label
+                      style={{
+                        display: 'flex',
+                        alignItems: 'flex-start',
+                        gap: '10px',
+                        cursor: variationEnabled ? 'pointer' : 'default',
+                        opacity: variationEnabled ? 1 : 0.55
+                      }}
+                      title={!variationEnabled ? 'Turn on variations to use dual units' : undefined}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={enableDualUnit}
+                        onChange={(e) => variationEnabled && setEnableDualUnit(e.target.checked)}
+                        disabled={!variationEnabled}
+                        style={{ width: 'auto', marginTop: '3px' }}
+                      />
+                      <span>
+                        <strong>Enable dual unit</strong>
+                        <span style={{ display: 'block', fontSize: '0.82rem', color: '#555', fontWeight: 400, marginTop: '4px' }}>
+                          Requires variations. Secondary unit + conversion for POs.
+                        </span>
+                      </span>
+                    </label>
+                  </div>
+                  <div className="form-group" style={{ flex: '1 1 160px', marginBottom: 0 }}>
                     <label>Quantity *</label>
                     <input
                       type="number"
@@ -1141,7 +1176,7 @@ function StockManagement() {
                             />
                           </div>
                         </div>
-                        {dualUnitEnabled && (
+                        {enableDualUnit && (
                           <div className="form-row">
                             <div className="form-group">
                               <label>Secondary Unit *</label>
@@ -1150,7 +1185,7 @@ function StockManagement() {
                                 value={variation.secondaryUnit || ''}
                                 onChange={(e) => handleVariationChange(index, 'secondaryUnit', e.target.value)}
                                 placeholder="e.g., box"
-                                required={dualUnitEnabled}
+                                required={enableDualUnit}
                               />
                             </div>
                             <div className="form-group">
@@ -1163,7 +1198,7 @@ function StockManagement() {
                                 min="0.0001"
                                 step="0.0001"
                                 placeholder="e.g., 20"
-                                required={dualUnitEnabled}
+                                required={enableDualUnit}
                               />
                             </div>
                             <div className="form-group">
@@ -1173,7 +1208,7 @@ function StockManagement() {
                                 value={variation.primaryUnit || ''}
                                 onChange={(e) => handleVariationChange(index, 'primaryUnit', e.target.value)}
                                 placeholder="e.g., piece"
-                                required={dualUnitEnabled}
+                                required={enableDualUnit}
                               />
                             </div>
                           </div>

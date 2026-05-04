@@ -420,6 +420,12 @@
   text-align: center;
 }
 
+.products-table td.stock-quantity,
+.products-table td.status-cell {
+  text-align: center;
+  vertical-align: middle;
+}
+
 .badge {
   padding: 6px 12px;
   border-radius: 20px;

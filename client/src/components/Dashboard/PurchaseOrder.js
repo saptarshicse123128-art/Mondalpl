@@ -3,7 +3,6 @@ import jsPDF from 'jspdf';
 import 'jspdf-autotable';
 import { collection, addDoc, onSnapshot, query, orderBy, serverTimestamp, getDocs, deleteDoc, doc, getDoc, updateDoc, writeBatch } from 'firebase/firestore';
 import { db } from '../../firebase';
-import { appSettingsService, DEFAULT_APP_SETTINGS } from '../../services/appSettingsService';
 import { formatProductWithVariation, normalizeSizeNamePosition } from '../../utils/productDisplay';
 import './Analytics.css';
 
@@ -46,15 +45,26 @@ const parsePositiveNumber = (value) => {
 
 const roundQtySecondary = (n) => Number(Number(n).toFixed(4));
 
-/** PO line has dual-unit metadata (restock in secondary, inventory in primary). */
+/** PO line has dual-unit metadata (restock in secondary, inventory in primary). `enableDualUnit !== false` keeps older POs without the flag working. */
 const isDualRestockItem = (it) =>
   Boolean(
     it &&
       it.productId &&
+      it.enableDualUnit !== false &&
       it.orderedQuantitySecondary != null &&
       Number(it.orderedQuantitySecondary) > 0 &&
       parsePositiveNumber(it.conversionFactor) &&
       String(it.secondaryUnit || '').trim() !== ''
+  );
+
+/** Preview / save: use secondary qty UI when this catalog line is dual-enabled on the product. */
+const previewItemUsesSecondaryQty = (item) =>
+  Boolean(
+    item &&
+      !item.isCustom &&
+      item.enableDualUnit &&
+      String(item.secondaryUnit || '').trim() &&
+      parsePositiveNumber(item.conversionFactor)
   );
 
 const getDueSecondary = (it) => {
@@ -78,17 +88,41 @@ const getDualTrackedLines = (order) => {
   return items.filter(isDualRestockItem);
 };
 
-/** Rolling restock status for the purchase order list (dual-unit lines only). Computed from due qty when `status` is missing (older POs). */
+/**
+ * Order-level restock status: dual-unit lines → COMPLETED / PARTIAL from due qty.
+ * Legacy-only orders (no dual-unit lines) → NOT TRACKED (progress is not stored per line).
+ */
 const getPurchaseOrderOverallRestockStatus = (order) => {
   const dualLines = getDualTrackedLines(order);
-  if (dualLines.length === 0) return null;
-  const anyPartial = dualLines.some((it) => getDueSecondary(it) > 1e-6);
-  return anyPartial ? 'PARTIAL' : 'COMPLETED';
+  if (dualLines.length > 0) {
+    const anyPartial = dualLines.some((it) => getDueSecondary(it) > 1e-6);
+    return anyPartial ? 'PARTIAL' : 'COMPLETED';
+  }
+  const items = Array.isArray(order?.items) ? order.items : [];
+  if (!items.some((it) => it.productId)) return null;
+  return 'NOT TRACKED';
 };
 
 const inferLineRestockStatusLabel = (it) => {
   if (!isDualRestockItem(it)) return null;
   return getDueSecondary(it) <= 1e-6 ? 'COMPLETED' : 'PARTIAL';
+};
+
+const getRestockPrimaryUnitLabel = (it) => {
+  const u = String(it.primaryUnit || it.orderUnit || it.unit || '').trim();
+  return u || 'units';
+};
+
+/** Shown in restock modal for non–dual-unit lines (ordered column). */
+const getRestockOrderedPrimaryDisplay = (it) => {
+  const raw = it.quantityText != null ? it.quantityText : it.quantity;
+  if (raw == null || String(raw).trim() === '') return '—';
+  const s = String(raw).trim();
+  const u = getRestockPrimaryUnitLabel(it);
+  if (u && u !== 'units' && !new RegExp(`\\b${escapeRegExp(u)}\\b`, 'i').test(s)) {
+    return `${s} ${u}`;
+  }
+  return s;
 };
 
 function PurchaseOrder() {
@@ -122,14 +156,11 @@ function PurchaseOrder() {
   const [selectedRestockOrderId, setSelectedRestockOrderId] = useState('');
   const [restockLoading, setRestockLoading] = useState(false);
   const [restockQuantities, setRestockQuantities] = useState({});
-  const [appSettings, setAppSettings] = useState(DEFAULT_APP_SETTINGS);
   const smallActionButtonStyle = {
     padding: '0.35rem 0.8rem',
     fontSize: '0.8rem',
     minWidth: '70px'
   };
-  const dualUnitEnabled = Boolean(appSettings?.enableDualUnitSystem);
-
   const initRestockQuantitiesForOrder = (order) => {
     if (!order || !Array.isArray(order.items)) return {};
     const next = {};
@@ -152,15 +183,6 @@ function PurchaseOrder() {
   };
 
   useEffect(() => {
-    const unsubscribeSettings = appSettingsService.onSettingsChange((settings) => {
-      setAppSettings(settings || DEFAULT_APP_SETTINGS);
-    });
-    return () => {
-      if (typeof unsubscribeSettings === 'function') unsubscribeSettings();
-    };
-  }, []);
-
-  useEffect(() => {
     const fetchLowStock = async () => {
       try {
         setLoading(true);
@@ -179,7 +201,8 @@ function PurchaseOrder() {
             catalogueNumber: data.catalogueNumber || '',
             price: data.price || 0,
             unit: data.unit || '',
-            sizeNamePosition: normalizeSizeNamePosition(data.sizeNamePosition)
+            sizeNamePosition: normalizeSizeNamePosition(data.sizeNamePosition),
+            enableDualUnit: Boolean(data.enableDualUnit)
           };
 
           const totalQuantity = data.quantity || 0;
@@ -236,7 +259,8 @@ function PurchaseOrder() {
                   status: varStatus,
                   primaryUnit: variation.primaryUnit || data.unit || '',
                   secondaryUnit: variation.secondaryUnit || '',
-                  conversionFactor: variation.conversionFactor || null
+                  conversionFactor: variation.conversionFactor || null,
+                  enableDualUnit: Boolean(data.enableDualUnit)
                 });
               }
 
@@ -252,7 +276,8 @@ function PurchaseOrder() {
                 status: varStatus,
                 primaryUnit: variation.primaryUnit || data.unit || '',
                 secondaryUnit: variation.secondaryUnit || '',
-                conversionFactor: variation.conversionFactor || null
+                conversionFactor: variation.conversionFactor || null,
+                enableDualUnit: Boolean(data.enableDualUnit)
               });
             });
 
@@ -564,13 +589,15 @@ function PurchaseOrder() {
           orderUnit: product.base?.unit || product.unit || '',
           orderQuantitySecondary: '',
           orderedQuantityPrimary: null,
-          primaryUnit: product.base?.unit || product.unit || ''
+          primaryUnit: product.base?.unit || product.unit || '',
+          enableDualUnit: Boolean(product.enableDualUnit)
         });
       }
 
       // Individual variation selection
       if (hasVariations) {
         const parentSelected = selectedIds.includes(product.id);
+        const productDual = Boolean(product.enableDualUnit);
         product.variations.forEach((v) => {
           // If parent row is selected, include all child variations in preview/PDF.
           if (parentSelected || selectedIds.includes(v.id)) {
@@ -588,14 +615,15 @@ function PurchaseOrder() {
               catalogueNumber: v.catalogueNumber || product.catalogueNumber || '',
               orderQuantity: '1',
               orderUnit: v.unit || product.base?.unit || product.unit || '',
-              orderQuantitySecondary: dualUnitEnabled ? '1' : '',
+              orderQuantitySecondary: productDual ? '1' : '',
               orderedQuantityPrimary:
-                dualUnitEnabled && parsePositiveNumber(v.conversionFactor)
+                productDual && parsePositiveNumber(v.conversionFactor)
                   ? parsePositiveNumber(v.conversionFactor)
                   : null,
               primaryUnit: v.primaryUnit || product.base?.unit || product.unit || '',
               secondaryUnit: v.secondaryUnit || '',
-              conversionFactor: v.conversionFactor || null
+              conversionFactor: v.conversionFactor || null,
+              enableDualUnit: productDual
             });
           }
         });
@@ -703,7 +731,8 @@ function PurchaseOrder() {
   };
 
   // Helper to build PDF from generic order data
-  const createOrderPDFDoc = (displayName, displayDate, itemsToOrder, orderNumberLabel = '') => {
+  /** Supplier / order name is stored on the Firestore document only; it is not drawn on the PDF. */
+  const createOrderPDFDoc = (displayDate, itemsToOrder, orderNumberLabel = '') => {
     const doc = new jsPDF('p', 'mm', 'a4');
     const tableLeft = 15;
     const anyCatalogue = itemsToOrder.some(
@@ -795,12 +824,7 @@ function PurchaseOrder() {
   const generateOrderPDF = async () => {
     const itemsToOrder = selectedProducts
       .filter((p) => {
-        if (
-          dualUnitEnabled &&
-          !p.isCustom &&
-          p.secondaryUnit &&
-          parsePositiveNumber(p.conversionFactor)
-        ) {
+        if (previewItemUsesSecondaryQty(p)) {
           return parsePositiveNumber(p.orderQuantitySecondary) !== null;
         }
         const q = (p.orderQuantity ?? '').toString().trim();
@@ -808,20 +832,12 @@ function PurchaseOrder() {
       })
       .map((item) => ({
         ...item,
-        orderUnit:
-          dualUnitEnabled &&
-          !item.isCustom &&
-          item.secondaryUnit &&
-          parsePositiveNumber(item.conversionFactor)
-            ? item.secondaryUnit
-            : resolveOrderItemUnit(item),
-        orderQuantity:
-          dualUnitEnabled &&
-          !item.isCustom &&
-          item.secondaryUnit &&
-          parsePositiveNumber(item.conversionFactor)
-            ? String(item.orderQuantitySecondary ?? '')
-            : item.orderQuantity
+        orderUnit: previewItemUsesSecondaryQty(item)
+          ? item.secondaryUnit
+          : resolveOrderItemUnit(item),
+        orderQuantity: previewItemUsesSecondaryQty(item)
+          ? String(item.orderQuantitySecondary ?? '')
+          : item.orderQuantity
       }));
     if (itemsToOrder.length === 0) {
       alert('Please set quantity for at least one product before generating the PDF.');
@@ -835,7 +851,7 @@ function PurchaseOrder() {
     const orderNumber = formatPurchaseOrderNumber(orderNumberValue);
 
     // Create and download PDF
-    const pdfDoc = createOrderPDFDoc(displayName, displayDate, itemsToOrder, orderNumber);
+    const pdfDoc = createOrderPDFDoc(displayDate, itemsToOrder, orderNumber);
     const safeOrderNumber = orderNumber.replace(/\//g, '-');
     const fileName = `${safeOrderNumber}_${String(displayDate).replace(/[.\-/]/g, '')}.pdf`;
     pdfDoc.save(fileName);
@@ -851,6 +867,7 @@ function PurchaseOrder() {
         items: itemsToOrder.map((item) => {
           const oqSec = parsePositiveNumber(item.orderQuantitySecondary);
           const hasDualLine =
+            Boolean(item.enableDualUnit) &&
             !item.isCustom &&
             oqSec != null &&
             parsePositiveNumber(item.conversionFactor) &&
@@ -863,6 +880,7 @@ function PurchaseOrder() {
             catalogueNumber: item.catalogueNumber || '',
             quantityText: item.orderQuantity != null ? String(item.orderQuantity) : '',
             orderUnit: item.orderUnit || item.unit || '',
+            enableDualUnit: Boolean(item.enableDualUnit),
             orderedQuantitySecondary: oqSec,
             orderedQuantityPrimary: parsePositiveNumber(item.orderedQuantityPrimary),
             secondaryUnit: item.secondaryUnit || '',
@@ -889,7 +907,6 @@ function PurchaseOrder() {
   };
 
   const downloadExistingOrderPDF = (order) => {
-    const displayName = order.name && order.name.trim().length > 0 ? order.name.trim() : '';
     let dateFromDoc = '';
     if (order.date) {
       // If date is already in dd.mm.yyyy format, use it; otherwise convert
@@ -916,7 +933,7 @@ function PurchaseOrder() {
     }
 
     const orderNumberLabel = order.orderNumber || formatPurchaseOrderNumber(1);
-    const pdfDoc = createOrderPDFDoc(displayName, dateFromDoc, itemsForPdf.map((it) => ({
+    const pdfDoc = createOrderPDFDoc(dateFromDoc, itemsForPdf.map((it) => ({
       name: it.name,
       catalogueNumber: it.catalogueNumber,
       orderQuantity: it.quantityText != null ? it.quantityText : it.quantity,
@@ -928,7 +945,6 @@ function PurchaseOrder() {
   };
 
   const viewExistingOrderPDF = (order) => {
-    const displayName = order.name && order.name.trim().length > 0 ? order.name.trim() : '';
     let dateFromDoc = '';
     if (order.date) {
       if (order.date.includes('.')) {
@@ -954,7 +970,7 @@ function PurchaseOrder() {
     }
 
     const orderNumberLabel = order.orderNumber || formatPurchaseOrderNumber(1);
-    const pdfDoc = createOrderPDFDoc(displayName, dateFromDoc, itemsForPdf.map((it) => ({
+    const pdfDoc = createOrderPDFDoc(dateFromDoc, itemsForPdf.map((it) => ({
       name: it.name,
       catalogueNumber: it.catalogueNumber,
       orderQuantity: it.quantityText != null ? it.quantityText : it.quantity,
@@ -1091,10 +1107,11 @@ function PurchaseOrder() {
         linesToApply.push({ index: i, mode: 'dual', productIdKey: key, addSec, addPrimary });
       } else {
         const qty = parseInt(String(rawInput).trim(), 10);
-        if (Number.isNaN(qty) || qty <= 0) {
-          alert(`Enter a valid positive whole number for "${it.name || 'item'}".`);
+        if (Number.isNaN(qty) || qty < 0) {
+          alert(`Enter a valid whole number (0 or greater) for "${it.name || 'item'}".`);
           return;
         }
+        if (qty === 0) continue;
         linesToApply.push({ index: i, mode: 'legacy', productIdKey: key, addPrimary: qty });
       }
     }
@@ -1214,9 +1231,10 @@ function PurchaseOrder() {
                 <tr>
                   <th>Product</th>
                   <th>Brand</th>
-                  <th>Qty (Unit)</th>
-                  <th>Purchase Price</th>
-                  <th>Status</th>
+                  <th style={{ textAlign: 'center' }}>Qty (Unit)</th>
+                  <th style={{ textAlign: 'center' }}>Purchase Price</th>
+                  <th style={{ textAlign: 'center' }}>Price</th>
+                  <th style={{ textAlign: 'center' }}>Status</th>
                 </tr>
               </thead>
               <tbody>
@@ -1226,7 +1244,7 @@ function PurchaseOrder() {
                   if (filtered.length === 0) {
                     return (
                       <tr>
-                        <td colSpan="5" className="no-data">
+                        <td colSpan="6" className="no-data">
                           No low stock items based on configured thresholds.
                         </td>
                       </tr>
@@ -1243,6 +1261,8 @@ function PurchaseOrder() {
                       'low';
                     const purchasePrice =
                       product.base?.purchasePrice ?? product.variations?.[0]?.purchasePrice ?? product.purchasePrice ?? 0;
+                    const sellingPrice =
+                      product.base?.price ?? product.variations?.[0]?.price ?? product.price ?? 0;
 
                     const mainRow = (
                       <tr
@@ -1299,7 +1319,20 @@ function PurchaseOrder() {
                             <span className="badge badge-warning">See variations</span>
                           )}
                         </td>
-                        <td className="price">₹{(purchasePrice || 0).toFixed(2)}</td>
+                        <td className="stock-quantity">
+                          {hasVariations ? (
+                            <span className="badge badge-warning">See variations</span>
+                          ) : (
+                            <span className="price">₹{(purchasePrice || 0).toFixed(2)}</span>
+                          )}
+                        </td>
+                        <td className="stock-quantity">
+                          {hasVariations ? (
+                            <span className="badge badge-warning">See variations</span>
+                          ) : (
+                            <span className="price">₹{(sellingPrice || 0).toFixed(2)}</span>
+                          )}
+                        </td>
                         <td className="status-cell">
                           {product.base ? (
                             product.base.status === 'out' ? (
@@ -1317,7 +1350,7 @@ function PurchaseOrder() {
                     const variationRow =
                       hasVariations && isOpen ? (
                         <tr key={`${product.id}_vars`}>
-                          <td colSpan="5">
+                          <td colSpan="6">
                             <table
                               style={{
                                 width: '100%',
@@ -1338,6 +1371,9 @@ function PurchaseOrder() {
                                     Purchase Price
                                   </th>
                                   <th style={{ padding: '6px', border: '1px solid #ddd' }}>
+                                    Price
+                                  </th>
+                                  <th style={{ padding: '6px', border: '1px solid #ddd' }}>
                                     Status
                                   </th>
                                 </tr>
@@ -1355,6 +1391,9 @@ function PurchaseOrder() {
                                     </td>
                                     <td style={{ padding: '6px', border: '1px solid #ddd' }}>
                                       ₹{(v.purchasePrice || 0).toFixed(2)}
+                                    </td>
+                                    <td style={{ padding: '6px', border: '1px solid #ddd' }}>
+                                      ₹{(v.price || 0).toFixed(2)}
                                     </td>
                                     <td style={{ padding: '6px', border: '1px solid #ddd' }}>
                                       {v.status === 'out' ? (
@@ -1468,10 +1507,10 @@ function PurchaseOrder() {
                         <th style={{ width: '40px' }}>Add</th>
                         <th>Product / Variation</th>
                         <th>Brand</th>
-                        <th>Qty (Unit)</th>
+                        <th style={{ textAlign: 'center' }}>Qty (Unit)</th>
                         <th>Purchase Price</th>
                         <th>Price</th>
-                        <th>Status</th>
+                        <th style={{ textAlign: 'center' }}>Status</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -1561,14 +1600,16 @@ function PurchaseOrder() {
                             <td>
                               {(product.category || '-') + ' / ' + (product.subcategory || 'No category')}
                             </td>
-                            <td>
-                              {hasVariations
-                                ? 'See variations'
-                                : `${product.base?.quantity ?? '-'}${product.base?.unit ? ` ${product.base.unit}` : ''}`}
+                            <td className="stock-quantity">
+                              {hasVariations ? (
+                                <span className="badge badge-warning">See variations</span>
+                              ) : (
+                                `${product.base?.quantity ?? '-'}${product.base?.unit ? ` ${product.base.unit}` : ''}`
+                              )}
                             </td>
                             <td>₹{basePurchasePrice.toFixed(2)}</td>
                             <td>₹{baseNormalPrice.toFixed(2)}</td>
-                            <td>
+                            <td className="status-cell">
                               <span
                                 className={`status-badge ${
                                   status === 'out' ? 'danger' : status === 'low' ? 'warning' : ''
@@ -1780,7 +1821,7 @@ function PurchaseOrder() {
                         <th>Product Brand</th>
                         <th>Category</th>
                         <th>Catalogue No.</th>
-                        <th>Qty (Unit)</th>
+                        <th style={{ textAlign: 'center' }}>Qty (Unit)</th>
                         <th>Action</th>
                       </tr>
                     </thead>
@@ -1836,10 +1877,17 @@ function PurchaseOrder() {
                               product.catalogueNumber || ''
                             )}
                           </td>
-                          <td>
-                            {dualUnitEnabled && !product.isCustom && product.secondaryUnit && parsePositiveNumber(product.conversionFactor) ? (
-                              <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                                <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                          <td style={{ textAlign: 'center', verticalAlign: 'middle' }}>
+                            {previewItemUsesSecondaryQty(product) ? (
+                              <div
+                                style={{
+                                  display: 'flex',
+                                  flexDirection: 'column',
+                                  gap: '4px',
+                                  alignItems: 'center'
+                                }}
+                              >
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '6px', justifyContent: 'center' }}>
                                   <input
                                     type="number"
                                     min="0"
@@ -1847,7 +1895,7 @@ function PurchaseOrder() {
                                     value={product.orderQuantitySecondary || ''}
                                     onChange={(e) => handleSecondaryQuantityChange(index, e.target.value)}
                                     placeholder="0"
-                                    style={{ width: '90px' }}
+                                    style={{ width: '90px', textAlign: 'center' }}
                                   />
                                   <span>{product.secondaryUnit}</span>
                                 </div>
@@ -1859,13 +1907,15 @@ function PurchaseOrder() {
                                 </small>
                               </div>
                             ) : (
-                              <input
-                                type="text"
-                                value={product.orderQuantity || ''}
-                                onChange={(e) => handleQuantityChange(index, e.target.value)}
-                                placeholder="Qty (can include text)"
-                                style={{ width: '120px' }}
-                              />
+                              <div style={{ display: 'flex', justifyContent: 'center' }}>
+                                <input
+                                  type="text"
+                                  value={product.orderQuantity || ''}
+                                  onChange={(e) => handleQuantityChange(index, e.target.value)}
+                                  placeholder="Qty (can include text)"
+                                  style={{ width: '120px', textAlign: 'center' }}
+                                />
+                              </div>
                             )}
                           </td>
                           <td>
@@ -1893,30 +1943,62 @@ function PurchaseOrder() {
                   </button>
                 </div>
 
-                <div style={{ marginTop: '16px', display: 'flex', justifyContent: 'space-between' }}>
+                <div
+                  style={{
+                    marginTop: '16px',
+                    display: 'flex',
+                    flexWrap: 'wrap',
+                    gap: '10px',
+                    alignItems: 'stretch',
+                    justifyContent: 'flex-end'
+                  }}
+                >
                   <button
                     type="button"
                     className="cancel-due-btn"
                     onClick={() => setOrderStep('select')}
+                    style={{
+                      minHeight: '40px',
+                      padding: '0.6rem 14px',
+                      boxSizing: 'border-box',
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      justifyContent: 'center'
+                    }}
                   >
                     Back
                   </button>
-                  <div style={{ display: 'flex', gap: '10px' }}>
-                    <button
-                      type="button"
-                      className="cancel-due-btn"
-                      onClick={closeOrderModal}
-                    >
-                      Cancel
-                    </button>
-                    <button
-                      type="button"
-                      className="save-due-btn"
-                      onClick={generateOrderPDF}
-                    >
-                      Save & Generate PDF
-                    </button>
-                  </div>
+                  <button
+                    type="button"
+                    className="cancel-due-btn"
+                    onClick={closeOrderModal}
+                    style={{
+                      minHeight: '40px',
+                      padding: '0.6rem 14px',
+                      boxSizing: 'border-box',
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      justifyContent: 'center'
+                    }}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    className="save-due-btn"
+                    onClick={generateOrderPDF}
+                    style={{
+                      whiteSpace: 'nowrap',
+                      minHeight: '40px',
+                      padding: '0.6rem 14px',
+                      boxSizing: 'border-box',
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      justifyContent: 'center'
+                    }}
+                  >
+                    Save & Generate PDF
+                  </button>
                 </div>
               </div>
             )}
@@ -2017,9 +2099,10 @@ function PurchaseOrder() {
                   <table>
                     <thead>
                       <tr>
+                        <th style={{ width: '40px', textAlign: 'center' }} aria-label="Expand" />
                         <th>SL No.</th>
-                        <th>Date</th>
                         <th>Name</th>
+                        <th>Date</th>
                         <th>Items</th>
                         <th>Restock status</th>
                         <th>Action</th>
@@ -2053,57 +2136,69 @@ function PurchaseOrder() {
                           }
                         }
 
-                        const statusBadge = (label) =>
-                          label === 'COMPLETED'
-                            ? {
-                                background: '#e8f5e9',
-                                color: '#2e7d32',
-                                border: '1px solid #c8e6c9'
-                              }
-                            : {
-                                background: '#fff3e0',
-                                color: '#e65100',
-                                border: '1px solid #ffe0b2'
-                              };
+                        const statusBadge = (label) => {
+                          if (label === 'COMPLETED') {
+                            return {
+                              background: '#e8f5e9',
+                              color: '#2e7d32',
+                              border: '1px solid #c8e6c9'
+                            };
+                          }
+                          if (label === 'PARTIAL') {
+                            return {
+                              background: '#fff3e0',
+                              color: '#e65100',
+                              border: '1px solid #ffe0b2'
+                            };
+                          }
+                          return {
+                            background: '#eceff1',
+                            color: '#546e7a',
+                            border: '1px solid #cfd8dc'
+                          };
+                        };
 
                         const isExpanded = expandedHistoryOrderId === order.id;
 
                         return (
                           <React.Fragment key={order.id}>
                             <tr>
-                              <td>{orderNumber}</td>
-                              <td>{dateLabel}</td>
-                              <td>
-                                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                                  {hasDetailLines && dualLines.length > 0 && (
-                                    <button
-                                      type="button"
-                                      onClick={() =>
-                                        setExpandedHistoryOrderId(isExpanded ? null : order.id)
-                                      }
-                                      title={isExpanded ? 'Hide line status' : 'Show line status'}
-                                      style={{
-                                        background: 'none',
-                                        border: 'none',
-                                        cursor: 'pointer',
-                                        padding: '2px',
-                                        color: '#667eea',
-                                        fontSize: '14px',
-                                        lineHeight: 1,
-                                        transform: isExpanded ? 'rotate(90deg)' : 'rotate(0deg)',
-                                        transition: 'transform 0.2s'
-                                      }}
-                                    >
-                                      ▶
-                                    </button>
-                                  )}
-                                  <span>{nameLabel}</span>
-                                </div>
+                              <td style={{ textAlign: 'center', verticalAlign: 'middle' }}>
+                                {hasDetailLines && dualLines.length > 0 ? (
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      setExpandedHistoryOrderId(isExpanded ? null : order.id)
+                                    }
+                                    title={isExpanded ? 'Hide line status' : 'Show line status'}
+                                    style={{
+                                      background: 'none',
+                                      border: 'none',
+                                      cursor: 'pointer',
+                                      padding: '2px',
+                                      color: '#667eea',
+                                      fontSize: '14px',
+                                      lineHeight: 1,
+                                      transform: isExpanded ? 'rotate(90deg)' : 'rotate(0deg)',
+                                      transition: 'transform 0.2s'
+                                    }}
+                                  >
+                                    ▶
+                                  </button>
+                                ) : null}
                               </td>
+                              <td>{orderNumber}</td>
+                              <td>{nameLabel}</td>
+                              <td>{dateLabel}</td>
                               <td>{itemCount}</td>
                               <td>
                                 {overallRestockStatus ? (
                                   <span
+                                    title={
+                                      overallRestockStatus === 'NOT TRACKED'
+                                        ? 'This order has no dual-unit lines; partial restock is not recorded.'
+                                        : undefined
+                                    }
                                     style={{
                                       display: 'inline-block',
                                       padding: '3px 10px',
@@ -2150,7 +2245,7 @@ function PurchaseOrder() {
                             </tr>
                             {isExpanded && dualLines.length > 0 && (
                               <tr>
-                                <td colSpan={6} style={{ padding: 0, background: '#f8f9fc' }}>
+                                <td colSpan={7} style={{ padding: 0, background: '#f8f9fc' }}>
                                   <div style={{ padding: '12px 16px 16px' }}>
                                     <div style={{ fontWeight: 600, marginBottom: '8px', fontSize: '0.88rem' }}>
                                       Restock status by line (secondary unit)
@@ -2360,7 +2455,7 @@ function PurchaseOrder() {
                   const orderNumber = order.orderNumber || formatPurchaseOrderNumber(getOrderNumberValueFromOrder(order, index));
                   return (
                     <option key={order.id} value={order.id}>
-                      {orderNumber} - {dateLabel} - {nameLabel} ({itemCount} items)
+                      {orderNumber} - {nameLabel} - {dateLabel} ({itemCount} items)
                     </option>
                   );
                 })}
@@ -2388,6 +2483,17 @@ function PurchaseOrder() {
                   </p>
                 );
               }
+              const hasDualRestockLine = restockItems.some(isDualRestockItem);
+              const hasLegacyRestockLine = restockItems.some((row) => !isDualRestockItem(row));
+              let orderedQtyHeader = 'Ordered quantity';
+              let qtyToAddHeader = 'Quantity to add';
+              if (hasDualRestockLine && !hasLegacyRestockLine) {
+                orderedQtyHeader = 'Ordered quantity (secondary unit)';
+                qtyToAddHeader = 'Quantity to add (secondary unit)';
+              } else if (!hasDualRestockLine && hasLegacyRestockLine) {
+                orderedQtyHeader = 'Ordered quantity (primary unit)';
+                qtyToAddHeader = 'Quantity to add (primary unit)';
+              }
               return (
                 <div className="products-table">
                   <h4 style={{ marginBottom: '8px' }}>Preview of Products to Restock</h4>
@@ -2397,8 +2503,8 @@ function PurchaseOrder() {
                         <th>SL No.</th>
                         <th>Product</th>
                         <th>Catalogue No.</th>
-                        <th>Ordered Quantity (Secondary Unit)</th>
-                        <th>Quantity to Add (Secondary Unit)</th>
+                        <th style={{ textTransform: 'none' }}>{orderedQtyHeader}</th>
+                        <th style={{ textTransform: 'none' }}>{qtyToAddHeader}</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -2429,12 +2535,20 @@ function PurchaseOrder() {
                                   </div>
                                 </div>
                               ) : (
-                                <span style={{ color: '#999' }}>—</span>
+                                <span style={{ color: '#333' }}>{getRestockOrderedPrimaryDisplay(it)}</span>
                               )}
                             </td>
                             <td>
                               {dual ? (
-                                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                                <div
+                                  style={{
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    justifyContent: 'center',
+                                    gap: '8px',
+                                    flexWrap: 'wrap'
+                                  }}
+                                >
                                   <input
                                     type="number"
                                     min="0"
@@ -2452,13 +2566,20 @@ function PurchaseOrder() {
                                       padding: '0.25rem 0.4rem',
                                       borderRadius: '4px',
                                       border: '1px solid #ccc',
-                                      textAlign: 'right'
+                                      textAlign: 'center'
                                     }}
                                   />
                                   <span style={{ fontSize: '0.9rem' }}>{it.secondaryUnit || ''}</span>
                                 </div>
                               ) : (
-                                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                <div
+                                  style={{
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    justifyContent: 'center',
+                                    gap: '8px'
+                                  }}
+                                >
                                   <input
                                     type="number"
                                     min="0"
@@ -2476,11 +2597,11 @@ function PurchaseOrder() {
                                       padding: '0.25rem 0.4rem',
                                       borderRadius: '4px',
                                       border: '1px solid #ccc',
-                                      textAlign: 'right'
+                                      textAlign: 'center'
                                     }}
                                   />
                                   <span style={{ fontSize: '0.85rem', color: '#555' }}>
-                                    {it.primaryUnit || it.orderUnit || it.unit || 'units'}
+                                    {getRestockPrimaryUnitLabel(it)}
                                   </span>
                                 </div>
                               )}
@@ -2504,7 +2625,9 @@ function PurchaseOrder() {
                 marginTop: '16px',
                 display: 'flex',
                 justifyContent: 'flex-end',
-                gap: '10px'
+                gap: '10px',
+                alignItems: 'stretch',
+                flexWrap: 'wrap'
               }}
             >
               <button
@@ -2515,6 +2638,14 @@ function PurchaseOrder() {
                   setRestockQuantities({});
                 }}
                 disabled={restockLoading}
+                style={{
+                  minHeight: '40px',
+                  padding: '0.6rem 14px',
+                  boxSizing: 'border-box',
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  justifyContent: 'center'
+                }}
               >
                 Cancel
               </button>
@@ -2523,6 +2654,15 @@ function PurchaseOrder() {
                 className="save-due-btn"
                 onClick={handleRestockNow}
                 disabled={restockLoading || !selectedRestockOrderId}
+                style={{
+                  minHeight: '40px',
+                  padding: '0.6rem 14px',
+                  boxSizing: 'border-box',
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  whiteSpace: 'nowrap'
+                }}
               >
                 {restockLoading ? 'Restocking...' : 'Restock'}
               </button>

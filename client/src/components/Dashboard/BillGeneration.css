@@ -840,7 +840,6 @@
 
 .save-due-btn,
 .cancel-due-btn {
-  flex: 1;
   padding: 0.6rem;
   border: none;
   border-radius: 5px;
@@ -848,6 +847,11 @@
   font-weight: 600;
   cursor: pointer;
   transition: background 0.3s;
+}
+
+.edit-due-buttons .save-due-btn,
+.edit-due-buttons .cancel-due-btn {
+  flex: 1;
 }
 
 .save-due-btn {
