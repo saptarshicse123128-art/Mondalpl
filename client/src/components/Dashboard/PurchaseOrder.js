@@ -766,31 +766,35 @@ function PurchaseOrder() {
   /** Supplier / order name is stored on the Firestore document only; it is not drawn on the PDF. */
   const createOrderPDFDoc = (displayDate, itemsToOrder, orderNumberLabel = '') => {
     const doc = new jsPDF('p', 'mm', 'a4');
-    const tableLeft = 15;
+    const pageCenterX = doc.internal.pageSize.getWidth() / 2;
     const anyCatalogue = itemsToOrder.some(
       (item) => item.catalogueNumber && String(item.catalogueNumber).trim() !== ''
     );
-    const tableRight = anyCatalogue ? 195 : 175;
+    /** Sum of column widths — used to center the table on the page. */
+    const tableContentWidthMm = anyCatalogue ? 20 + 90 + 40 + 30 : 20 + 110 + 30;
+    const pageWidthMm = doc.internal.pageSize.getWidth();
+    const tableSideMarginMm = Math.max(8, (pageWidthMm - tableContentWidthMm) / 2);
+    /** Match header text to the centered table edges (same as autoTable horizontal margins). */
+    const tableEdgeLeftMm = tableSideMarginMm;
+    const tableEdgeRightMm = tableSideMarginMm + tableContentWidthMm;
 
     // Title
     doc.setFont('helvetica', 'bold');
     doc.setFontSize(36);
-    doc.text('ORDER LIST', 105, 24, { align: 'center' });
+    doc.text('ORDER LIST', pageCenterX, 24, { align: 'center' });
     // Underline below ORDER LIST heading
     doc.setLineWidth(0.8);
-    doc.line(52, 28, 158, 28);
+    doc.line(pageCenterX - 53, 28, pageCenterX + 53, 28);
 
     doc.setFontSize(10);
     doc.setFont('helvetica', 'normal');
 
-    // Name and date on left (hardcoded business name as requested)
-    doc.text('Mondal Plumbing & Sanitation', tableLeft, 40);
+    doc.text('Mondal Plumbing & Sanitation', tableEdgeLeftMm, 40);
     if (displayDate) {
-      doc.text(displayDate, tableLeft, 46);
+      doc.text(displayDate, tableEdgeLeftMm, 46);
     }
-    // Order number on right
     if (orderNumberLabel) {
-      doc.text(`ORD NO. : ${orderNumberLabel}`, tableRight, 40, { align: 'right' });
+      doc.text(`ORD NO. : ${orderNumberLabel}`, tableEdgeRightMm, 40, { align: 'right' });
     }
 
     const head = anyCatalogue
@@ -829,25 +833,28 @@ function PurchaseOrder() {
         fillColor: [50, 50, 50],
         textColor: [255, 255, 255],
         fontStyle: 'bold',
-        font: 'helvetica'
+        font: 'helvetica',
+        valign: 'middle'
       },
       styles: {
         font: 'helvetica',
-        fontSize: 10
+        fontSize: 10,
+        halign: 'center',
+        valign: 'middle'
       },
       columnStyles: anyCatalogue
         ? {
-            0: { cellWidth: 20, fontStyle: 'bold', halign: 'center' },
-            1: { cellWidth: 90 },
-            2: { cellWidth: 40, fontStyle: 'bold', halign: 'center' },
-            3: { cellWidth: 30, fontStyle: 'bold', halign: 'center' }
+            0: { cellWidth: 20, fontStyle: 'bold', halign: 'center', valign: 'middle' },
+            1: { cellWidth: 90, halign: 'left', valign: 'middle' },
+            2: { cellWidth: 40, fontStyle: 'bold', halign: 'center', valign: 'middle' },
+            3: { cellWidth: 30, fontStyle: 'bold', halign: 'center', valign: 'middle' }
           }
         : {
-            0: { cellWidth: 20, fontStyle: 'bold', halign: 'center' },
-            1: { cellWidth: 110 },
-            2: { cellWidth: 30, fontStyle: 'bold', halign: 'center' }
+            0: { cellWidth: 20, fontStyle: 'bold', halign: 'center', valign: 'middle' },
+            1: { cellWidth: 110, halign: 'left', valign: 'middle' },
+            2: { cellWidth: 30, fontStyle: 'bold', halign: 'center', valign: 'middle' }
           },
-      margin: { left: tableLeft, right: 15 }
+      margin: { left: tableSideMarginMm, right: tableSideMarginMm }
     });
 
     return doc;
