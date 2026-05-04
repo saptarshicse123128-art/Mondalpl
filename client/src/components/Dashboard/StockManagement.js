@@ -11,6 +11,7 @@ import {
 } from 'firebase/firestore';
 import { db } from '../../firebase';
 import { categoryService } from '../../services/firebaseService';
+import { appSettingsService, DEFAULT_APP_SETTINGS } from '../../services/appSettingsService';
 import { normalizeSizeNamePosition } from '../../utils/productDisplay';
 import './StockManagement.css';
 
@@ -42,6 +43,7 @@ function StockManagement() {
   const [newSubcategoryName, setNewSubcategoryName] = useState('');
   const [variationEnabled, setVariationEnabled] = useState(true);
   const [variations, setVariations] = useState([]);
+  const [appSettings, setAppSettings] = useState(DEFAULT_APP_SETTINGS);
   const [openVariationProductId, setOpenVariationProductId] = useState(null);
   /** Per-product setting: applies to all variations of this product on bills and POs */
   const [productSizeNamePosition, setProductSizeNamePosition] = useState('left');
@@ -92,6 +94,17 @@ function StockManagement() {
       if (typeof unsubscribeCategories === 'function') unsubscribeCategories();
     };
   }, []);
+
+  useEffect(() => {
+    const unsubscribeSettings = appSettingsService.onSettingsChange((settings) => {
+      setAppSettings(settings || DEFAULT_APP_SETTINGS);
+    });
+    return () => {
+      if (typeof unsubscribeSettings === 'function') unsubscribeSettings();
+    };
+  }, []);
+
+  const dualUnitEnabled = Boolean(appSettings?.enableDualUnitSystem);
 
   // When categories change, if current selectedCategoryId exists update its subcategories
   useEffect(() => {
@@ -155,13 +168,30 @@ function StockManagement() {
             purchasePrice: v.purchasePrice ? parseFloat(v.purchasePrice) : null,
             quantity: parseInt(v.quantity),
             lowStockQuantity: v.lowStockQuantity ? parseInt(v.lowStockQuantity) : null,
-            catalogueNumber: v.catalogueNumber?.trim() || ''
+            catalogueNumber: v.catalogueNumber?.trim() || '',
+            ...(dualUnitEnabled
+              ? {
+                  primaryUnit: v.primaryUnit?.trim() || '',
+                  secondaryUnit: v.secondaryUnit?.trim() || '',
+                  conversionFactor: v.conversionFactor ? parseFloat(v.conversionFactor) : null
+                }
+              : {})
           }));
         
         if (validVariations.length === 0) {
           setMessage({ type: 'error', text: 'Please add at least one valid variation with size, price, and quantity' });
           setLoading(false);
           return;
+        }
+        if (dualUnitEnabled) {
+          const invalidDualUnit = validVariations.some(
+            (v) => !v.primaryUnit || !v.secondaryUnit || !v.conversionFactor || v.conversionFactor <= 0
+          );
+          if (invalidDualUnit) {
+            setMessage({ type: 'error', text: 'Each variation must have primary unit, secondary unit, and conversion factor greater than 0.' });
+            setLoading(false);
+            return;
+          }
         }
         
         productData.variations = validVariations;
@@ -247,7 +277,10 @@ function StockManagement() {
         purchasePrice: v.purchasePrice?.toString() || '',
         quantity: v.quantity?.toString() || '',
         lowStockQuantity: v.lowStockQuantity?.toString() || '',
-        catalogueNumber: v.catalogueNumber || ''
+        catalogueNumber: v.catalogueNumber || '',
+        primaryUnit: v.primaryUnit || product.unit || '',
+        secondaryUnit: v.secondaryUnit || '',
+        conversionFactor: v.conversionFactor?.toString() || ''
       })));
     } else {
       setVariationEnabled(false);
@@ -304,13 +337,30 @@ function StockManagement() {
             purchasePrice: v.purchasePrice ? parseFloat(v.purchasePrice) : null,
             quantity: parseInt(v.quantity),
             lowStockQuantity: v.lowStockQuantity ? parseInt(v.lowStockQuantity) : null,
-            catalogueNumber: v.catalogueNumber?.trim() || ''
+            catalogueNumber: v.catalogueNumber?.trim() || '',
+            ...(dualUnitEnabled
+              ? {
+                  primaryUnit: v.primaryUnit?.trim() || '',
+                  secondaryUnit: v.secondaryUnit?.trim() || '',
+                  conversionFactor: v.conversionFactor ? parseFloat(v.conversionFactor) : null
+                }
+              : {})
           }));
         
         if (validVariations.length === 0) {
           setMessage({ type: 'error', text: 'Please add at least one valid variation with size, price, and quantity' });
           setLoading(false);
           return;
+        }
+        if (dualUnitEnabled) {
+          const invalidDualUnit = validVariations.some(
+            (v) => !v.primaryUnit || !v.secondaryUnit || !v.conversionFactor || v.conversionFactor <= 0
+          );
+          if (invalidDualUnit) {
+            setMessage({ type: 'error', text: 'Each variation must have primary unit, secondary unit, and conversion factor greater than 0.' });
+            setLoading(false);
+            return;
+          }
         }
         
         updateData.variations = validVariations;
@@ -384,7 +434,7 @@ function StockManagement() {
 
   // Variation management helpers
   const handleAddVariation = () => {
-    setVariations([...variations, { size: '', price: '', purchasePrice: '', quantity: '', lowStockQuantity: '', catalogueNumber: '' }]);
+    setVariations([...variations, { size: '', price: '', purchasePrice: '', quantity: '', lowStockQuantity: '', catalogueNumber: '', primaryUnit: formData.unit || '', secondaryUnit: '', conversionFactor: '' }]);
   };
 
   const handleRemoveVariation = (index) => {
@@ -398,6 +448,17 @@ function StockManagement() {
       [field]: value
     };
     setVariations(updatedVariations);
+  };
+
+  const handleDualUnitToggle = async (enabled) => {
+    try {
+      await appSettingsService.updateSettings({ enableDualUnitSystem: enabled });
+      setMessage({ type: 'success', text: `Dual unit system ${enabled ? 'enabled' : 'disabled'} successfully.` });
+      setTimeout(() => setMessage({ type: '', text: '' }), 2500);
+    } catch (error) {
+      console.error('Failed to update dual unit setting:', error);
+      setMessage({ type: 'error', text: 'Failed to update dual unit setting.' });
+    }
   };
 
   // Brand & Category management helpers
@@ -607,6 +668,15 @@ function StockManagement() {
     <div className="stock-management">
       <div className="stock-header">
         <h2>Stock Management</h2>
+        <label style={{ display: 'inline-flex', alignItems: 'center', gap: '8px', fontWeight: 500 }}>
+          <input
+            type="checkbox"
+            checked={dualUnitEnabled}
+            onChange={(e) => handleDualUnitToggle(e.target.checked)}
+            style={{ width: 'auto', margin: 0 }}
+          />
+          Enable Dual Unit System
+        </label>
         <button
           className="add-product-btn"
           onClick={() => {
@@ -624,7 +694,10 @@ function StockManagement() {
                 purchasePrice: '',
                 quantity: '',
                 lowStockQuantity: '',
-                catalogueNumber: ''
+                catalogueNumber: '',
+                primaryUnit: '',
+                secondaryUnit: '',
+                conversionFactor: ''
               }]);
               setFormData({
                 name: '',
@@ -738,7 +811,7 @@ function StockManagement() {
                           if (!e.target.checked) {
                             setVariations([]);
                           } else if (variations.length === 0) {
-                            setVariations([{ size: '', price: '', purchasePrice: '', quantity: '', lowStockQuantity: '', catalogueNumber: '' }]);
+                            setVariations([{ size: '', price: '', purchasePrice: '', quantity: '', lowStockQuantity: '', catalogueNumber: '', primaryUnit: formData.unit || '', secondaryUnit: '', conversionFactor: '' }]);
                           }
                         }}
                         style={{ width: 'auto', margin: 0 }}
@@ -825,7 +898,7 @@ function StockManagement() {
                           if (!e.target.checked) {
                             setVariations([]);
                           } else if (variations.length === 0) {
-                            setVariations([{ size: '', price: '', purchasePrice: '', quantity: '', lowStockQuantity: '', catalogueNumber: '' }]);
+                            setVariations([{ size: '', price: '', purchasePrice: '', quantity: '', lowStockQuantity: '', catalogueNumber: '', primaryUnit: formData.unit || '', secondaryUnit: '', conversionFactor: '' }]);
                           }
                         }}
                         style={{ width: 'auto', margin: 0 }}
@@ -1068,6 +1141,43 @@ function StockManagement() {
                             />
                           </div>
                         </div>
+                        {dualUnitEnabled && (
+                          <div className="form-row">
+                            <div className="form-group">
+                              <label>Secondary Unit *</label>
+                              <input
+                                type="text"
+                                value={variation.secondaryUnit || ''}
+                                onChange={(e) => handleVariationChange(index, 'secondaryUnit', e.target.value)}
+                                placeholder="e.g., box"
+                                required={dualUnitEnabled}
+                              />
+                            </div>
+                            <div className="form-group">
+                              <label>Conversion Factor *</label>
+                              <input
+                                type="number"
+                                value={variation.conversionFactor || ''}
+                                onChange={(e) => handleVariationChange(index, 'conversionFactor', e.target.value)}
+                                onWheel={handleNumberInputWheel}
+                                min="0.0001"
+                                step="0.0001"
+                                placeholder="e.g., 20"
+                                required={dualUnitEnabled}
+                              />
+                            </div>
+                            <div className="form-group">
+                              <label>Primary Unit *</label>
+                              <input
+                                type="text"
+                                value={variation.primaryUnit || ''}
+                                onChange={(e) => handleVariationChange(index, 'primaryUnit', e.target.value)}
+                                placeholder="e.g., piece"
+                                required={dualUnitEnabled}
+                              />
+                            </div>
+                          </div>
+                        )}
                       </div>
                     ))}
                   </div>

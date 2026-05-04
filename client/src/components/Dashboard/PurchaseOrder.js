@@ -1,8 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import jsPDF from 'jspdf';
 import 'jspdf-autotable';
-import { collection, addDoc, onSnapshot, query, orderBy, serverTimestamp, getDocs, deleteDoc, doc, getDoc, updateDoc } from 'firebase/firestore';
+import { collection, addDoc, onSnapshot, query, orderBy, serverTimestamp, getDocs, deleteDoc, doc, getDoc, updateDoc, writeBatch } from 'firebase/firestore';
 import { db } from '../../firebase';
+import { appSettingsService, DEFAULT_APP_SETTINGS } from '../../services/appSettingsService';
 import { formatProductWithVariation, normalizeSizeNamePosition } from '../../utils/productDisplay';
 import './Analytics.css';
 
@@ -24,6 +25,70 @@ const formatDateDDMMYYYY = (date) => {
   const month = String(dateObj.getMonth() + 1).padStart(2, '0');
   const year = dateObj.getFullYear();
   return `${day}.${month}.${year}`;
+};
+
+const formatPurchaseOrderNumber = (value) => `MPS/PO/${String(value ?? 0).padStart(5, '0')}`;
+
+const escapeRegExp = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+const getOrderNumberValueFromOrder = (order, fallbackIndex = 0) => {
+  if (typeof order?.orderNumberValue === 'number' && !Number.isNaN(order.orderNumberValue)) {
+    return order.orderNumberValue;
+  }
+  return fallbackIndex + 1;
+};
+
+const parsePositiveNumber = (value) => {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  return n;
+};
+
+const roundQtySecondary = (n) => Number(Number(n).toFixed(4));
+
+/** PO line has dual-unit metadata (restock in secondary, inventory in primary). */
+const isDualRestockItem = (it) =>
+  Boolean(
+    it &&
+      it.productId &&
+      it.orderedQuantitySecondary != null &&
+      Number(it.orderedQuantitySecondary) > 0 &&
+      parsePositiveNumber(it.conversionFactor) &&
+      String(it.secondaryUnit || '').trim() !== ''
+  );
+
+const getDueSecondary = (it) => {
+  if (!isDualRestockItem(it)) return 0;
+  const ordered = Number(it.orderedQuantitySecondary);
+  if (it.dueQuantitySecondary != null && Number.isFinite(Number(it.dueQuantitySecondary))) {
+    return Math.max(0, roundQtySecondary(Number(it.dueQuantitySecondary)));
+  }
+  const added = Number(it.addedQuantitySecondary || 0);
+  return Math.max(0, roundQtySecondary(ordered - added));
+};
+
+const primaryDeltaFromSecondary = (addSecondary, conversionFactor) => {
+  const factor = parsePositiveNumber(conversionFactor);
+  if (!factor || !parsePositiveNumber(addSecondary)) return 0;
+  return Math.round(Number(addSecondary) * factor);
+};
+
+const getDualTrackedLines = (order) => {
+  const items = Array.isArray(order?.items) ? order.items : [];
+  return items.filter(isDualRestockItem);
+};
+
+/** Rolling restock status for the purchase order list (dual-unit lines only). Computed from due qty when `status` is missing (older POs). */
+const getPurchaseOrderOverallRestockStatus = (order) => {
+  const dualLines = getDualTrackedLines(order);
+  if (dualLines.length === 0) return null;
+  const anyPartial = dualLines.some((it) => getDueSecondary(it) > 1e-6);
+  return anyPartial ? 'PARTIAL' : 'COMPLETED';
+};
+
+const inferLineRestockStatusLabel = (it) => {
+  if (!isDualRestockItem(it)) return null;
+  return getDueSecondary(it) <= 1e-6 ? 'COMPLETED' : 'PARTIAL';
 };
 
 function PurchaseOrder() {
@@ -52,15 +117,48 @@ function PurchaseOrder() {
   const [openOrderVariationProductId, setOpenOrderVariationProductId] = useState(null);
   const [showAllOrderProducts, setShowAllOrderProducts] = useState(false);
   const [oldOrdersSearch, setOldOrdersSearch] = useState('');
+  const [expandedHistoryOrderId, setExpandedHistoryOrderId] = useState(null);
   const [isRestockOpen, setIsRestockOpen] = useState(false);
   const [selectedRestockOrderId, setSelectedRestockOrderId] = useState('');
   const [restockLoading, setRestockLoading] = useState(false);
   const [restockQuantities, setRestockQuantities] = useState({});
+  const [appSettings, setAppSettings] = useState(DEFAULT_APP_SETTINGS);
   const smallActionButtonStyle = {
     padding: '0.35rem 0.8rem',
     fontSize: '0.8rem',
     minWidth: '70px'
   };
+  const dualUnitEnabled = Boolean(appSettings?.enableDualUnitSystem);
+
+  const initRestockQuantitiesForOrder = (order) => {
+    if (!order || !Array.isArray(order.items)) return {};
+    const next = {};
+    order.items.forEach((it) => {
+      if (!it.productId) return;
+      const key = it.productId;
+      if (isDualRestockItem(it)) {
+        const due = getDueSecondary(it);
+        if (due > 0) next[key] = String(due);
+      } else {
+        const raw = it.quantityText != null ? it.quantityText : it.quantity;
+        if (raw == null) return;
+        const s = String(raw).trim();
+        if (!s) return;
+        const n = parseInt(s, 10);
+        if (!Number.isNaN(n) && n > 0) next[key] = s;
+      }
+    });
+    return next;
+  };
+
+  useEffect(() => {
+    const unsubscribeSettings = appSettingsService.onSettingsChange((settings) => {
+      setAppSettings(settings || DEFAULT_APP_SETTINGS);
+    });
+    return () => {
+      if (typeof unsubscribeSettings === 'function') unsubscribeSettings();
+    };
+  }, []);
 
   useEffect(() => {
     const fetchLowStock = async () => {
@@ -77,8 +175,10 @@ function PurchaseOrder() {
             id: docSnap.id,
             name: data.name || '',
             category: data.category || '',
+            subcategory: data.subcategory || '',
             catalogueNumber: data.catalogueNumber || '',
             price: data.price || 0,
+            unit: data.unit || '',
             sizeNamePosition: normalizeSizeNamePosition(data.sizeNamePosition)
           };
 
@@ -133,7 +233,10 @@ function PurchaseOrder() {
                   catalogueNumber: variation.catalogueNumber || data.catalogueNumber || '',
                   price: variation.price || data.price || 0,
                   purchasePrice: variation.purchasePrice || data.purchasePrice || 0,
-                  status: varStatus
+                  status: varStatus,
+                  primaryUnit: variation.primaryUnit || data.unit || '',
+                  secondaryUnit: variation.secondaryUnit || '',
+                  conversionFactor: variation.conversionFactor || null
                 });
               }
 
@@ -146,7 +249,10 @@ function PurchaseOrder() {
                 catalogueNumber: variation.catalogueNumber || data.catalogueNumber || '',
                 price: variation.price || data.price || 0,
                 purchasePrice: variation.purchasePrice || data.purchasePrice || 0,
-                status: varStatus
+                status: varStatus,
+                primaryUnit: variation.primaryUnit || data.unit || '',
+                secondaryUnit: variation.secondaryUnit || '',
+                conversionFactor: variation.conversionFactor || null
               });
             });
 
@@ -405,11 +511,28 @@ function PurchaseOrder() {
   })();
 
   const toggleSelectProduct = (productId) => {
+    const product = allProducts.find((p) => p.id === productId);
+    const hasVariations = Boolean(product?.variations && product.variations.length > 0);
+
     setSelectedIds((prev) => {
-      if (prev.includes(productId)) {
-        return prev.filter((id) => id !== productId);
+      if (!hasVariations) {
+        if (prev.includes(productId)) {
+          return prev.filter((id) => id !== productId);
+        }
+        return [...prev, productId];
       }
-      return [...prev, productId];
+
+      const variationIds = product.variations.map((v) => v.id);
+      const allSelected =
+        prev.includes(productId) && variationIds.every((id) => prev.includes(id));
+
+      if (allSelected) {
+        // Unselect parent + all child variations together.
+        return prev.filter((id) => id !== productId && !variationIds.includes(id));
+      }
+
+      // Selecting parent product auto-selects all variations under it.
+      return [...new Set([...prev, productId, ...variationIds])];
     });
   };
 
@@ -423,22 +546,34 @@ function PurchaseOrder() {
 
   const goToPreview = () => {
     const items = [];
+    const existingCustomItems = selectedProducts.filter((p) => p.isCustom);
 
     allProducts.forEach((product) => {
+      const hasVariations = Array.isArray(product.variations) && product.variations.length > 0;
+
       // Base product (aggregated) selection
-      if (selectedIds.includes(product.id)) {
+      // If product has variations, parent-row selection is treated as selecting all child variations.
+      if (selectedIds.includes(product.id) && !hasVariations) {
         items.push({
           id: product.id,
           name: product.name,
+          productBrand: product.category || '',
+          productCategory: product.subcategory || '',
           catalogueNumber: product.catalogueNumber || '',
-          orderQuantity: '1'
+          orderQuantity: '1',
+          orderUnit: product.base?.unit || product.unit || '',
+          orderQuantitySecondary: '',
+          orderedQuantityPrimary: null,
+          primaryUnit: product.base?.unit || product.unit || ''
         });
       }
 
       // Individual variation selection
-      if (Array.isArray(product.variations)) {
+      if (hasVariations) {
+        const parentSelected = selectedIds.includes(product.id);
         product.variations.forEach((v) => {
-          if (selectedIds.includes(v.id)) {
+          // If parent row is selected, include all child variations in preview/PDF.
+          if (parentSelected || selectedIds.includes(v.id)) {
             items.push({
               id: v.id,
               name: v.size
@@ -448,8 +583,19 @@ function PurchaseOrder() {
                     normalizeSizeNamePosition(product.sizeNamePosition)
                   )
                 : product.name,
+              productBrand: product.category || '',
+              productCategory: product.subcategory || '',
               catalogueNumber: v.catalogueNumber || product.catalogueNumber || '',
-              orderQuantity: '1'
+              orderQuantity: '1',
+              orderUnit: v.unit || product.base?.unit || product.unit || '',
+              orderQuantitySecondary: dualUnitEnabled ? '1' : '',
+              orderedQuantityPrimary:
+                dualUnitEnabled && parsePositiveNumber(v.conversionFactor)
+                  ? parsePositiveNumber(v.conversionFactor)
+                  : null,
+              primaryUnit: v.primaryUnit || product.base?.unit || product.unit || '',
+              secondaryUnit: v.secondaryUnit || '',
+              conversionFactor: v.conversionFactor || null
             });
           }
         });
@@ -461,7 +607,7 @@ function PurchaseOrder() {
       return;
     }
 
-    setSelectedProducts(items);
+    setSelectedProducts([...items, ...existingCustomItems]);
     setOrderStep('preview');
   };
 
@@ -469,6 +615,23 @@ function PurchaseOrder() {
     setSelectedProducts((prev) => {
       const copy = [...prev];
       copy[index] = { ...copy[index], orderQuantity: value };
+      return copy;
+    });
+  };
+
+  const handleSecondaryQuantityChange = (index, value) => {
+    setSelectedProducts((prev) => {
+      const copy = [...prev];
+      const item = copy[index];
+      const conversionFactor = parsePositiveNumber(item?.conversionFactor);
+      const secondaryQty = parsePositiveNumber(value);
+      const orderedQuantityPrimary =
+        conversionFactor && secondaryQty ? secondaryQty * conversionFactor : null;
+      copy[index] = {
+        ...item,
+        orderQuantitySecondary: value,
+        orderedQuantityPrimary
+      };
       return copy;
     });
   };
@@ -487,8 +650,11 @@ function PurchaseOrder() {
       {
         id: `custom_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
         name: '',
+        productBrand: '',
+        productCategory: '',
         catalogueNumber: '',
         orderQuantity: '',
+        orderUnit: '',
         isCustom: true
       }
     ]);
@@ -496,6 +662,25 @@ function PurchaseOrder() {
 
   const handleRemoveProductFromOrder = (index) => {
     setSelectedProducts((prev) => prev.filter((_, i) => i !== index));
+  };
+
+  const resolveOrderItemUnit = (item) => {
+    const directUnit = String(item.orderUnit ?? item.unit ?? '').trim();
+    if (directUnit) return directUnit;
+
+    const productId = String(item.id ?? item.productId ?? '').trim();
+    if (!productId) return '';
+
+    if (productId.includes('_')) {
+      const [baseId, ...variationParts] = productId.split('_');
+      const variationKey = variationParts.join('_');
+      const baseProduct = allProducts.find((p) => p.id === baseId);
+      const matchedVariation = baseProduct?.variations?.find((v) => v.size === variationKey);
+      return String(matchedVariation?.unit ?? baseProduct?.base?.unit ?? baseProduct?.unit ?? '').trim();
+    }
+
+    const baseProduct = allProducts.find((p) => p.id === productId);
+    return String(baseProduct?.base?.unit ?? baseProduct?.unit ?? '').trim();
   };
 
   const closeOrderModal = () => {
@@ -508,41 +693,59 @@ function PurchaseOrder() {
     setShowAllOrderProducts(false);
   };
 
-  // Helper to build and download PDF from generic order data
-  const createOrderPDF = (displayName, displayDate, itemsToOrder) => {
+  const getNextPurchaseOrderNumber = () => {
+    if (purchaseOrders.length === 0) return 1;
+    const maxValue = purchaseOrders.reduce((max, order, index) => {
+      const current = getOrderNumberValueFromOrder(order, index);
+      return current > max ? current : max;
+    }, 1);
+    return maxValue + 1;
+  };
+
+  // Helper to build PDF from generic order data
+  const createOrderPDFDoc = (displayName, displayDate, itemsToOrder, orderNumberLabel = '') => {
     const doc = new jsPDF('p', 'mm', 'a4');
+    const tableLeft = 15;
+    const anyCatalogue = itemsToOrder.some(
+      (item) => item.catalogueNumber && String(item.catalogueNumber).trim() !== ''
+    );
+    const tableRight = anyCatalogue ? 195 : 175;
 
     // Title
     doc.setFont('helvetica', 'bold');
-    doc.setFontSize(20);
-    doc.text('ORDER LIST', 105, 25, { align: 'center' });
+    doc.setFontSize(36);
+    doc.text('ORDER LIST', 105, 24, { align: 'center' });
+    // Underline below ORDER LIST heading
+    doc.setLineWidth(0.8);
+    doc.line(52, 28, 158, 28);
 
     doc.setFontSize(10);
     doc.setFont('helvetica', 'normal');
 
-    // Name on left (without brackets)
-    if (displayName && displayName.trim() && displayName !== '[Name]') {
-      doc.text(displayName.trim(), 20, 40);
-    }
-    // Date on right (without brackets)
+    // Name and date on left (hardcoded business name as requested)
+    doc.text('Mondal Plumbing & Sanitation', tableLeft, 40);
     if (displayDate) {
-      doc.text(displayDate, 190, 40, { align: 'right' });
+      doc.text(displayDate, tableLeft, 46);
     }
-
-    // Table
-    const anyCatalogue = itemsToOrder.some(
-      (item) => item.catalogueNumber && String(item.catalogueNumber).trim() !== ''
-    );
+    // Order number on right
+    if (orderNumberLabel) {
+      doc.text(`ORD NO. : ${orderNumberLabel}`, tableRight, 40, { align: 'right' });
+    }
 
     const head = anyCatalogue
-      ? [['SL No.', 'Products', 'Catalogue No.', 'Qty.']]
-      : [['SL No.', 'Products', 'Qty.']];
+      ? [['SL No.', 'Products', 'Catalogue No.', 'Qty (Unit)']]
+      : [['SL No.', 'Products', 'Qty (Unit)']];
 
     const body = itemsToOrder.map((item, idx) => {
-      const row = [
-        String(idx + 1),
-        item.name || ''
-      ];
+      const qtyRaw = String(item.orderQuantity ?? '').trim();
+      const unitRaw = String(item.orderUnit ?? item.unit ?? '').trim();
+      const qtyAlreadyContainsUnit =
+        unitRaw.length > 0
+          ? new RegExp(`\\b${escapeRegExp(unitRaw)}\\b$`, 'i').test(qtyRaw)
+          : false;
+      const qtyWithUnit =
+        unitRaw && qtyRaw && !qtyAlreadyContainsUnit ? `${qtyRaw} ${unitRaw}` : qtyRaw;
+      const row = [String(idx + 1), item.name || ''];
 
       if (anyCatalogue) {
         const catalogueNo = item.catalogueNumber && String(item.catalogueNumber).trim() !== ''
@@ -551,20 +754,21 @@ function PurchaseOrder() {
         row.push(catalogueNo);
       }
 
-      row.push(String(item.orderQuantity));
+      row.push(qtyWithUnit);
 
       return row;
     });
 
     doc.autoTable({
-      startY: 50,
+      startY: 55,
       head,
       body,
       theme: 'grid',
       headStyles: {
         fillColor: [50, 50, 50],
         textColor: [255, 255, 255],
-        fontStyle: 'bold'
+        fontStyle: 'bold',
+        font: 'helvetica'
       },
       styles: {
         font: 'helvetica',
@@ -572,28 +776,53 @@ function PurchaseOrder() {
       },
       columnStyles: anyCatalogue
         ? {
-            0: { cellWidth: 20 },
+            0: { cellWidth: 20, fontStyle: 'bold', halign: 'center' },
             1: { cellWidth: 90 },
-            2: { cellWidth: 40 },
-            3: { cellWidth: 20 }
+            2: { cellWidth: 40, fontStyle: 'bold', halign: 'center' },
+            3: { cellWidth: 30, fontStyle: 'bold', halign: 'center' }
           }
         : {
-            0: { cellWidth: 20 },
+            0: { cellWidth: 20, fontStyle: 'bold', halign: 'center' },
             1: { cellWidth: 110 },
-            2: { cellWidth: 20 }
+            2: { cellWidth: 30, fontStyle: 'bold', halign: 'center' }
           },
-      margin: { left: 15, right: 15 }
+      margin: { left: tableLeft, right: 15 }
     });
 
-    const fileName = `PurchaseOrder_${String(displayDate).replace(/-/g, '')}.pdf`;
-    doc.save(fileName);
+    return doc;
   };
 
   const generateOrderPDF = async () => {
-    const itemsToOrder = selectedProducts.filter((p) => {
-      const q = (p.orderQuantity ?? '').toString().trim();
-      return q.length > 0;
-    });
+    const itemsToOrder = selectedProducts
+      .filter((p) => {
+        if (
+          dualUnitEnabled &&
+          !p.isCustom &&
+          p.secondaryUnit &&
+          parsePositiveNumber(p.conversionFactor)
+        ) {
+          return parsePositiveNumber(p.orderQuantitySecondary) !== null;
+        }
+        const q = (p.orderQuantity ?? '').toString().trim();
+        return q.length > 0;
+      })
+      .map((item) => ({
+        ...item,
+        orderUnit:
+          dualUnitEnabled &&
+          !item.isCustom &&
+          item.secondaryUnit &&
+          parsePositiveNumber(item.conversionFactor)
+            ? item.secondaryUnit
+            : resolveOrderItemUnit(item),
+        orderQuantity:
+          dualUnitEnabled &&
+          !item.isCustom &&
+          item.secondaryUnit &&
+          parsePositiveNumber(item.conversionFactor)
+            ? String(item.orderQuantitySecondary ?? '')
+            : item.orderQuantity
+      }));
     if (itemsToOrder.length === 0) {
       alert('Please set quantity for at least one product before generating the PDF.');
       return;
@@ -602,21 +831,52 @@ function PurchaseOrder() {
     const displayName = orderName && orderName.trim().length > 0 ? orderName.trim() : '';
     const displayDate = orderDate || formatDateDDMMYYYY(new Date());
 
+    const orderNumberValue = getNextPurchaseOrderNumber();
+    const orderNumber = formatPurchaseOrderNumber(orderNumberValue);
+
     // Create and download PDF
-    createOrderPDF(displayName, displayDate, itemsToOrder);
+    const pdfDoc = createOrderPDFDoc(displayName, displayDate, itemsToOrder, orderNumber);
+    const safeOrderNumber = orderNumber.replace(/\//g, '-');
+    const fileName = `${safeOrderNumber}_${String(displayDate).replace(/[.\-/]/g, '')}.pdf`;
+    pdfDoc.save(fileName);
 
     // Save order to Firestore for future reference
     try {
       const orderDoc = {
         name: displayName,
         date: displayDate,
+        orderNumber,
+        orderNumberValue,
         createdAt: serverTimestamp(),
-        items: itemsToOrder.map((item) => ({
-          productId: item.isCustom ? null : (item.id || null),
-          name: item.name || '',
-          catalogueNumber: item.catalogueNumber || '',
-          quantityText: item.orderQuantity != null ? String(item.orderQuantity) : ''
-        }))
+        items: itemsToOrder.map((item) => {
+          const oqSec = parsePositiveNumber(item.orderQuantitySecondary);
+          const hasDualLine =
+            !item.isCustom &&
+            oqSec != null &&
+            parsePositiveNumber(item.conversionFactor) &&
+            String(item.secondaryUnit || '').trim() !== '';
+          return {
+            productId: item.isCustom ? null : (item.id || null),
+            name: item.name || '',
+            productBrand: item.productBrand || '',
+            productCategory: item.productCategory || '',
+            catalogueNumber: item.catalogueNumber || '',
+            quantityText: item.orderQuantity != null ? String(item.orderQuantity) : '',
+            orderUnit: item.orderUnit || item.unit || '',
+            orderedQuantitySecondary: oqSec,
+            orderedQuantityPrimary: parsePositiveNumber(item.orderedQuantityPrimary),
+            secondaryUnit: item.secondaryUnit || '',
+            primaryUnit: item.primaryUnit || item.orderUnit || item.unit || '',
+            conversionFactor: parsePositiveNumber(item.conversionFactor),
+            ...(hasDualLine
+              ? {
+                  addedQuantitySecondary: 0,
+                  dueQuantitySecondary: oqSec,
+                  status: oqSec > 0 ? 'PARTIAL' : 'COMPLETED'
+                }
+              : {})
+          };
+        })
       };
 
       await addDoc(collection(db, 'purchaseOrders'), orderDoc);
@@ -655,11 +915,61 @@ function PurchaseOrder() {
       return;
     }
 
-    createOrderPDF(displayName, dateFromDoc, itemsForPdf.map((it) => ({
+    const orderNumberLabel = order.orderNumber || formatPurchaseOrderNumber(1);
+    const pdfDoc = createOrderPDFDoc(displayName, dateFromDoc, itemsForPdf.map((it) => ({
       name: it.name,
       catalogueNumber: it.catalogueNumber,
-      orderQuantity: it.quantityText != null ? it.quantityText : it.quantity
-    })));
+      orderQuantity: it.quantityText != null ? it.quantityText : it.quantity,
+      orderUnit: it.orderUnit || it.unit || ''
+    })), orderNumberLabel);
+    const safeOrderNumber = orderNumberLabel.replace(/\//g, '-');
+    const fileName = `${safeOrderNumber}_${String(dateFromDoc).replace(/[.\-/]/g, '')}.pdf`;
+    pdfDoc.save(fileName);
+  };
+
+  const viewExistingOrderPDF = (order) => {
+    const displayName = order.name && order.name.trim().length > 0 ? order.name.trim() : '';
+    let dateFromDoc = '';
+    if (order.date) {
+      if (order.date.includes('.')) {
+        dateFromDoc = order.date;
+      } else {
+        dateFromDoc = formatDateDDMMYYYY(new Date(order.date));
+      }
+    } else if (order.createdAt?.toDate) {
+      dateFromDoc = formatDateDDMMYYYY(order.createdAt.toDate());
+    } else {
+      dateFromDoc = formatDateDDMMYYYY(new Date());
+    }
+    const items = Array.isArray(order.items) ? order.items : [];
+    const itemsForPdf = items.filter((it) => {
+      const qt = (it.quantityText != null ? it.quantityText : it.quantity);
+      if (qt == null) return false;
+      return String(qt).trim().length > 0;
+    });
+
+    if (itemsForPdf.length === 0) {
+      alert('This purchase order has no items with quantity.');
+      return;
+    }
+
+    const orderNumberLabel = order.orderNumber || formatPurchaseOrderNumber(1);
+    const pdfDoc = createOrderPDFDoc(displayName, dateFromDoc, itemsForPdf.map((it) => ({
+      name: it.name,
+      catalogueNumber: it.catalogueNumber,
+      orderQuantity: it.quantityText != null ? it.quantityText : it.quantity,
+      orderUnit: it.orderUnit || it.unit || ''
+    })), orderNumberLabel);
+
+    const pdfBlob = pdfDoc.output('blob');
+    const pdfUrl = URL.createObjectURL(pdfBlob);
+    const opened = window.open(pdfUrl, '_blank', 'noopener,noreferrer');
+    if (!opened) {
+      alert('Popup blocked. Please allow popups to view the PDF.');
+      URL.revokeObjectURL(pdfUrl);
+      return;
+    }
+    setTimeout(() => URL.revokeObjectURL(pdfUrl), 30000);
   };
 
   const deletePurchaseOrder = async (orderId) => {
@@ -675,41 +985,122 @@ function PurchaseOrder() {
     }
   };
 
+  const resetAllPurchaseOrders = async () => {
+    if (!window.confirm('This will delete ALL previous purchase orders. Continue?')) {
+      return;
+    }
+    if (!window.confirm('Are you absolutely sure? SL numbers will restart from MPS/PO/00000.')) {
+      return;
+    }
+    try {
+      const snapshot = await getDocs(collection(db, 'purchaseOrders'));
+      if (snapshot.empty) {
+        alert('No purchase orders found to reset.');
+        return;
+      }
+      const batch = writeBatch(db);
+      snapshot.forEach((docSnap) => {
+        batch.delete(doc(db, 'purchaseOrders', docSnap.id));
+      });
+      await batch.commit();
+      alert('All purchase orders deleted. New purchase orders will start from MPS/PO/00001.');
+    } catch (err) {
+      console.error('Failed to reset purchase orders:', err);
+      alert('Failed to reset purchase orders. Please try again.');
+    }
+  };
+
+  const applyPrimaryQuantityToProduct = async (productIdKey, qtyPrimaryDelta) => {
+    if (!qtyPrimaryDelta || qtyPrimaryDelta <= 0) return;
+    const [productId, ...rest] = productIdKey.split('_');
+    const variationSizeKey = rest.length > 0 ? rest.join('_') : null;
+
+    const productRef = doc(db, 'products', productId);
+    const snap = await getDoc(productRef);
+    if (!snap.exists()) return;
+    const data = snap.data();
+
+    if (variationSizeKey && Array.isArray(data.variations) && data.variations.length > 0) {
+      const variations = data.variations.map((v) => {
+        if (v.size === variationSizeKey) {
+          const currentQty = v.quantity || 0;
+          return { ...v, quantity: currentQty + qtyPrimaryDelta };
+        }
+        return v;
+      });
+      const totalQuantity = variations.reduce((sum, v) => sum + (v.quantity || 0), 0);
+      await updateDoc(productRef, {
+        variations,
+        quantity: totalQuantity,
+        updatedAt: serverTimestamp()
+      });
+    } else {
+      const currentQty = data.quantity || 0;
+      await updateDoc(productRef, {
+        quantity: currentQty + qtyPrimaryDelta,
+        updatedAt: serverTimestamp()
+      });
+    }
+  };
+
   const handleRestockNow = async () => {
     if (!selectedRestockOrderId) {
       alert('Please select a purchase order to restock.');
       return;
     }
 
-    const order = purchaseOrders.find((o) => o.id === selectedRestockOrderId);
-    if (!order) {
+    const orderRef = doc(db, 'purchaseOrders', selectedRestockOrderId);
+    const orderSnap = await getDoc(orderRef);
+    if (!orderSnap.exists()) {
       alert('Selected purchase order not found.');
       return;
     }
 
-    const items = Array.isArray(order.items) ? order.items : [];
-    const restockItems = items
-      .filter((it, idx) => {
-        if (!it.productId) return false;
-        const key = it.productId || String(idx);
-        const override = restockQuantities[key];
-        const baseRaw = it.quantityText != null ? it.quantityText : it.quantity;
-        const raw = override !== undefined && override !== '' ? override : baseRaw;
-        if (raw == null) return false;
-        const n = parseInt(String(raw), 10);
-        return !Number.isNaN(n) && n > 0;
-      })
-      .map((it, idx) => {
-        const key = it.productId || String(idx);
-        const override = restockQuantities[key];
-        const baseRaw = it.quantityText != null ? it.quantityText : it.quantity;
-        const raw = override !== undefined && override !== '' ? override : baseRaw;
-        const qty = parseInt(String(raw), 10);
-        return { ...it, _restockQty: qty };
-      });
+    const orderData = orderSnap.data();
+    const items = Array.isArray(orderData.items) ? [...orderData.items] : [];
 
-    if (restockItems.length === 0) {
-      alert('This purchase order has no valid quantities to restock.');
+    const linesToApply = [];
+    for (let i = 0; i < items.length; i++) {
+      const it = items[i];
+      if (!it.productId) continue;
+      const key = it.productId;
+      const rawInput = restockQuantities[key];
+      if (rawInput === undefined || rawInput === null || String(rawInput).trim() === '') {
+        continue;
+      }
+
+      if (isDualRestockItem(it)) {
+        const due = getDueSecondary(it);
+        if (due <= 0) continue;
+        const addSec = parsePositiveNumber(String(rawInput).trim());
+        if (!addSec) {
+          alert(`Enter a valid positive quantity for "${it.name || 'item'}".`);
+          return;
+        }
+        if (addSec > due + 1e-6) {
+          alert(
+            `Quantity to add cannot exceed due quantity (${due} ${it.secondaryUnit || ''}) for "${it.name || 'item'}".`
+          );
+          return;
+        }
+        const addPrimary = primaryDeltaFromSecondary(addSec, it.conversionFactor);
+        if (!addPrimary || addPrimary <= 0) {
+          alert(`Could not convert to primary units for "${it.name || 'item'}". Check conversion factor.`);
+          return;
+        }
+        linesToApply.push({ index: i, mode: 'dual', productIdKey: key, addSec, addPrimary });
+      } else {
+        const qty = parseInt(String(rawInput).trim(), 10);
+        if (Number.isNaN(qty) || qty <= 0) {
+          alert(`Enter a valid positive whole number for "${it.name || 'item'}".`);
+          return;
+        }
+        linesToApply.push({ index: i, mode: 'legacy', productIdKey: key, addPrimary: qty });
+      }
+    }
+
+    if (linesToApply.length === 0) {
+      alert('Enter at least one quantity to restock, or check that this order still has due quantities.');
       return;
     }
 
@@ -719,51 +1110,38 @@ function PurchaseOrder() {
 
     setRestockLoading(true);
     try {
-      for (const item of restockItems) {
-        const qty = item._restockQty;
-        if (!qty || qty <= 0) continue;
+      let itemsMutated = false;
+      for (const line of linesToApply) {
+        await applyPrimaryQuantityToProduct(line.productIdKey, line.addPrimary);
 
-        const key = item.productId;
-        if (!key) continue;
-
-        // Variation-based key (productId_size) vs base product id
-        const [productId, ...rest] = key.split('_');
-        const variationSizeKey = rest.length > 0 ? rest.join('_') : null;
-
-        const productRef = doc(db, 'products', productId);
-        const snap = await getDoc(productRef);
-        if (!snap.exists()) continue;
-        const data = snap.data();
-
-        if (variationSizeKey && Array.isArray(data.variations) && data.variations.length > 0) {
-          const variations = data.variations.map((v) => {
-            if (v.size === variationSizeKey) {
-              const currentQty = v.quantity || 0;
-              return { ...v, quantity: currentQty + qty };
-            }
-            return v;
-          });
-          const totalQuantity = variations.reduce(
-            (sum, v) => sum + (v.quantity || 0),
-            0
-          );
-          await updateDoc(productRef, {
-            variations,
-            quantity: totalQuantity,
-            updatedAt: serverTimestamp()
-          });
-        } else {
-          const currentQty = data.quantity || 0;
-          await updateDoc(productRef, {
-            quantity: currentQty + qty,
-            updatedAt: serverTimestamp()
-          });
+        if (line.mode === 'dual') {
+          const it = items[line.index];
+          const ordered = Number(it.orderedQuantitySecondary);
+          const prevAdded = Number(it.addedQuantitySecondary || 0);
+          const newAdded = roundQtySecondary(prevAdded + line.addSec);
+          let newDue = roundQtySecondary(ordered - newAdded);
+          if (newDue < 1e-6) newDue = 0;
+          items[line.index] = {
+            ...it,
+            addedQuantitySecondary: newAdded,
+            dueQuantitySecondary: newDue,
+            status: newDue <= 1e-6 ? 'COMPLETED' : 'PARTIAL'
+          };
+          itemsMutated = true;
         }
+      }
+
+      if (itemsMutated) {
+        await updateDoc(orderRef, {
+          items,
+          updatedAt: serverTimestamp()
+        });
       }
 
       alert('Products have been restocked successfully.');
       setIsRestockOpen(false);
       setSelectedRestockOrderId('');
+      setRestockQuantities({});
     } catch (err) {
       console.error('Failed to restock products:', err);
       alert('Failed to restock some products. Please check console for details.');
@@ -771,6 +1149,8 @@ function PurchaseOrder() {
       setRestockLoading(false);
     }
   };
+
+  const previewOrderNumber = formatPurchaseOrderNumber(getNextPurchaseOrderNumber());
 
   if (loading) {
     return (
@@ -834,8 +1214,7 @@ function PurchaseOrder() {
                 <tr>
                   <th>Product</th>
                   <th>Brand</th>
-                  <th>Current Stock</th>
-                  <th>Unit</th>
+                  <th>Qty (Unit)</th>
                   <th>Purchase Price</th>
                   <th>Status</th>
                 </tr>
@@ -847,7 +1226,7 @@ function PurchaseOrder() {
                   if (filtered.length === 0) {
                     return (
                       <tr>
-                        <td colSpan="6" className="no-data">
+                        <td colSpan="5" className="no-data">
                           No low stock items based on configured thresholds.
                         </td>
                       </tr>
@@ -862,7 +1241,6 @@ function PurchaseOrder() {
                       product.base?.status ||
                       product.variations?.[0]?.status ||
                       'low';
-                    const unit = product.base?.unit ?? product.variations?.[0]?.unit ?? '';
                     const purchasePrice =
                       product.base?.purchasePrice ?? product.variations?.[0]?.purchasePrice ?? product.purchasePrice ?? 0;
 
@@ -905,7 +1283,9 @@ function PurchaseOrder() {
                             <span>{product.name}</span>
                           </div>
                         </td>
-                        <td>{product.category}</td>
+                        <td>
+                          {(product.category || '-') + ' / ' + (product.subcategory || 'No category')}
+                        </td>
                         <td className="stock-quantity">
                           {product.base ? (
                             <span
@@ -913,13 +1293,12 @@ function PurchaseOrder() {
                                 product.base.status === 'out' ? 'badge-danger' : 'badge-warning'
                               }`}
                             >
-                              {product.base.quantity}
+                              {`${product.base.quantity}${product.base?.unit ? ` ${product.base.unit}` : ''}`}
                             </span>
                           ) : (
                             <span className="badge badge-warning">See variations</span>
                           )}
                         </td>
-                        <td>{unit || '-'}</td>
                         <td className="price">₹{(purchasePrice || 0).toFixed(2)}</td>
                         <td className="status-cell">
                           {product.base ? (
@@ -938,7 +1317,7 @@ function PurchaseOrder() {
                     const variationRow =
                       hasVariations && isOpen ? (
                         <tr key={`${product.id}_vars`}>
-                          <td colSpan="6">
+                          <td colSpan="5">
                             <table
                               style={{
                                 width: '100%',
@@ -953,10 +1332,7 @@ function PurchaseOrder() {
                                     Size
                                   </th>
                                   <th style={{ padding: '6px', border: '1px solid #ddd' }}>
-                                    Quantity
-                                  </th>
-                                  <th style={{ padding: '6px', border: '1px solid #ddd' }}>
-                                    Unit
+                                    Qty (Unit)
                                   </th>
                                   <th style={{ padding: '6px', border: '1px solid #ddd' }}>
                                     Purchase Price
@@ -967,16 +1343,15 @@ function PurchaseOrder() {
                                 </tr>
                               </thead>
                               <tbody>
-                                {product.variations.map((v) => (
+                                {product.variations.map((v) => {
+                                  const qtyUnit = v.unit || product.base?.unit || product.unit || '';
+                                  return (
                                   <tr key={v.id}>
                                     <td style={{ padding: '6px', border: '1px solid #ddd' }}>
                                       {v.size || '-'}
                                     </td>
                                     <td style={{ padding: '6px', border: '1px solid #ddd' }}>
-                                      {v.quantity}
-                                    </td>
-                                    <td style={{ padding: '6px', border: '1px solid #ddd' }}>
-                                      {v.unit || '-'}
+                                      {`${v.quantity}${qtyUnit ? ` ${qtyUnit}` : ''}`}
                                     </td>
                                     <td style={{ padding: '6px', border: '1px solid #ddd' }}>
                                       ₹{(v.purchasePrice || 0).toFixed(2)}
@@ -989,7 +1364,7 @@ function PurchaseOrder() {
                                       )}
                                     </td>
                                   </tr>
-                                ))}
+                                )})}
                               </tbody>
                             </table>
                           </td>
@@ -1093,9 +1468,9 @@ function PurchaseOrder() {
                         <th style={{ width: '40px' }}>Add</th>
                         <th>Product / Variation</th>
                         <th>Brand</th>
-                        <th>Current Stock</th>
-                        <th>Unit</th>
+                        <th>Qty (Unit)</th>
                         <th>Purchase Price</th>
+                        <th>Price</th>
                         <th>Status</th>
                       </tr>
                     </thead>
@@ -1111,13 +1486,17 @@ function PurchaseOrder() {
                           Array.isArray(product.variations) && product.variations.length > 0;
                         const isOpen = openOrderVariationProductId === product.id;
                         const status = product.base?.status || 'ok';
-                        const baseUnit =
-                          product.base?.unit ?? product.variations?.[0]?.unit ?? '-';
                         const basePurchasePriceRaw =
                           product.base?.purchasePrice ??
                           product.variations?.[0]?.purchasePrice ??
                           0;
                         const basePurchasePrice = Number(basePurchasePriceRaw) || 0;
+                        const baseNormalPriceRaw =
+                          product.base?.price ??
+                          product.variations?.[0]?.price ??
+                          product.price ??
+                          0;
+                        const baseNormalPrice = Number(baseNormalPriceRaw) || 0;
 
                         const mainRow = (
                           <tr
@@ -1179,10 +1558,16 @@ function PurchaseOrder() {
                                 <span>{product.name}</span>
                               </div>
                             </td>
-                            <td>{product.category}</td>
-                            <td>{product.base ? product.base.quantity : '-'}</td>
-                            <td>{baseUnit}</td>
+                            <td>
+                              {(product.category || '-') + ' / ' + (product.subcategory || 'No category')}
+                            </td>
+                            <td>
+                              {hasVariations
+                                ? 'See variations'
+                                : `${product.base?.quantity ?? '-'}${product.base?.unit ? ` ${product.base.unit}` : ''}`}
+                            </td>
                             <td>₹{basePurchasePrice.toFixed(2)}</td>
+                            <td>₹{baseNormalPrice.toFixed(2)}</td>
                             <td>
                               <span
                                 className={`status-badge ${
@@ -1202,7 +1587,7 @@ function PurchaseOrder() {
                         const variationRow =
                           hasVariations && isOpen ? (
                             <tr key={`${product.id}_order_vars`}>
-                              <td colSpan="6">
+                              <td colSpan="7">
                                 <table
                                   style={{
                                     width: '100%',
@@ -1226,13 +1611,13 @@ function PurchaseOrder() {
                                         Size
                                       </th>
                                       <th style={{ padding: '6px', border: '1px solid #ddd' }}>
-                                        Quantity
-                                      </th>
-                                      <th style={{ padding: '6px', border: '1px solid #ddd' }}>
-                                        Unit
+                                        Qty (Unit)
                                       </th>
                                       <th style={{ padding: '6px', border: '1px solid #ddd' }}>
                                         Purchase Price
+                                      </th>
+                                      <th style={{ padding: '6px', border: '1px solid #ddd' }}>
+                                        Price
                                       </th>
                                       <th style={{ padding: '6px', border: '1px solid #ddd' }}>
                                         Status
@@ -1242,6 +1627,8 @@ function PurchaseOrder() {
                                   <tbody>
                                     {product.variations.map((v) => {
                                       const vPurchasePrice = Number(v.purchasePrice ?? 0) || 0;
+                                      const vNormalPrice = Number(v.price ?? 0) || 0;
+                                      const qtyUnit = v.unit || product.base?.unit || '';
                                       return (
                                         <tr key={v.id}>
                                           <td
@@ -1265,17 +1652,17 @@ function PurchaseOrder() {
                                           <td
                                             style={{ padding: '6px', border: '1px solid #ddd' }}
                                           >
-                                            {v.quantity}
-                                          </td>
-                                          <td
-                                            style={{ padding: '6px', border: '1px solid #ddd' }}
-                                          >
-                                            {v.unit || '-'}
+                                            {`${v.quantity ?? '-'}${qtyUnit ? ` ${qtyUnit}` : ''}`}
                                           </td>
                                           <td
                                             style={{ padding: '6px', border: '1px solid #ddd' }}
                                           >
                                             ₹{vPurchasePrice.toFixed(2)}
+                                          </td>
+                                          <td
+                                            style={{ padding: '6px', border: '1px solid #ddd' }}
+                                          >
+                                            ₹{vNormalPrice.toFixed(2)}
                                           </td>
                                           <td
                                             style={{ padding: '6px', border: '1px solid #ddd' }}
@@ -1342,6 +1729,16 @@ function PurchaseOrder() {
                 <div
                   style={{
                     display: 'flex',
+                    justifyContent: 'flex-end',
+                    marginBottom: '10px',
+                    fontWeight: 700
+                  }}
+                >
+                  ORD NO. : {previewOrderNumber}
+                </div>
+                <div
+                  style={{
+                    display: 'flex',
                     gap: '20px',
                     marginBottom: '16px',
                     flexWrap: 'wrap'
@@ -1380,16 +1777,15 @@ function PurchaseOrder() {
                       <tr>
                         <th>SL No.</th>
                         <th>Product</th>
+                        <th>Product Brand</th>
+                        <th>Category</th>
                         <th>Catalogue No.</th>
-                        <th>Qty to Order</th>
+                        <th>Qty (Unit)</th>
                         <th>Action</th>
                       </tr>
                     </thead>
                     <tbody>
-                      {selectedProducts.filter(product => {
-                        // Only show products that have catalogue number
-                        return product.catalogueNumber && product.catalogueNumber.trim().length > 0;
-                      }).map((product, index) => (
+                      {selectedProducts.map((product, index) => (
                         <tr key={product.id}>
                           <td>{index + 1}</td>
                           <td>
@@ -1408,6 +1804,30 @@ function PurchaseOrder() {
                             {product.isCustom ? (
                               <input
                                 type="text"
+                                value={product.productBrand || ''}
+                                onChange={(e) => handleCustomFieldChange(index, 'productBrand', e.target.value)}
+                                placeholder="Brand (optional)"
+                              />
+                            ) : (
+                              product.productBrand || '-'
+                            )}
+                          </td>
+                          <td>
+                            {product.isCustom ? (
+                              <input
+                                type="text"
+                                value={product.productCategory || ''}
+                                onChange={(e) => handleCustomFieldChange(index, 'productCategory', e.target.value)}
+                                placeholder="Category (optional)"
+                              />
+                            ) : (
+                              product.productCategory || '-'
+                            )}
+                          </td>
+                          <td>
+                            {product.isCustom ? (
+                              <input
+                                type="text"
                                 value={product.catalogueNumber || ''}
                                 onChange={(e) => handleCustomFieldChange(index, 'catalogueNumber', e.target.value)}
                                 placeholder="Catalogue no. (optional)"
@@ -1417,13 +1837,36 @@ function PurchaseOrder() {
                             )}
                           </td>
                           <td>
-                            <input
-                              type="text"
-                              value={product.orderQuantity || ''}
-                              onChange={(e) => handleQuantityChange(index, e.target.value)}
-                              placeholder="Qty (can include text)"
-                              style={{ width: '120px' }}
-                            />
+                            {dualUnitEnabled && !product.isCustom && product.secondaryUnit && parsePositiveNumber(product.conversionFactor) ? (
+                              <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                  <input
+                                    type="number"
+                                    min="0"
+                                    step="0.01"
+                                    value={product.orderQuantitySecondary || ''}
+                                    onChange={(e) => handleSecondaryQuantityChange(index, e.target.value)}
+                                    placeholder="0"
+                                    style={{ width: '90px' }}
+                                  />
+                                  <span>{product.secondaryUnit}</span>
+                                </div>
+                                <small style={{ color: '#555' }}>
+                                  1 {product.secondaryUnit} = {product.conversionFactor} {product.primaryUnit || 'units'}
+                                </small>
+                                <small style={{ color: '#333', fontWeight: 600 }}>
+                                  Primary qty: {product.orderedQuantityPrimary ?? 0} {product.primaryUnit || ''}
+                                </small>
+                              </div>
+                            ) : (
+                              <input
+                                type="text"
+                                value={product.orderQuantity || ''}
+                                onChange={(e) => handleQuantityChange(index, e.target.value)}
+                                placeholder="Qty (can include text)"
+                                style={{ width: '120px' }}
+                              />
+                            )}
                           </td>
                           <td>
                             <button
@@ -1500,6 +1943,7 @@ function PurchaseOrder() {
           onClick={(e) => {
             if (e.target === e.currentTarget) {
               setIsHistoryOpen(false);
+              setExpandedHistoryOrderId(null);
             }
           }}
         >
@@ -1526,20 +1970,33 @@ function PurchaseOrder() {
               }}
             >
               <h3 style={{ margin: 0 }}>Old Purchase Orders</h3>
-              <button
-                type="button"
-                onClick={() => setIsHistoryOpen(false)}
-                style={{
-                  background: 'none',
-                  border: 'none',
-                  fontSize: '22px',
-                  cursor: 'pointer',
-                  color: '#666'
-                }}
-                title="Close"
-              >
-                ×
-              </button>
+              <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                <button
+                  type="button"
+                  className="delete-bill-btn"
+                  onClick={resetAllPurchaseOrders}
+                  title="Delete all purchase orders and reset SL number"
+                >
+                  Reset All
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsHistoryOpen(false);
+                    setExpandedHistoryOrderId(null);
+                  }}
+                  style={{
+                    background: 'none',
+                    border: 'none',
+                    fontSize: '22px',
+                    cursor: 'pointer',
+                    color: '#666'
+                  }}
+                  title="Close"
+                >
+                  ×
+                </button>
+              </div>
             </div>
 
             {purchaseOrders.length === 0 ? (
@@ -1564,6 +2021,7 @@ function PurchaseOrder() {
                         <th>Date</th>
                         <th>Name</th>
                         <th>Items</th>
+                        <th>Restock status</th>
                         <th>Action</th>
                       </tr>
                     </thead>
@@ -1581,51 +2039,207 @@ function PurchaseOrder() {
                         }
                         const nameLabel = order.name || '[Name]';
                         const itemCount = Array.isArray(order.items) ? order.items.length : 0;
-                        const slNo = index + 1;
+                        const orderNumber = order.orderNumber || formatPurchaseOrderNumber(getOrderNumberValueFromOrder(order, index));
+                        const overallRestockStatus = getPurchaseOrderOverallRestockStatus(order);
+                        const dualLines = getDualTrackedLines(order);
+                        const hasDetailLines = Array.isArray(order.items) && order.items.some((it) => it.productId);
 
                         const query = oldOrdersSearch.trim().toLowerCase();
                         if (query) {
-                          const haystack = `${slNo} ${dateLabel} ${nameLabel}`.toLowerCase();
+                          const haystack =
+                            `${orderNumber} ${dateLabel} ${nameLabel} ${overallRestockStatus || ''}`.toLowerCase();
                           if (!haystack.includes(query)) {
                             return null;
                           }
                         }
 
+                        const statusBadge = (label) =>
+                          label === 'COMPLETED'
+                            ? {
+                                background: '#e8f5e9',
+                                color: '#2e7d32',
+                                border: '1px solid #c8e6c9'
+                              }
+                            : {
+                                background: '#fff3e0',
+                                color: '#e65100',
+                                border: '1px solid #ffe0b2'
+                              };
+
+                        const isExpanded = expandedHistoryOrderId === order.id;
+
                         return (
-                          <tr key={order.id}>
-                            <td>{slNo}</td>
-                            <td>{dateLabel}</td>
-                            <td>{nameLabel}</td>
-                            <td>{itemCount}</td>
-                            <td>
-                              <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
-                                <button
-                                  type="button"
-                                  className="low-stock-more-btn"
-                                  style={smallActionButtonStyle}
-                                  onClick={() => downloadExistingOrderPDF(order)}
-                                >
-                                  Download PDF
-                                </button>
-                                <button
-                                  type="button"
-                                  className="low-stock-more-btn"
-                                  style={smallActionButtonStyle}
-                                  onClick={() => downloadExistingOrderPDF(order)}
-                                >
-                                  View
-                                </button>
-                                <button
-                                  type="button"
-                                  className="delete-bill-btn"
-                                  style={smallActionButtonStyle}
-                                  onClick={() => deletePurchaseOrder(order.id)}
-                                >
-                                  Delete
-                                </button>
-                              </div>
-                            </td>
-                          </tr>
+                          <React.Fragment key={order.id}>
+                            <tr>
+                              <td>{orderNumber}</td>
+                              <td>{dateLabel}</td>
+                              <td>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                  {hasDetailLines && dualLines.length > 0 && (
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        setExpandedHistoryOrderId(isExpanded ? null : order.id)
+                                      }
+                                      title={isExpanded ? 'Hide line status' : 'Show line status'}
+                                      style={{
+                                        background: 'none',
+                                        border: 'none',
+                                        cursor: 'pointer',
+                                        padding: '2px',
+                                        color: '#667eea',
+                                        fontSize: '14px',
+                                        lineHeight: 1,
+                                        transform: isExpanded ? 'rotate(90deg)' : 'rotate(0deg)',
+                                        transition: 'transform 0.2s'
+                                      }}
+                                    >
+                                      ▶
+                                    </button>
+                                  )}
+                                  <span>{nameLabel}</span>
+                                </div>
+                              </td>
+                              <td>{itemCount}</td>
+                              <td>
+                                {overallRestockStatus ? (
+                                  <span
+                                    style={{
+                                      display: 'inline-block',
+                                      padding: '3px 10px',
+                                      borderRadius: '6px',
+                                      fontSize: '0.78rem',
+                                      fontWeight: 700,
+                                      ...statusBadge(overallRestockStatus)
+                                    }}
+                                  >
+                                    {overallRestockStatus}
+                                  </span>
+                                ) : (
+                                  <span style={{ color: '#999', fontSize: '0.88rem' }}>—</span>
+                                )}
+                              </td>
+                              <td>
+                                <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+                                  <button
+                                    type="button"
+                                    className="low-stock-more-btn"
+                                    style={smallActionButtonStyle}
+                                    onClick={() => downloadExistingOrderPDF(order)}
+                                  >
+                                    Download PDF
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="low-stock-more-btn"
+                                    style={smallActionButtonStyle}
+                                    onClick={() => viewExistingOrderPDF(order)}
+                                  >
+                                    View
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="delete-bill-btn"
+                                    style={smallActionButtonStyle}
+                                    onClick={() => deletePurchaseOrder(order.id)}
+                                  >
+                                    Delete
+                                  </button>
+                                </div>
+                              </td>
+                            </tr>
+                            {isExpanded && dualLines.length > 0 && (
+                              <tr>
+                                <td colSpan={6} style={{ padding: 0, background: '#f8f9fc' }}>
+                                  <div style={{ padding: '12px 16px 16px' }}>
+                                    <div style={{ fontWeight: 600, marginBottom: '8px', fontSize: '0.88rem' }}>
+                                      Restock status by line (secondary unit)
+                                    </div>
+                                    <table
+                                      style={{
+                                        width: '100%',
+                                        borderCollapse: 'collapse',
+                                        fontSize: '0.85rem',
+                                        background: '#fff'
+                                      }}
+                                    >
+                                      <thead>
+                                        <tr style={{ background: '#eef1f8' }}>
+                                          <th style={{ textAlign: 'left', padding: '8px', border: '1px solid #dde2ee' }}>
+                                            Product
+                                          </th>
+                                          <th style={{ textAlign: 'center', padding: '8px', border: '1px solid #dde2ee' }}>
+                                            Status
+                                          </th>
+                                          <th style={{ textAlign: 'right', padding: '8px', border: '1px solid #dde2ee' }}>
+                                            Due
+                                          </th>
+                                          <th style={{ textAlign: 'right', padding: '8px', border: '1px solid #dde2ee' }}>
+                                            Ordered
+                                          </th>
+                                        </tr>
+                                      </thead>
+                                      <tbody>
+                                        {(order.items || []).map((it, li) => {
+                                          if (!it.productId) return null;
+                                          const lineStatus = inferLineRestockStatusLabel(it);
+                                          if (!lineStatus) {
+                                            return (
+                                              <tr key={`${order.id}_nl_${li}`}>
+                                                <td style={{ padding: '8px', border: '1px solid #eee' }}>
+                                                  {it.name || '—'}
+                                                </td>
+                                                <td
+                                                  colSpan={3}
+                                                  style={{
+                                                    padding: '8px',
+                                                    border: '1px solid #eee',
+                                                    color: '#888',
+                                                    fontStyle: 'italic'
+                                                  }}
+                                                >
+                                                  Not tracked as dual-unit restock (legacy line)
+                                                </td>
+                                              </tr>
+                                            );
+                                          }
+                                          const due = getDueSecondary(it);
+                                          const ord = roundQtySecondary(it.orderedQuantitySecondary);
+                                          return (
+                                            <tr key={`${order.id}_${it.productId}_${li}`}>
+                                              <td style={{ padding: '8px', border: '1px solid #eee' }}>
+                                                {it.name || '—'}
+                                              </td>
+                                              <td style={{ padding: '8px', border: '1px solid #eee', textAlign: 'center' }}>
+                                                <span
+                                                  style={{
+                                                    display: 'inline-block',
+                                                    padding: '2px 8px',
+                                                    borderRadius: '4px',
+                                                    fontWeight: 700,
+                                                    fontSize: '0.76rem',
+                                                    ...statusBadge(lineStatus)
+                                                  }}
+                                                >
+                                                  {lineStatus}
+                                                </span>
+                                              </td>
+                                              <td style={{ padding: '8px', border: '1px solid #eee', textAlign: 'right' }}>
+                                                {due} {it.secondaryUnit || ''}
+                                              </td>
+                                              <td style={{ padding: '8px', border: '1px solid #eee', textAlign: 'right' }}>
+                                                {ord} {it.secondaryUnit || ''}
+                                              </td>
+                                            </tr>
+                                          );
+                                        })}
+                                      </tbody>
+                                    </table>
+                                  </div>
+                                </td>
+                              </tr>
+                            )}
+                          </React.Fragment>
                         );
                       })}
                     </tbody>
@@ -1656,6 +2270,7 @@ function PurchaseOrder() {
           onClick={(e) => {
             if (e.target === e.currentTarget && !restockLoading) {
               setIsRestockOpen(false);
+              setRestockQuantities({});
             }
           }}
         >
@@ -1684,7 +2299,12 @@ function PurchaseOrder() {
               <h3 style={{ margin: 0 }}>Restocking of Products</h3>
               <button
                 type="button"
-                onClick={() => !restockLoading && setIsRestockOpen(false)}
+                onClick={() => {
+                  if (!restockLoading) {
+                    setIsRestockOpen(false);
+                    setRestockQuantities({});
+                  }
+                }}
                 style={{
                   background: 'none',
                   border: 'none',
@@ -1705,7 +2325,16 @@ function PurchaseOrder() {
               </label>
               <select
                 value={selectedRestockOrderId}
-                onChange={(e) => setSelectedRestockOrderId(e.target.value)}
+                onChange={(e) => {
+                  const id = e.target.value;
+                  setSelectedRestockOrderId(id);
+                  if (!id) {
+                    setRestockQuantities({});
+                    return;
+                  }
+                  const selectedOrder = purchaseOrders.find((o) => o.id === id);
+                  setRestockQuantities(initRestockQuantitiesForOrder(selectedOrder));
+                }}
                 style={{
                   width: '100%',
                   padding: '0.6rem 0.8rem',
@@ -1728,10 +2357,10 @@ function PurchaseOrder() {
                   }
                   const nameLabel = order.name || '[Name]';
                   const itemCount = Array.isArray(order.items) ? order.items.length : 0;
-                  const slNo = index + 1;
+                  const orderNumber = order.orderNumber || formatPurchaseOrderNumber(getOrderNumberValueFromOrder(order, index));
                   return (
                     <option key={order.id} value={order.id}>
-                      {slNo}. {dateLabel} - {nameLabel} ({itemCount} items)
+                      {orderNumber} - {dateLabel} - {nameLabel} ({itemCount} items)
                     </option>
                   );
                 })}
@@ -1742,12 +2371,12 @@ function PurchaseOrder() {
               const order = purchaseOrders.find((o) => o.id === selectedRestockOrderId);
               if (!order) return null;
               const items = Array.isArray(order.items) ? order.items : [];
-              const restockItems = items.filter((it, idx) => {
+              const restockItems = items.filter((it) => {
                 if (!it.productId) return false;
-                const key = it.productId || String(idx);
-                const override = restockQuantities[key];
-                const baseRaw = it.quantityText != null ? it.quantityText : it.quantity;
-                const raw = override !== undefined && override !== '' ? override : baseRaw;
+                if (isDualRestockItem(it)) {
+                  return getDueSecondary(it) > 1e-6;
+                }
+                const raw = it.quantityText != null ? it.quantityText : it.quantity;
                 if (raw == null) return false;
                 const n = parseInt(String(raw), 10);
                 return !Number.isNaN(n) && n > 0;
@@ -1755,7 +2384,7 @@ function PurchaseOrder() {
               if (restockItems.length === 0) {
                 return (
                   <p className="no-data">
-                    This purchase order has no valid quantities to restock.
+                    This purchase order has no remaining quantities to restock.
                   </p>
                 );
               }
@@ -1768,48 +2397,104 @@ function PurchaseOrder() {
                         <th>SL No.</th>
                         <th>Product</th>
                         <th>Catalogue No.</th>
-                        <th>Quantity to Add</th>
+                        <th>Ordered Quantity (Secondary Unit)</th>
+                        <th>Quantity to Add (Secondary Unit)</th>
                       </tr>
                     </thead>
                     <tbody>
                       {restockItems.map((it, idx) => {
-                        const key = it.productId || String(idx);
+                        const key = it.productId;
+                        const dual = isDualRestockItem(it);
+                        const due = dual ? getDueSecondary(it) : null;
                         const baseRaw = it.quantityText != null ? it.quantityText : it.quantity;
                         const value =
                           restockQuantities[key] !== undefined
                             ? restockQuantities[key]
-                            : baseRaw ?? '';
+                            : dual
+                              ? String(due ?? '')
+                              : baseRaw ?? '';
                         return (
-                          <tr key={idx}>
+                          <tr key={`${key}_${idx}`}>
                             <td>{idx + 1}</td>
                             <td>{it.name}</td>
                             <td>{it.catalogueNumber || '-'}</td>
                             <td>
-                              <input
-                                type="number"
-                                min="0"
-                                value={value}
-                                onChange={(e) => {
-                                  const val = e.target.value;
-                                  setRestockQuantities((prev) => ({
-                                    ...prev,
-                                    [key]: val
-                                  }));
-                                }}
-                                style={{
-                                  width: '80px',
-                                  padding: '0.25rem 0.4rem',
-                                  borderRadius: '4px',
-                                  border: '1px solid #ccc',
-                                  textAlign: 'right'
-                                }}
-                              />
+                              {dual ? (
+                                <div>
+                                  <div style={{ fontWeight: 600 }}>
+                                    {roundQtySecondary(it.orderedQuantitySecondary)} {it.secondaryUnit || ''}
+                                  </div>
+                                  <div style={{ fontSize: '0.85rem', color: '#555', marginTop: '4px' }}>
+                                    Due: {due} {it.secondaryUnit || ''}
+                                  </div>
+                                </div>
+                              ) : (
+                                <span style={{ color: '#999' }}>—</span>
+                              )}
+                            </td>
+                            <td>
+                              {dual ? (
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                                  <input
+                                    type="number"
+                                    min="0"
+                                    step="any"
+                                    value={value}
+                                    onChange={(e) => {
+                                      const val = e.target.value;
+                                      setRestockQuantities((prev) => ({
+                                        ...prev,
+                                        [key]: val
+                                      }));
+                                    }}
+                                    style={{
+                                      width: '90px',
+                                      padding: '0.25rem 0.4rem',
+                                      borderRadius: '4px',
+                                      border: '1px solid #ccc',
+                                      textAlign: 'right'
+                                    }}
+                                  />
+                                  <span style={{ fontSize: '0.9rem' }}>{it.secondaryUnit || ''}</span>
+                                </div>
+                              ) : (
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                  <input
+                                    type="number"
+                                    min="0"
+                                    step="1"
+                                    value={value}
+                                    onChange={(e) => {
+                                      const val = e.target.value;
+                                      setRestockQuantities((prev) => ({
+                                        ...prev,
+                                        [key]: val
+                                      }));
+                                    }}
+                                    style={{
+                                      width: '80px',
+                                      padding: '0.25rem 0.4rem',
+                                      borderRadius: '4px',
+                                      border: '1px solid #ccc',
+                                      textAlign: 'right'
+                                    }}
+                                  />
+                                  <span style={{ fontSize: '0.85rem', color: '#555' }}>
+                                    {it.primaryUnit || it.orderUnit || it.unit || 'units'}
+                                  </span>
+                                </div>
+                              )}
                             </td>
                           </tr>
                         );
                       })}
                     </tbody>
                   </table>
+                  {restockItems.some((it) => !isDualRestockItem(it)) && (
+                    <p style={{ fontSize: '0.85rem', color: '#666', marginTop: '10px' }}>
+                      Rows without secondary units: enter the quantity to add in primary units (inventory is stored in primary units only).
+                    </p>
+                  )}
                 </div>
               );
             })()}
@@ -1825,7 +2510,10 @@ function PurchaseOrder() {
               <button
                 type="button"
                 className="cancel-due-btn"
-                onClick={() => setIsRestockOpen(false)}
+                onClick={() => {
+                  setIsRestockOpen(false);
+                  setRestockQuantities({});
+                }}
                 disabled={restockLoading}
               >
                 Cancel
