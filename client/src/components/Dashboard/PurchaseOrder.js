@@ -88,24 +88,60 @@ const getDualTrackedLines = (order) => {
   return items.filter(isDualRestockItem);
 };
 
+/** Ordered primary count for single-unit (non–dual) catalog PO lines. */
+const getLegacyOrderedPrimary = (it) => {
+  if (it?.orderedPrimaryRestock != null && Number.isFinite(Number(it.orderedPrimaryRestock))) {
+    const n = Math.floor(Number(it.orderedPrimaryRestock));
+    return n > 0 ? n : 0;
+  }
+  const raw = it?.quantityText != null ? it.quantityText : it?.quantity;
+  if (raw == null) return 0;
+  const n = parseInt(String(raw).trim(), 10);
+  return !Number.isNaN(n) && n > 0 ? n : 0;
+};
+
+/** Remaining primary qty to restock for a legacy (single-unit) tracked line. */
+const getDuePrimaryLegacy = (it) => {
+  const ordered = getLegacyOrderedPrimary(it);
+  if (ordered <= 0) return 0;
+  if (it?.duePrimaryRestock != null && Number.isFinite(Number(it.duePrimaryRestock))) {
+    return Math.max(0, Math.floor(Number(it.duePrimaryRestock)));
+  }
+  const added = Math.floor(Number(it.addedPrimaryRestock || 0));
+  return Math.max(0, ordered - added);
+};
+
+const getLegacyPrimaryTrackedLines = (order) => {
+  const items = Array.isArray(order?.items) ? order.items : [];
+  return items.filter((line) => line.productId && !isDualRestockItem(line) && getLegacyOrderedPrimary(line) > 0);
+};
+
 /**
- * Order-level restock status: dual-unit lines → COMPLETED / PARTIAL from due qty.
- * Legacy-only orders (no dual-unit lines) → NOT TRACKED (progress is not stored per line).
+ * Order-level restock: any dual-unit or single-unit tracked line with due qty → PARTIAL; else COMPLETED.
+ * NOT TRACKED only when there are catalog lines but none qualify for either tracking model.
  */
 const getPurchaseOrderOverallRestockStatus = (order) => {
-  const dualLines = getDualTrackedLines(order);
-  if (dualLines.length > 0) {
-    const anyPartial = dualLines.some((it) => getDueSecondary(it) > 1e-6);
-    return anyPartial ? 'PARTIAL' : 'COMPLETED';
-  }
   const items = Array.isArray(order?.items) ? order.items : [];
-  if (!items.some((it) => it.productId)) return null;
-  return 'NOT TRACKED';
+  const dualLines = getDualTrackedLines(order);
+  const legacyTracked = getLegacyPrimaryTrackedLines(order);
+  const tracked = [...dualLines, ...legacyTracked];
+  if (tracked.length === 0) {
+    if (!items.some((line) => line.productId)) return null;
+    return 'NOT TRACKED';
+  }
+  const anyDualPartial = dualLines.some((line) => getDueSecondary(line) > 1e-6);
+  const anyLegacyPartial = legacyTracked.some((line) => getDuePrimaryLegacy(line) > 0);
+  return anyDualPartial || anyLegacyPartial ? 'PARTIAL' : 'COMPLETED';
 };
 
 const inferLineRestockStatusLabel = (it) => {
-  if (!isDualRestockItem(it)) return null;
-  return getDueSecondary(it) <= 1e-6 ? 'COMPLETED' : 'PARTIAL';
+  if (isDualRestockItem(it)) {
+    return getDueSecondary(it) <= 1e-6 ? 'COMPLETED' : 'PARTIAL';
+  }
+  if (it?.productId && getLegacyOrderedPrimary(it) > 0) {
+    return getDuePrimaryLegacy(it) <= 0 ? 'COMPLETED' : 'PARTIAL';
+  }
+  return null;
 };
 
 const getRestockPrimaryUnitLabel = (it) => {
@@ -171,12 +207,8 @@ function PurchaseOrder() {
         const due = getDueSecondary(it);
         if (due > 0) next[key] = String(due);
       } else {
-        const raw = it.quantityText != null ? it.quantityText : it.quantity;
-        if (raw == null) return;
-        const s = String(raw).trim();
-        if (!s) return;
-        const n = parseInt(s, 10);
-        if (!Number.isNaN(n) && n > 0) next[key] = s;
+        const dueP = getDuePrimaryLegacy(it);
+        if (dueP > 0) next[key] = String(dueP);
       }
     });
     return next;
@@ -872,6 +904,13 @@ function PurchaseOrder() {
             oqSec != null &&
             parsePositiveNumber(item.conversionFactor) &&
             String(item.secondaryUnit || '').trim() !== '';
+          const legacyOrderedInt = (() => {
+            if (item.isCustom) return null;
+            const raw = item.orderQuantity != null ? String(item.orderQuantity).trim() : '';
+            const n = parseInt(raw, 10);
+            return !Number.isNaN(n) && n > 0 ? n : null;
+          })();
+
           return {
             productId: item.isCustom ? null : (item.id || null),
             name: item.name || '',
@@ -892,7 +931,14 @@ function PurchaseOrder() {
                   dueQuantitySecondary: oqSec,
                   status: oqSec > 0 ? 'PARTIAL' : 'COMPLETED'
                 }
-              : {})
+              : legacyOrderedInt != null && !item.isCustom
+                ? {
+                    orderedPrimaryRestock: legacyOrderedInt,
+                    addedPrimaryRestock: 0,
+                    duePrimaryRestock: legacyOrderedInt,
+                    status: 'PARTIAL'
+                  }
+                : {})
           };
         })
       };
@@ -1106,12 +1152,20 @@ function PurchaseOrder() {
         }
         linesToApply.push({ index: i, mode: 'dual', productIdKey: key, addSec, addPrimary });
       } else {
+        const dueP = getDuePrimaryLegacy(it);
+        if (dueP <= 0) continue;
         const qty = parseInt(String(rawInput).trim(), 10);
         if (Number.isNaN(qty) || qty < 0) {
           alert(`Enter a valid whole number (0 or greater) for "${it.name || 'item'}".`);
           return;
         }
         if (qty === 0) continue;
+        if (qty > dueP) {
+          alert(
+            `Quantity to add cannot exceed due quantity (${dueP} ${getRestockPrimaryUnitLabel(it)}) for "${it.name || 'item'}".`
+          );
+          return;
+        }
         linesToApply.push({ index: i, mode: 'legacy', productIdKey: key, addPrimary: qty });
       }
     }
@@ -1143,6 +1197,20 @@ function PurchaseOrder() {
             addedQuantitySecondary: newAdded,
             dueQuantitySecondary: newDue,
             status: newDue <= 1e-6 ? 'COMPLETED' : 'PARTIAL'
+          };
+          itemsMutated = true;
+        } else if (line.mode === 'legacy') {
+          const it = items[line.index];
+          const ordered = getLegacyOrderedPrimary(it);
+          const prevAdded = Math.floor(Number(it.addedPrimaryRestock || 0));
+          const newAdded = prevAdded + line.addPrimary;
+          let newDue = Math.max(0, ordered - newAdded);
+          items[line.index] = {
+            ...it,
+            orderedPrimaryRestock: ordered,
+            addedPrimaryRestock: newAdded,
+            duePrimaryRestock: newDue,
+            status: newDue <= 0 ? 'COMPLETED' : 'PARTIAL'
           };
           itemsMutated = true;
         }
@@ -2125,7 +2193,7 @@ function PurchaseOrder() {
                         const orderNumber = order.orderNumber || formatPurchaseOrderNumber(getOrderNumberValueFromOrder(order, index));
                         const overallRestockStatus = getPurchaseOrderOverallRestockStatus(order);
                         const dualLines = getDualTrackedLines(order);
-                        const hasDetailLines = Array.isArray(order.items) && order.items.some((it) => it.productId);
+                        const hasExpandableLines = itemCount > 0;
 
                         const query = oldOrdersSearch.trim().toLowerCase();
                         if (query) {
@@ -2164,13 +2232,13 @@ function PurchaseOrder() {
                           <React.Fragment key={order.id}>
                             <tr>
                               <td style={{ textAlign: 'center', verticalAlign: 'middle' }}>
-                                {hasDetailLines && dualLines.length > 0 ? (
+                                {hasExpandableLines ? (
                                   <button
                                     type="button"
                                     onClick={() =>
                                       setExpandedHistoryOrderId(isExpanded ? null : order.id)
                                     }
-                                    title={isExpanded ? 'Hide line status' : 'Show line status'}
+                                    title={isExpanded ? 'Hide line details' : 'Show line details'}
                                     style={{
                                       background: 'none',
                                       border: 'none',
@@ -2196,7 +2264,7 @@ function PurchaseOrder() {
                                   <span
                                     title={
                                       overallRestockStatus === 'NOT TRACKED'
-                                        ? 'This order has no dual-unit lines; partial restock is not recorded.'
+                                        ? 'No line has restock tracking: need dual-unit data or a positive whole-number order quantity on catalog lines.'
                                         : undefined
                                     }
                                     style={{
@@ -2243,13 +2311,35 @@ function PurchaseOrder() {
                                 </div>
                               </td>
                             </tr>
-                            {isExpanded && dualLines.length > 0 && (
+                            {isExpanded && hasExpandableLines && (
                               <tr>
                                 <td colSpan={7} style={{ padding: 0, background: '#f8f9fc' }}>
                                   <div style={{ padding: '12px 16px 16px' }}>
-                                    <div style={{ fontWeight: 600, marginBottom: '8px', fontSize: '0.88rem' }}>
-                                      Restock status by line (secondary unit)
+                                    <div style={{ fontWeight: 600, marginBottom: '6px', fontSize: '0.88rem' }}>
+                                      Order line details
                                     </div>
+                                    <p
+                                      style={{
+                                        fontSize: '0.8rem',
+                                        color: '#666',
+                                        margin: '0 0 10px 0',
+                                        lineHeight: 1.45
+                                      }}
+                                    >
+                                      {(() => {
+                                        const lt = getLegacyPrimaryTrackedLines(order);
+                                        if (dualLines.length > 0 && lt.length > 0) {
+                                          return 'Dual-unit lines use the secondary unit for due/ordered. Single-unit lines use the primary unit.';
+                                        }
+                                        if (dualLines.length > 0) {
+                                          return 'Dual-unit lines show restock status and due quantity in the secondary unit.';
+                                        }
+                                        if (lt.length > 0) {
+                                          return 'Single-unit catalog lines show restock status and due quantity in the primary unit.';
+                                        }
+                                        return 'No tracked catalog lines (positive whole-number order qty, or dual-unit metadata).';
+                                      })()}
+                                    </p>
                                     <table
                                       style={{
                                         width: '100%',
@@ -2264,7 +2354,7 @@ function PurchaseOrder() {
                                             Product
                                           </th>
                                           <th style={{ textAlign: 'center', padding: '8px', border: '1px solid #dde2ee' }}>
-                                            Status
+                                            Restock line status
                                           </th>
                                           <th style={{ textAlign: 'right', padding: '8px', border: '1px solid #dde2ee' }}>
                                             Due
@@ -2276,13 +2366,12 @@ function PurchaseOrder() {
                                       </thead>
                                       <tbody>
                                         {(order.items || []).map((it, li) => {
-                                          if (!it.productId) return null;
-                                          const lineStatus = inferLineRestockStatusLabel(it);
-                                          if (!lineStatus) {
+                                          const rowKey = `${order.id}_line_${li}`;
+                                          if (!it.productId) {
                                             return (
-                                              <tr key={`${order.id}_nl_${li}`}>
+                                              <tr key={rowKey}>
                                                 <td style={{ padding: '8px', border: '1px solid #eee' }}>
-                                                  {it.name || '—'}
+                                                  {it.name || 'Custom line'}
                                                 </td>
                                                 <td
                                                   colSpan={3}
@@ -2293,19 +2382,87 @@ function PurchaseOrder() {
                                                     fontStyle: 'italic'
                                                   }}
                                                 >
-                                                  Not tracked as dual-unit restock (legacy line)
+                                                  Not linked to catalog / not tracked for restock
                                                 </td>
                                               </tr>
                                             );
                                           }
-                                          const due = getDueSecondary(it);
-                                          const ord = roundQtySecondary(it.orderedQuantitySecondary);
+                                          const lineStatus = inferLineRestockStatusLabel(it);
+                                          if (isDualRestockItem(it) && lineStatus) {
+                                            const due = getDueSecondary(it);
+                                            const ord = roundQtySecondary(it.orderedQuantitySecondary);
+                                            return (
+                                              <tr key={rowKey}>
+                                                <td style={{ padding: '8px', border: '1px solid #eee' }}>
+                                                  {it.name || '—'}
+                                                </td>
+                                                <td
+                                                  style={{ padding: '8px', border: '1px solid #eee', textAlign: 'center' }}
+                                                >
+                                                  <span
+                                                    style={{
+                                                      display: 'inline-block',
+                                                      padding: '2px 8px',
+                                                      borderRadius: '4px',
+                                                      fontWeight: 700,
+                                                      fontSize: '0.76rem',
+                                                      ...statusBadge(lineStatus)
+                                                    }}
+                                                  >
+                                                    {lineStatus}
+                                                  </span>
+                                                </td>
+                                                <td style={{ padding: '8px', border: '1px solid #eee', textAlign: 'right' }}>
+                                                  {due} {it.secondaryUnit || ''}
+                                                </td>
+                                                <td style={{ padding: '8px', border: '1px solid #eee', textAlign: 'right' }}>
+                                                  {ord} {it.secondaryUnit || ''}
+                                                </td>
+                                              </tr>
+                                            );
+                                          }
+                                          if (lineStatus && getLegacyOrderedPrimary(it) > 0) {
+                                            const due = getDuePrimaryLegacy(it);
+                                            const ord = getLegacyOrderedPrimary(it);
+                                            const u = getRestockPrimaryUnitLabel(it);
+                                            return (
+                                              <tr key={rowKey}>
+                                                <td style={{ padding: '8px', border: '1px solid #eee' }}>
+                                                  {it.name || '—'}
+                                                </td>
+                                                <td
+                                                  style={{ padding: '8px', border: '1px solid #eee', textAlign: 'center' }}
+                                                >
+                                                  <span
+                                                    style={{
+                                                      display: 'inline-block',
+                                                      padding: '2px 8px',
+                                                      borderRadius: '4px',
+                                                      fontWeight: 700,
+                                                      fontSize: '0.76rem',
+                                                      ...statusBadge(lineStatus)
+                                                    }}
+                                                  >
+                                                    {lineStatus}
+                                                  </span>
+                                                </td>
+                                                <td style={{ padding: '8px', border: '1px solid #eee', textAlign: 'right' }}>
+                                                  {due} {u}
+                                                </td>
+                                                <td style={{ padding: '8px', border: '1px solid #eee', textAlign: 'right' }}>
+                                                  {ord} {u}
+                                                </td>
+                                              </tr>
+                                            );
+                                          }
                                           return (
-                                            <tr key={`${order.id}_${it.productId}_${li}`}>
+                                            <tr key={rowKey}>
                                               <td style={{ padding: '8px', border: '1px solid #eee' }}>
                                                 {it.name || '—'}
                                               </td>
-                                              <td style={{ padding: '8px', border: '1px solid #eee', textAlign: 'center' }}>
+                                              <td
+                                                style={{ padding: '8px', border: '1px solid #eee', textAlign: 'center' }}
+                                              >
                                                 <span
                                                   style={{
                                                     display: 'inline-block',
@@ -2313,17 +2470,17 @@ function PurchaseOrder() {
                                                     borderRadius: '4px',
                                                     fontWeight: 700,
                                                     fontSize: '0.76rem',
-                                                    ...statusBadge(lineStatus)
+                                                    ...statusBadge('NOT TRACKED')
                                                   }}
                                                 >
-                                                  {lineStatus}
+                                                  NOT TRACKED
                                                 </span>
                                               </td>
                                               <td style={{ padding: '8px', border: '1px solid #eee', textAlign: 'right' }}>
-                                                {due} {it.secondaryUnit || ''}
+                                                —
                                               </td>
                                               <td style={{ padding: '8px', border: '1px solid #eee', textAlign: 'right' }}>
-                                                {ord} {it.secondaryUnit || ''}
+                                                {getRestockOrderedPrimaryDisplay(it)}
                                               </td>
                                             </tr>
                                           );
@@ -2471,10 +2628,7 @@ function PurchaseOrder() {
                 if (isDualRestockItem(it)) {
                   return getDueSecondary(it) > 1e-6;
                 }
-                const raw = it.quantityText != null ? it.quantityText : it.quantity;
-                if (raw == null) return false;
-                const n = parseInt(String(raw), 10);
-                return !Number.isNaN(n) && n > 0;
+                return getDuePrimaryLegacy(it) > 0;
               });
               if (restockItems.length === 0) {
                 return (
@@ -2512,13 +2666,13 @@ function PurchaseOrder() {
                         const key = it.productId;
                         const dual = isDualRestockItem(it);
                         const due = dual ? getDueSecondary(it) : null;
-                        const baseRaw = it.quantityText != null ? it.quantityText : it.quantity;
+                        const duePrimary = getDuePrimaryLegacy(it);
                         const value =
                           restockQuantities[key] !== undefined
                             ? restockQuantities[key]
                             : dual
                               ? String(due ?? '')
-                              : baseRaw ?? '';
+                              : String(duePrimary || '');
                         return (
                           <tr key={`${key}_${idx}`}>
                             <td>{idx + 1}</td>
@@ -2535,7 +2689,14 @@ function PurchaseOrder() {
                                   </div>
                                 </div>
                               ) : (
-                                <span style={{ color: '#333' }}>{getRestockOrderedPrimaryDisplay(it)}</span>
+                                <div>
+                                  <div style={{ fontWeight: 600 }}>
+                                    {getLegacyOrderedPrimary(it)} {getRestockPrimaryUnitLabel(it)}
+                                  </div>
+                                  <div style={{ fontSize: '0.85rem', color: '#555', marginTop: '4px' }}>
+                                    Due: {duePrimary} {getRestockPrimaryUnitLabel(it)}
+                                  </div>
+                                </div>
                               )}
                             </td>
                             <td>
