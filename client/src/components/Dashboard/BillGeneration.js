@@ -1152,7 +1152,6 @@ function BillGeneration() {
       return;
     }
 
-    const finalTotal = Math.max(0, subtotal - discountValue);
     const adjustedTotal = calculateAdjustedTotal();
 
     // Parse paid amount
