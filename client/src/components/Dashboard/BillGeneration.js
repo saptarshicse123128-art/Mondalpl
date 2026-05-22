@@ -16,7 +16,7 @@ function BillGeneration() {
     gst: '',
     phone: '',
     discount: '',
-    due: ''
+    paidAmount: ''
   });
   const [selectedProduct, setSelectedProduct] = useState('');
   const [selectedVariation, setSelectedVariation] = useState('');
@@ -43,6 +43,9 @@ function BillGeneration() {
   const [openMenuBillId, setOpenMenuBillId] = useState(null);
   const [returningBillId, setReturningBillId] = useState(null);
   const [returnItems, setReturnItems] = useState([]);
+  const [adjustBillSearchQuery, setAdjustBillSearchQuery] = useState('');
+  const [showAdjustBillDropdown, setShowAdjustBillDropdown] = useState(false);
+  const [adjustments, setAdjustments] = useState([]);
 
   useEffect(() => {
     const unsubscribe = onSnapshot(collection(db, 'products'), (snapshot) => {
@@ -67,6 +70,36 @@ function BillGeneration() {
     if (item.isCustomProduct) return 'left';
     const p = products.find((x) => x.id === item.id);
     return normalizeSizeNamePosition(p?.sizeNamePosition);
+  };
+
+  const getOriginalItemQuantity = (item) => {
+    const currentQuantity = parseInt(item.quantity || 0);
+    const returnedQuantity = parseInt(item.returnedQuantity || 0);
+
+    if (returnedQuantity > 0) {
+      return currentQuantity + returnedQuantity;
+    }
+
+    return parseInt(item.originalQuantity || item.quantity || 0);
+  };
+
+  const getOriginalBillSubtotal = (bill) => {
+    if (bill.originalSubtotal !== undefined && bill.originalSubtotal !== null) {
+      return parseFloat(bill.originalSubtotal || 0);
+    }
+
+    return (bill.items || []).reduce((sum, item) => {
+      const price = parseFloat(item.price || 0);
+      return sum + (price * getOriginalItemQuantity(item));
+    }, 0);
+  };
+
+  const getOriginalBillDiscount = (bill) => {
+    if (bill.originalDiscount !== undefined && bill.originalDiscount !== null) {
+      return parseFloat(bill.originalDiscount || 0);
+    }
+
+    return parseFloat(bill.discount || 0);
   };
 
   // Close menu when clicking outside
@@ -449,10 +482,17 @@ function BillGeneration() {
     }
   };
 
+  const parseAmountValue = (value) => {
+    if (value == null || value === '') return 0;
+    if (typeof value === 'number') return Number.isFinite(value) ? value : 0;
+
+    const cleaned = String(value).replace(/[^0-9.-]/g, '');
+    const parsed = parseFloat(cleaned);
+    return Number.isFinite(parsed) ? parsed : 0;
+  };
+
   const handleEditDueAmount = (bill) => {
-    const currentDue = bill.due || '';
-    const cleanedDue = currentDue.replace(/[^0-9.-]/g, '');
-    const currentDueNumeric = cleanedDue ? parseFloat(cleanedDue) : 0;
+    const currentDueNumeric = parseAmountValue(bill.due);
     setEditingDueBillId(bill.id);
     setCurrentDueAmount(currentDueNumeric);
     setEditingDueAmount(''); // This will be the "amount paid"
@@ -464,10 +504,9 @@ function BillGeneration() {
       return;
     }
 
-    const cleanedPaid = editingDueAmount.replace(/[^0-9.-]/g, '');
-    const amountPaid = parseFloat(cleanedPaid);
+    const amountPaid = parseAmountValue(editingDueAmount);
     
-    if (isNaN(amountPaid) || amountPaid < 0) {
+    if (amountPaid < 0) {
       alert('Please enter a valid amount paid');
       return;
     }
@@ -597,52 +636,67 @@ function BillGeneration() {
         const returnItem = returnItems.find(ri => ri.originalIndex === index);
         if (returnItem && returnItem.returnQuantity > 0) {
           const currentQuantity = item.quantity || 0;
+          const previouslyReturned = item.returnedQuantity || 0;
           const newQuantity = Math.max(0, currentQuantity - returnItem.returnQuantity);
           const newSubtotal = (item.price || 0) * newQuantity;
-          const totalReturned = (item.returnedQuantity || 0) + returnItem.returnQuantity;
+          const totalReturned = previouslyReturned + returnItem.returnQuantity;
           return {
             ...item,
             quantity: newQuantity,
             subtotal: newSubtotal,
             returnedQuantity: totalReturned,
-            originalQuantity: item.originalQuantity || currentQuantity + totalReturned
+            originalQuantity: item.originalQuantity || currentQuantity + previouslyReturned
           };
         }
         return item;
       });
 
-      // Calculate new totals
+      // Calculate original discount percentage
+      const totalReturnedSoFar = (billData.returnedItems || []).reduce((sum, item) => sum + (item.subtotal || 0), 0);
+      const originalSubtotal = (billData.subtotal || 0) + totalReturnedSoFar;
+      const discountPercent = originalSubtotal > 0 ? (parseFloat(billData.discount || 0) / originalSubtotal) : 0;
+
+      // Calculate new subtotal (remaining items)
       const newSubtotal = updatedItems.reduce((sum, item) => sum + (item.subtotal || 0), 0);
-      const discount = parseFloat(billData.discount || 0);
-      const newTotal = newSubtotal - discount;
       
-      // Calculate new due (reduce due by returned amount)
-      const returnedAmount = itemsToReturn.reduce((sum, item) => {
-        return sum + ((item.price || 0) * item.returnQuantity);
-      }, 0);
+      // Calculate remaining discount
+      const newDiscount = newSubtotal * discountPercent;
+      const newTotal = newSubtotal - newDiscount;
       
+      // Calculate discounted returned amount for items being returned now
+      const summary = calculateReturnSummary(billData, itemsToReturn);
+      const discountedReturnedAmount = summary.cashReturn;
+      
+      // Calculate new due (reduce due by discounted returned amount)
       const currentDue = parseFloat(billData.due || 0);
-      const newDue = Math.max(0, currentDue - returnedAmount);
+      const newDue = Math.max(0, currentDue - discountedReturnedAmount);
 
       // Get existing returnedItems if any
       const existingReturnedItems = billData.returnedItems || [];
+      const returnBatchId = `return-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const returnedAt = new Date();
       
       // Prepare new returned items with regular timestamp (serverTimestamp() not supported in arrays)
       const newReturnedItems = itemsToReturn.map(item => ({
+        returnBatchId: returnBatchId,
         productId: item.productId,
         productName: item.productName,
         variationSize: item.variationSize || null,
         quantity: item.returnQuantity,
         price: item.price,
         subtotal: (item.price || 0) * item.returnQuantity,
-        returnedAt: new Date()
+        returnedAt: returnedAt
       }));
 
       // Update bill
       batch.update(billRef, {
         items: updatedItems,
+        originalSubtotal: billData.originalSubtotal ?? originalSubtotal,
+        originalDiscount: billData.originalDiscount ?? parseFloat(billData.discount || 0),
+        originalTotal: billData.originalTotal ?? parseFloat(billData.total || 0),
         subtotal: newSubtotal,
         total: newTotal,
+        discount: newDiscount,
         due: newDue > 0 ? newDue : null,
         returnedItems: [...existingReturnedItems, ...newReturnedItems],
         updatedAt: serverTimestamp()
@@ -744,6 +798,334 @@ function BillGeneration() {
     return Math.max(0, subtotal - discount);
   };
 
+  const calculatePaidAmount = () => {
+    return parseAmountValue(billForm.paidAmount);
+  };
+
+  const hasPaidAmountEntry = () => {
+    return String(billForm.paidAmount ?? '').trim() !== '';
+  };
+
+  const calculateTotalAdjustments = () => {
+    return adjustments.reduce((total, adj) => {
+      if (adj.type === 'due') return total + adj.amount;
+      if (adj.type === 'cashReturn') return total - adj.amount;
+      return total;
+    }, 0);
+  };
+
+  const calculateAdjustedTotal = () => {
+    return Math.max(0, calculateFinalTotal() + calculateTotalAdjustments());
+  };
+
+  const calculateDueAmount = () => {
+    const adjustedTotal = calculateAdjustedTotal();
+    const paid = calculatePaidAmount();
+    if (!hasPaidAmountEntry()) return 0;
+    return Math.max(0, adjustedTotal - paid);
+  };
+
+  const calculateReturnSummary = (bill, items) => {
+    const returnSubtotal = items.reduce((sum, item) => sum + ((item.price || 0) * (item.returnQuantity || item.quantity || 0)), 0);
+    
+    // Calculate original discount percentage
+    const totalReturnedSoFar = (bill.returnedItems || []).reduce((sum, item) => sum + (item.subtotal || 0), 0);
+    const originalSubtotal = (bill.subtotal || 0) + totalReturnedSoFar;
+    const discountPercent = originalSubtotal > 0 ? (parseFloat(bill.discount || 0) / originalSubtotal) : 0;
+    
+    const discountAdjustment = returnSubtotal * discountPercent;
+    const rawCashReturn = returnSubtotal - discountAdjustment;
+    const cashReturn = Math.round(rawCashReturn);
+    const roundOff = cashReturn - rawCashReturn;
+    
+    return {
+      subtotal: returnSubtotal,
+      discountPercent: discountPercent * 100,
+      discountAdjustment: discountAdjustment,
+      totalBeforeRoundOff: rawCashReturn,
+      roundOff: roundOff,
+      cashReturn: cashReturn
+    };
+  };
+
+  const toDateObject = (value) => {
+    if (!value) return null;
+    if (value?.toDate) return value.toDate();
+    if (value instanceof Date) return value;
+    const parsed = new Date(value);
+    return Number.isNaN(parsed.getTime()) ? null : parsed;
+  };
+
+  const formatPdfHistoryDate = (value) => {
+    if (typeof value === 'string') {
+      const isoMatch = value.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+      if (isoMatch) {
+        return `${isoMatch[2]}-${isoMatch[3]}-${isoMatch[1]}`;
+      }
+    }
+
+    const date = toDateObject(value);
+    if (!date) return 'N/A';
+    const mm = String(date.getMonth() + 1).padStart(2, '0');
+    const dd = String(date.getDate()).padStart(2, '0');
+    const yyyy = date.getFullYear();
+    return `${mm}-${dd}-${yyyy}`;
+  };
+
+  const formatReturnSectionDate = (value) => {
+    const date = toDateObject(value);
+    return date ? date.toLocaleDateString('en-GB') : 'N/A';
+  };
+
+  const getPaidAgainstDue = (bill) => {
+    return (bill.dueHistory || []).reduce((sum, entry) => {
+      return sum + parseAmountValue(entry.amountPaid || 0);
+    }, 0);
+  };
+
+  const getInitialDueForBill = (bill) => {
+    const currentDue = parseAmountValue(bill.due);
+    const dueHistory = bill.dueHistory || [];
+    let initialDue = parseAmountValue(bill.initialDueAmount);
+
+    if (initialDue === 0 && dueHistory.length > 0) {
+      const firstEntry = dueHistory[0];
+      if (firstEntry.amount !== undefined && firstEntry.amountPaid === undefined) {
+        initialDue = parseFloat(firstEntry.amount || 0);
+      } else if (firstEntry.newDue !== undefined) {
+        let maxPreviousDue = 0;
+        dueHistory.forEach(entry => {
+          if (entry.previousDue !== undefined) {
+            maxPreviousDue = Math.max(maxPreviousDue, parseFloat(entry.previousDue || 0));
+          }
+        });
+        initialDue = maxPreviousDue > 0 ? maxPreviousDue : parseFloat(firstEntry.newDue || 0);
+      }
+    }
+
+    return initialDue === 0 ? currentDue : initialDue;
+  };
+
+  const calculateReturnSettlement = (bill, returnSummary) => {
+    const currentDue = parseAmountValue(bill.due);
+    const returnAmount = Math.max(0, parseFloat(returnSummary?.cashReturn || 0));
+
+    if (currentDue > 0) {
+      return { due: currentDue, cashReturn: 0 };
+    }
+
+    const initialDue = getInitialDueForBill(bill);
+    if (initialDue <= 0) {
+      return { due: 0, cashReturn: returnAmount };
+    }
+
+    const paidAgainstDue = getPaidAgainstDue(bill);
+    const dueBeforeReturns = Math.max(0, initialDue - paidAgainstDue);
+    return { due: 0, cashReturn: Math.max(0, returnAmount - dueBeforeReturns) };
+  };
+
+  const groupReturnedItemsByEvent = (returnedItems) => {
+    const groups = new Map();
+
+    returnedItems.forEach((item, index) => {
+      const dateValue = item.returnedAt || item.returnDate || item.date;
+      const date = toDateObject(dateValue);
+      const timestamp = date ? date.getTime() : index;
+      const key = item.returnBatchId || item.returnId || `legacy-${Math.floor(timestamp / 60000)}`;
+
+      if (!groups.has(key)) {
+        groups.set(key, {
+          key,
+          dateValue,
+          timestamp,
+          items: []
+        });
+      }
+
+      groups.get(key).items.push(item);
+    });
+
+    return Array.from(groups.values()).sort((a, b) => a.timestamp - b.timestamp);
+  };
+
+  const calculateReturnEventCashReturn = (bill, previousReturnedItems, currentReturnedItems) => {
+    if (parseAmountValue(bill.due) > 0) return 0;
+
+    const initialDue = getInitialDueForBill(bill);
+    const dueBeforeReturns = Math.max(0, initialDue - getPaidAgainstDue(bill));
+    const previousSummary = previousReturnedItems.length > 0
+      ? calculateReturnSummary(bill, previousReturnedItems)
+      : { cashReturn: 0 };
+    const currentSummary = calculateReturnSummary(bill, [...previousReturnedItems, ...currentReturnedItems]);
+    const previousExcess = Math.max(0, previousSummary.cashReturn - dueBeforeReturns);
+    const currentExcess = Math.max(0, currentSummary.cashReturn - dueBeforeReturns);
+    return Math.max(0, currentExcess - previousExcess);
+  };
+
+  const drawFinalBalanceBox = (pdfDoc, label, amount, y) => {
+    const boxX = 108;
+    const boxY = y - 6.5;
+    const boxWidth = 82;
+    const boxHeight = 10;
+
+    pdfDoc.setFillColor(215, 214, 200);
+    pdfDoc.setDrawColor(175, 175, 165);
+    pdfDoc.setLineWidth(0.3);
+    pdfDoc.roundedRect(boxX, boxY, boxWidth, boxHeight, 2, 2, 'FD');
+
+    pdfDoc.setFont('helvetica', 'bold');
+    pdfDoc.setFontSize(11);
+    pdfDoc.setTextColor(30, 30, 30);
+    pdfDoc.text(`${label} Rs.`, boxX + 4, y, { align: 'left' });
+    pdfDoc.text(amount.toFixed(2), boxX + boxWidth - 4, y, { align: 'right' });
+  };
+
+  const drawReturnedItemsSection = (pdfDoc, bill, returnGroup, startY, previousReturnedItems) => {
+    let finalY = startY + 5;
+    const returnedItems = returnGroup.items;
+
+    pdfDoc.setFontSize(12);
+    pdfDoc.setFont('helvetica', 'bold');
+    pdfDoc.setTextColor(40, 40, 40);
+    pdfDoc.text('RETURNED ITEMS', 20, finalY);
+
+    pdfDoc.setFontSize(10);
+    pdfDoc.setFont('helvetica', 'normal');
+    pdfDoc.setTextColor(100, 100, 100);
+    pdfDoc.text(`Date - ${formatReturnSectionDate(returnGroup.dateValue)}`, 190, finalY, { align: 'right' });
+
+    finalY += 5;
+
+    const returnedTableData = returnedItems.map((item, index) => {
+      const productName = formatProductWithVariation(
+        item.productName || item.name,
+        item.variationSize,
+        positionForSavedBillItem(item)
+      );
+      const quantity = item.quantity || 0;
+      const price = item.price || 0;
+      const amount = item.subtotal || (quantity * price);
+      return [
+        String(index + 1),
+        productName,
+        String(quantity),
+        'Rs. ' + price.toFixed(2),
+        'Rs. ' + amount.toFixed(2)
+      ];
+    });
+
+    pdfDoc.autoTable({
+      startY: finalY,
+      head: [['SL No.', 'Product', 'Qty.', 'Price', 'Amount']],
+      body: returnedTableData,
+      theme: 'striped',
+      headStyles: {
+        fillColor: [100, 100, 100],
+        textColor: [255, 255, 255],
+        fontStyle: 'bold',
+        fontSize: 10
+      },
+      styles: {
+        fontSize: 9,
+        font: 'helvetica',
+        textColor: [0, 0, 0]
+      },
+      alternateRowStyles: {
+        fillColor: [245, 245, 245]
+      },
+      margin: { left: 20, right: 20 },
+      columnStyles: {
+        0: { cellWidth: 20 },
+        1: { cellWidth: 70 },
+        2: { cellWidth: 20 },
+        3: { cellWidth: 30 },
+        4: { cellWidth: 30 }
+      }
+    });
+
+    let returnSummaryY = pdfDoc.lastAutoTable.finalY + 10;
+    const returnSummary = calculateReturnSummary(bill, returnedItems);
+    const cashReturn = calculateReturnEventCashReturn(bill, previousReturnedItems, returnedItems);
+
+    pdfDoc.setFontSize(10);
+    pdfDoc.setTextColor(0, 0, 0);
+    pdfDoc.setFont('helvetica', 'normal');
+    pdfDoc.text('Sub total Rs.', 150, returnSummaryY, { align: 'right' });
+    pdfDoc.text(returnSummary.subtotal.toFixed(2), 190, returnSummaryY, { align: 'right' });
+    returnSummaryY += 7;
+
+    if (returnSummary.discountAdjustment > 0) {
+      pdfDoc.text('Prev. Discount Adjusted -', 150, returnSummaryY, { align: 'right' });
+      pdfDoc.text(`(-${returnSummary.discountAdjustment.toFixed(2)})`, 190, returnSummaryY, { align: 'right' });
+      returnSummaryY += 7;
+    }
+
+    pdfDoc.text('Round off :', 150, returnSummaryY, { align: 'right' });
+    pdfDoc.text(returnSummary.roundOff.toFixed(2), 190, returnSummaryY, { align: 'right' });
+    returnSummaryY += 7;
+
+    pdfDoc.setFont('helvetica', 'bold');
+    pdfDoc.text('Total :', 150, returnSummaryY, { align: 'right' });
+    pdfDoc.text(returnSummary.cashReturn.toFixed(2), 190, returnSummaryY, { align: 'right' });
+    returnSummaryY += 8;
+
+    if (cashReturn > 0) {
+      drawFinalBalanceBox(pdfDoc, 'CASH RETURN', cashReturn, returnSummaryY);
+      returnSummaryY += 11;
+    }
+
+    return returnSummaryY + 10;
+  };
+
+  const getBillAdjustmentInfo = (bill) => {
+    const currentDue = parseAmountValue(bill.due);
+    const returnedItems = bill.returnedItems || [];
+    
+    if (returnedItems.length === 0) {
+      return { due: currentDue, cashReturn: 0 };
+    }
+    
+    const summary = calculateReturnSummary(bill, returnedItems);
+    const settlement = calculateReturnSettlement(bill, summary);
+    return { due: currentDue, cashReturn: Math.round(settlement.cashReturn) };
+  };
+
+  const handleAdjustBill = (bill) => {
+    if (adjustments.find(a => a.billId === bill.id)) {
+      alert('This bill is already adjusted in the current bill.');
+      return;
+    }
+    const info = getBillAdjustmentInfo(bill);
+    const newAdjustments = [];
+    if (info.due > 0) {
+      newAdjustments.push({
+        billId: bill.id,
+        billNumber: bill.billNumber || bill.id.slice(0, 8),
+        type: 'due',
+        amount: info.due
+      });
+    }
+    if (info.cashReturn > 0) {
+      newAdjustments.push({
+        billId: bill.id,
+        billNumber: bill.billNumber || bill.id.slice(0, 8),
+        type: 'cashReturn',
+        amount: info.cashReturn
+      });
+    }
+    if (newAdjustments.length === 0) {
+      alert('This bill has no due or cash return to adjust.');
+      return;
+    }
+    setAdjustments([...adjustments, ...newAdjustments]);
+    setAdjustBillSearchQuery('');
+    setShowAdjustBillDropdown(false);
+  };
+
+  const removeAdjustment = (billId) => {
+    setAdjustments(adjustments.filter(a => a.billId !== billId));
+  };
+
   const handleGenerateBill = async () => {
     if (cart.length === 0) {
       alert('Please add products to the bill');
@@ -770,31 +1152,28 @@ function BillGeneration() {
       return;
     }
 
-    // Parse due (treat non-numeric due as free text, only validate numeric values)
-    let dueNumeric = null;
-    if (billForm.due.trim()) {
-      const cleanedDue = billForm.due.replace(/[^0-9.-]/g, '');
-      const parsed = parseFloat(cleanedDue);
-      if (!isNaN(parsed)) {
-        dueNumeric = parsed;
-      }
-    }
     const finalTotal = Math.max(0, subtotal - discountValue);
-    if (dueNumeric != null) {
-      if (dueNumeric < 0) {
-        alert('Due amount cannot be negative');
-        return;
-      }
-      if (dueNumeric > finalTotal) {
-        alert('Due amount cannot be greater than final total');
-        return;
-      }
+    const adjustedTotal = calculateAdjustedTotal();
+
+    // Parse paid amount
+    const paidAmountEntered = hasPaidAmountEntry();
+    const paidAmountValue = calculatePaidAmount();
+    if (paidAmountValue < 0) {
+      alert('Paid amount cannot be negative');
+      return;
+    }
+    if (paidAmountValue > adjustedTotal) {
+      alert('Paid amount cannot be greater than the adjusted total');
+      return;
     }
 
-    // If there is a due amount, phone number becomes mandatory (ask via popup if missing)
+    // Calculate due (remaining balance)
+    const dueAmount = paidAmountEntered ? Math.max(0, adjustedTotal - paidAmountValue) : 0;
+
+    // If there is a due amount (partial payment), phone number becomes mandatory
     let ensuredPhone = (billForm.phone || '').trim();
-    if (billForm.due.trim() && !ensuredPhone) {
-      const entered = window.prompt('Due amount entered. Please enter customer phone number:', '');
+    if (dueAmount > 0 && !ensuredPhone) {
+      const entered = window.prompt('Partial payment detected. Please enter customer phone number:', '');
       ensuredPhone = (entered || '').trim();
       if (!ensuredPhone) {
         alert('Phone number is required when there is a due amount.');
@@ -811,19 +1190,21 @@ function BillGeneration() {
       const nextBillNumber = await getNextBillNumber();
       const billNumber = generateBillNumber(nextBillNumber);
 
+      // Calculate due amount (remaining balance = adjustedTotal - paid)
+      const paidWasEntered = hasPaidAmountEntry();
+      const paidAmt = calculatePaidAmount();
+      const adjTotal = calculateAdjustedTotal();
+      const dueAmt = paidWasEntered ? Math.max(0, adjTotal - paidAmt) : 0;
+      
       // Initialize due history if there's a due amount
       let dueHistory = [];
       let initialDueAmount = 0;
-      if (billForm.due.trim()) {
-        const cleanedDue = billForm.due.replace(/[^0-9.-]/g, '');
-        const parsedDue = parseFloat(cleanedDue);
-        if (!isNaN(parsedDue) && parsedDue > 0) {
-          initialDueAmount = parsedDue;
-          dueHistory = [{
-            amount: parsedDue,
-            date: new Date().toISOString().split('T')[0]
-          }];
-        }
+      if (dueAmt > 0) {
+        initialDueAmount = dueAmt;
+        dueHistory = [{
+          amount: dueAmt,
+          date: new Date().toISOString().split('T')[0]
+        }];
       }
 
       const billData = {
@@ -832,9 +1213,12 @@ function BillGeneration() {
         address: billForm.address,
         phone: ensuredPhone || billForm.phone,
         discount: discount,
-        due: billForm.due.trim() || null,
+        due: dueAmt > 0 ? dueAmt.toString() : null,
+        paidAmount: paidWasEntered ? paidAmt : adjTotal, // Blank means paid in full; entered 0 means no payment
         initialDueAmount: initialDueAmount, // Store initial due amount
         dueHistory: dueHistory,
+        adjustments: adjustments.length > 0 ? adjustments.map(a => ({ billId: a.billId, billNumber: a.billNumber, type: a.type, amount: a.amount })) : null,
+        adjustedTotal: adjustments.length > 0 ? adjTotal : null,
         billNumber: billNumber,
         billNumberValue: nextBillNumber,
         items: cart.map(item => ({
@@ -842,16 +1226,36 @@ function BillGeneration() {
           productName: item.name,
           price: item.price,
           quantity: item.quantity,
+          originalQuantity: item.quantity,
           subtotal: item.price * item.quantity,
-          variationSize: item.variationSize || null // Include variation size if it exists
+          variationSize: item.variationSize || null
         })),
         subtotal: subtotal,
+        originalSubtotal: subtotal,
         total: finalTotal,
+        originalDiscount: discount,
+        originalTotal: finalTotal,
         createdAt: serverTimestamp()
       };
 
       const docRef = await addDoc(collection(db, 'bills'), billData);
       const billWithId = { id: docRef.id, ...billData };
+
+      // Update previous bills that were adjusted (clear their due/cash return)
+      for (const adj of adjustments) {
+        try {
+          const prevBillRef = doc(db, 'bills', adj.billId);
+          if (adj.type === 'due') {
+            await updateDoc(prevBillRef, {
+              due: null,
+              adjustedInBill: billNumber,
+              updatedAt: serverTimestamp()
+            });
+          }
+        } catch (err) {
+          console.error('Error updating previous bill:', err);
+        }
+      }
       
       // Automatically open print dialog for the newly generated bill
       setTimeout(() => {
@@ -861,6 +1265,8 @@ function BillGeneration() {
       // Note: Stock is already updated when products were added to cart
       // So we just clear the cart and form
       setCart([]);
+      setAdjustments([]);
+      setAdjustBillSearchQuery('');
       setBillForm({
         fullName: '',
         date: new Date().toISOString().split('T')[0],
@@ -868,7 +1274,7 @@ function BillGeneration() {
         gst: '',
         phone: '',
         discount: '',
-        due: ''
+        paidAmount: ''
       });
       setGeneratedBill(null); // Clear generatedBill since we directly trigger print
       
@@ -979,8 +1385,8 @@ function BillGeneration() {
       // Prepare table data with SL No.
       const tableData = billToDownload.items.map((item, index) => {
         const price = parseFloat(item.price || 0);
-        const quantity = parseInt(item.quantity || 0);
-        const amount = parseFloat(item.subtotal || (price * quantity));
+        const quantity = getOriginalItemQuantity(item);
+        const amount = price * quantity;
         
         const productName = formatProductWithVariation(
           item.productName || 'N/A',
@@ -1007,12 +1413,12 @@ function BillGeneration() {
         // Draw "PAID IN FULL" stamp on the left side
         const stampX = 20;
         const stampY = tableStartY + 30; // Position stamp below customer info, above/beside table
-        pdfDoc.setDrawColor(200, 0, 0); // Red border
+        pdfDoc.setDrawColor(100, 100, 100);
         pdfDoc.setLineWidth(2);
         pdfDoc.roundedRect(stampX, stampY - 8, 50, 12, 2, 2); // Rounded rectangle
         pdfDoc.setFont('helvetica', 'bold');
         pdfDoc.setFontSize(10);
-        pdfDoc.setTextColor(200, 0, 0); // Red text
+        pdfDoc.setTextColor(80, 80, 80);
         pdfDoc.text('PAID IN FULL', stampX + 25, stampY, { align: 'center' });
         pdfDoc.setLineWidth(0.5); // Reset line width
         pdfDoc.setDrawColor(0, 0, 0); // Reset draw color
@@ -1050,34 +1456,144 @@ function BillGeneration() {
       // Calculate final Y position after table
       let finalY = pdfDoc.lastAutoTable.finalY + 10;
       
-      // Check for returned items and add returned items table
+      // Main Summary section directly below main table
+      pdfDoc.setFontSize(10);
+      pdfDoc.setTextColor(0, 0, 0);
+      
+      const subtotal = getOriginalBillSubtotal(billToDownload);
+      const discount = getOriginalBillDiscount(billToDownload);
+      const total = billToDownload.originalTotal !== undefined && billToDownload.originalTotal !== null
+        ? parseFloat(billToDownload.originalTotal || 0)
+        : subtotal - discount;
+      
+      let summaryY = finalY;
+      
+      // 1. SUBTOTAL
+      pdfDoc.setFont('helvetica', 'normal');
+      pdfDoc.text('Subtotal Rs.', 150, summaryY, { align: 'right' });
+      pdfDoc.text(subtotal.toFixed(2), 190, summaryY, { align: 'right' });
+      summaryY += 7;
+      
+      // 2. DISCOUNT
+      if (discount > 0) {
+        pdfDoc.text('Discount Rs.', 150, summaryY, { align: 'right' });
+        pdfDoc.text(discount.toFixed(2), 190, summaryY, { align: 'right' });
+        summaryY += 7;
+      }
+      
+      // 3. Total Rs.
+      pdfDoc.setFont('helvetica', 'bold');
+      pdfDoc.text('Total Rs.', 150, summaryY, { align: 'right' });
+      pdfDoc.text(total.toFixed(2), 190, summaryY, { align: 'right' });
+      summaryY += 9;
+
+      // 4. Bill no. X, Adjusted Amount Rs.  +  Adjusted Total Rs.
+      const billAdjustments = billToDownload.adjustments || [];
+      if (billAdjustments.length > 0) {
+        pdfDoc.setFont('helvetica', 'normal');
+        pdfDoc.setFontSize(9);
+        billAdjustments.forEach(adj => {
+          pdfDoc.setTextColor(80, 80, 80);
+          const prefix = adj.type === 'due' ? '+' : '-';
+          pdfDoc.text(`Bill no. ${adj.billNumber}, Adjusted Amount Rs.`, 150, summaryY, { align: 'right' });
+          pdfDoc.text(`${prefix}${adj.amount.toFixed(2)}`, 190, summaryY, { align: 'right' });
+          summaryY += 6;
+        });
+        pdfDoc.setFont('helvetica', 'bold');
+        pdfDoc.setFontSize(10);
+        pdfDoc.setTextColor(0, 0, 0);
+        const adjTotal = parseFloat(billToDownload.adjustedTotal || total);
+        pdfDoc.text('Adjusted Total Rs.', 150, summaryY, { align: 'right' });
+        pdfDoc.text(adjTotal.toFixed(2), 190, summaryY, { align: 'right' });
+        summaryY += 9;
+      }
+      
+      // 5. Paid Rs.
+      pdfDoc.setFont('helvetica', 'normal');
+      pdfDoc.setFontSize(10);
+      pdfDoc.setTextColor(40, 40, 40);
+      
+      let initialDue = getInitialDueForBill(billToDownload);
+      const dueHistory = billToDownload.dueHistory || [];
+      const currentOutstandingDue = parseFloat(billToDownload.due || 0);
+      const dueBeforePayments = currentOutstandingDue + getPaidAgainstDue(billToDownload);
+      
+      const paidAmount = billToDownload.paidAmount !== undefined ? parseFloat(billToDownload.paidAmount) : (initialDue > 0 ? (total - initialDue) : total);
+      pdfDoc.text('Paid Rs.', 150, summaryY, { align: 'right' });
+      pdfDoc.text(paidAmount.toFixed(2), 190, summaryY, { align: 'right' });
+      summaryY += 7;
+      
+      // 6. DUE
+      if (currentOutstandingDue > 0) {
+        pdfDoc.setTextColor(40, 40, 40);
+        pdfDoc.text('Due Rs.', 150, summaryY, { align: 'right' });
+        pdfDoc.text(dueBeforePayments.toFixed(2), 190, summaryY, { align: 'right' });
+        summaryY += 7;
+        
+        // 7. DUE HISTORY entries (Dd.mm.yyyy paid ..... due ....)
+        const filteredHistory = dueHistory.filter(entry => entry.amountPaid !== undefined);
+        if (filteredHistory.length > 0) {
+          pdfDoc.setFontSize(9);
+          filteredHistory.forEach((entry) => {
+            const entryDate = formatPdfHistoryDate(entry.date || entry.timestamp);
+            const amountPaid = parseFloat(entry.amountPaid || 0);
+            pdfDoc.setTextColor(40, 40, 40);
+            pdfDoc.text(`${entryDate}  Paid Rs. ${amountPaid.toFixed(2)}`, 190, summaryY, { align: 'right' });
+            summaryY += 6;
+          });
+        }
+      }
+      
+      // 8. Due Amount (current outstanding — bold red, always last)
+      if (currentOutstandingDue > 0) {
+        drawFinalBalanceBox(pdfDoc, 'DUE AMOUNT', currentOutstandingDue, summaryY);
+        summaryY += 11;
+      }
+      
+      finalY = summaryY + 10;
+
+      // Check for returned items and add returned items table and summary
       const returnedItems = billToDownload.returnedItems || [];
       if (returnedItems.length > 0) {
+        let previousReturnedItems = [];
+        groupReturnedItemsByEvent(returnedItems).forEach((returnGroup) => {
+          finalY = drawReturnedItemsSection(pdfDoc, billToDownload, returnGroup, finalY, previousReturnedItems);
+          previousReturnedItems = [...previousReturnedItems, ...returnGroup.items];
+        });
+      }
+
+      if (false && returnedItems.length > 0) {
         // Add spacing before returned items section
-        finalY += 10;
+        finalY += 5;
         
         // "Returned Items" heading
         pdfDoc.setFontSize(12);
         pdfDoc.setFont('helvetica', 'bold');
-        pdfDoc.setTextColor(200, 0, 0); // Red color for returned items heading
+        pdfDoc.setTextColor(40, 40, 40);
         pdfDoc.text('RETURNED ITEMS', 20, finalY);
-        finalY += 8;
         
-        // Prepare returned items table data
+        // Return Date (Top-right of Returned Items section)
+        pdfDoc.setFontSize(10);
+        pdfDoc.setFont('helvetica', 'normal');
+        pdfDoc.setTextColor(100, 100, 100);
+        const lastReturn = returnedItems[returnedItems.length - 1];
+        const returnDate = lastReturn?.returnedAt?.toDate ? lastReturn.returnedAt.toDate().toLocaleDateString('en-GB') : (lastReturn?.returnedAt instanceof Date ? lastReturn.returnedAt.toLocaleDateString('en-GB') : 'N/A');
+        pdfDoc.text(`Date - ${returnDate}`, 190, finalY, { align: 'right' });
+        
+        finalY += 5;
+        
         const returnedTableData = returnedItems.map((item, index) => {
-          const price = parseFloat(item.price || 0);
-          const quantity = parseInt(item.quantity || 0);
-          const amount = parseFloat(item.subtotal || (price * quantity));
-          
           const productName = formatProductWithVariation(
-            item.productName || 'N/A',
+            item.productName || item.name,
             item.variationSize,
             positionForSavedBillItem(item)
           );
-          
+          const quantity = item.quantity || 0;
+          const price = item.price || 0;
+          const amount = item.subtotal || (quantity * price);
           return [
             String(index + 1), // SL No.
-            productName, // Product (with variation size if applicable)
+            productName, // Product
             String(quantity), // Qty.
             'Rs. ' + price.toFixed(2), // Price
             'Rs. ' + amount.toFixed(2) // Amount
@@ -1090,7 +1606,7 @@ function BillGeneration() {
           body: returnedTableData,
           theme: 'striped',
           headStyles: { 
-            fillColor: [200, 0, 0], // Red header for returned items
+            fillColor: [100, 100, 100],
             textColor: [255, 255, 255], // White text
             fontStyle: 'bold',
             fontSize: 10
@@ -1101,7 +1617,7 @@ function BillGeneration() {
             textColor: [0, 0, 0]
           },
           alternateRowStyles: {
-            fillColor: [255, 245, 245] // Light red for alternating rows
+            fillColor: [245, 245, 245]
           },
           margin: { left: 20, right: 20 },
           columnStyles: {
@@ -1113,143 +1629,56 @@ function BillGeneration() {
           }
         });
         
-        finalY = pdfDoc.lastAutoTable.finalY + 10;
-      }
-      
-      // Summary section at bottom right
-      pdfDoc.setFontSize(10);
-      pdfDoc.setFont('helvetica', 'normal');
-      pdfDoc.setTextColor(0, 0, 0);
-      
-      const subtotal = parseFloat(billToDownload.subtotal || 0);
-      const discount = parseFloat(billToDownload.discount || 0);
-      const total = parseFloat(billToDownload.total || subtotal);
-      
-      // Calculate total return amount
-      const totalReturnAmount = returnedItems.reduce((sum, item) => {
-        return sum + parseFloat(item.subtotal || ((item.price || 0) * (item.quantity || 0)));
-      }, 0);
-      
-      let summaryY = finalY;
-      
-      // DISCOUNT
-      if (discount > 0) {
-        pdfDoc.text('DISCOUNT Rs.', 150, summaryY, { align: 'right' });
-        pdfDoc.text(discount.toFixed(2), 190, summaryY, { align: 'right' });
-        summaryY += 7;
-      }
-      
-      // TOTAL (bold)
-      pdfDoc.setFont('helvetica', 'bold');
-      pdfDoc.text('TOTAL Rs.', 150, summaryY, { align: 'right' });
-      pdfDoc.text(total.toFixed(2), 190, summaryY, { align: 'right' });
-      summaryY += 7;
-      
-      // PAID (calculated: if no due, then subtotal; if due exists, then subtotal - due)
-      pdfDoc.setFont('helvetica', 'normal');
-      pdfDoc.setTextColor(0, 0, 200); // Blue color for PAID amount
-      const dueHistory = billToDownload.dueHistory || [];
-      // Get initial due amount: use initialDueAmount if available, otherwise use first dueHistory entry, or current due as fallback
-      let initialDue = parseFloat(billToDownload.initialDueAmount || 0);
-      if (initialDue === 0 && dueHistory.length > 0) {
-        // Find first entry that has 'amount' (initial entry) or use first entry's newDue
-        const firstEntry = dueHistory[0];
-        if (firstEntry.amount !== undefined && firstEntry.amountPaid === undefined) {
-          initialDue = parseFloat(firstEntry.amount || 0);
-        } else if (firstEntry.newDue !== undefined) {
-          // If first entry is a payment, we need to find the initial due from history
-          // Look for the highest previousDue in history
-          let maxPreviousDue = 0;
-          dueHistory.forEach(entry => {
-            if (entry.previousDue !== undefined) {
-              maxPreviousDue = Math.max(maxPreviousDue, parseFloat(entry.previousDue || 0));
-            }
-          });
-          initialDue = maxPreviousDue > 0 ? maxPreviousDue : parseFloat(firstEntry.newDue || 0);
-        }
-      }
-      if (initialDue === 0) {
-        initialDue = due; // Fallback to current due if no history
-      }
-      const paidAmount = initialDue > 0 ? (subtotal - initialDue) : subtotal;
-      pdfDoc.text('PAID Rs.', 150, summaryY, { align: 'right' });
-      pdfDoc.text(paidAmount.toFixed(2), 190, summaryY, { align: 'right' });
-      summaryY += 7;
-      
-      // DUE AMOUNT (fixed label, shows initial due amount - never changes)
-      // Only show due section if there's an initial due amount
-      if (initialDue > 0) {
-        pdfDoc.setTextColor(200, 0, 0); // Red color
-        pdfDoc.text('DUE AMOUNT', 150, summaryY, { align: 'right' });
-        pdfDoc.text(initialDue.toFixed(2), 190, summaryY, { align: 'right' });
-        summaryY += 7;
+        let returnSummaryY = pdfDoc.lastAutoTable.finalY + 10;
         
-        // DUE HISTORY entries (in red, right-aligned under due amount)
-        // Filter out initial entry (entries that only have 'amount' without 'amountPaid')
-        const filteredHistory = dueHistory.filter(entry => entry.amountPaid !== undefined);
-        if (filteredHistory.length > 0) {
-          pdfDoc.setFontSize(9);
-          filteredHistory.forEach((entry) => {
-            const entryDate = entry.date || (entry.timestamp?.toDate ? entry.timestamp.toDate().toLocaleDateString('en-GB') : 'N/A');
-            const amountPaid = parseFloat(entry.amountPaid || 0);
-            const newDue = parseFloat(entry.newDue || 0);
-            pdfDoc.setTextColor(200, 0, 0); // Red color for date and new due
-            pdfDoc.text(`${entryDate} - Paid: Rs. ${amountPaid.toFixed(2)}, New Due: Rs. ${newDue.toFixed(2)}`, 190, summaryY, { align: 'right' });
-            summaryY += 6;
-          });
-        }
-      }
-      
-      // Handle returned items adjustment
-      if (totalReturnAmount > 0) {
-        summaryY += 5;
+        // Calculate return summary
+        const returnSummary = calculateReturnSummary(billToDownload, returnedItems);
+        const returnSettlement = calculateReturnSettlement(billToDownload, returnSummary);
+        
+        pdfDoc.setFontSize(10);
+        pdfDoc.setTextColor(0, 0, 0);
+        
+        // Sub total Rs.
         pdfDoc.setFont('helvetica', 'normal');
         pdfDoc.setFontSize(10);
-        pdfDoc.setTextColor(200, 0, 0); // Red color for return amount
-        pdfDoc.text('RETURNED AMOUNT Rs.', 150, summaryY, { align: 'right' });
-        pdfDoc.text(totalReturnAmount.toFixed(2), 190, summaryY, { align: 'right' });
-        summaryY += 7;
+        pdfDoc.setTextColor(0, 0, 0);
+        pdfDoc.text('Sub total Rs.', 150, returnSummaryY, { align: 'right' });
+        pdfDoc.text(returnSummary.subtotal.toFixed(2), 190, returnSummaryY, { align: 'right' });
+        returnSummaryY += 7;
         
-        // Check if bill was fully paid (no initial due)
-        if (initialDue === 0) {
-          // All amount was paid - show amount to return to customer
-          pdfDoc.setFont('helvetica', 'bold');
-          pdfDoc.setFontSize(12);
-          pdfDoc.setTextColor(0, 150, 0); // Green color
-          pdfDoc.text('AMOUNT TO RETURN TO CUSTOMER Rs.', 150, summaryY, { align: 'right' });
-          pdfDoc.text(totalReturnAmount.toFixed(2), 190, summaryY, { align: 'right' });
-          summaryY += 8;
-        } else {
-          // There was due amount - adjust the due
-          const adjustedDue = Math.max(0, due - totalReturnAmount);
-          pdfDoc.setFont('helvetica', 'bold');
-          pdfDoc.setFontSize(12);
-          pdfDoc.setTextColor(200, 0, 0); // Red color
-          pdfDoc.text('ADJUSTED DUE AMOUNT Rs.', 150, summaryY, { align: 'right' });
-          pdfDoc.text(adjustedDue.toFixed(2), 190, summaryY, { align: 'right' });
-          summaryY += 8;
+        // Prev. Discount Adjusted - (-x)
+        if (returnSummary.discountAdjustment > 0) {
+          pdfDoc.text('Prev. Discount Adjusted -', 150, returnSummaryY, { align: 'right' });
+          pdfDoc.text(`(-${returnSummary.discountAdjustment.toFixed(2)})`, 190, returnSummaryY, { align: 'right' });
+          returnSummaryY += 7;
         }
-      }
-      
-      // "Due now" in bold and big size (only show if there's a current due amount and no returns adjusted)
-      if ((due > 0 || initialDue > 0) && totalReturnAmount === 0) {
-        summaryY += 5;
+        
+        // Round off :
+        pdfDoc.text('Round off :', 150, returnSummaryY, { align: 'right' });
+        pdfDoc.text(returnSummary.roundOff.toFixed(2), 190, returnSummaryY, { align: 'right' });
+        returnSummaryY += 7;
+        
+        // Total :
         pdfDoc.setFont('helvetica', 'bold');
-        pdfDoc.setFontSize(14);
-        pdfDoc.setTextColor(200, 0, 0); // Red color
-        pdfDoc.text('Due now', 150, summaryY, { align: 'right' });
-        pdfDoc.text(due.toFixed(2), 190, summaryY, { align: 'right' });
-      } else if (totalReturnAmount > 0 && initialDue > 0) {
-        // Show adjusted due now if returns were processed
-        const adjustedDue = Math.max(0, due - totalReturnAmount);
-        if (adjustedDue > 0) {
-          summaryY += 5;
+        pdfDoc.text('Total :', 150, returnSummaryY, { align: 'right' });
+        pdfDoc.text(returnSummary.cashReturn.toFixed(2), 190, returnSummaryY, { align: 'right' });
+        returnSummaryY += 8;
+        
+        if (returnSettlement.cashReturn > 0) {
+          // Cash Return : (green bold, double-underlined)
           pdfDoc.setFont('helvetica', 'bold');
-          pdfDoc.setFontSize(14);
-          pdfDoc.setTextColor(200, 0, 0); // Red color
-          pdfDoc.text('Due now', 150, summaryY, { align: 'right' });
-          pdfDoc.text(adjustedDue.toFixed(2), 190, summaryY, { align: 'right' });
+          pdfDoc.setFontSize(11);
+          pdfDoc.setTextColor(0, 150, 0);
+          pdfDoc.text('Cash Return :', 150, returnSummaryY, { align: 'right' });
+          pdfDoc.text(returnSettlement.cashReturn.toFixed(2), 190, returnSummaryY, { align: 'right' });
+          returnSummaryY += 7;
+          pdfDoc.setDrawColor(0, 150, 0);
+          pdfDoc.setLineWidth(0.5);
+          pdfDoc.line(155, returnSummaryY - 5.5, 190, returnSummaryY - 5.5);
+          pdfDoc.line(155, returnSummaryY - 4.5, 190, returnSummaryY - 4.5);
         }
+        
+        finalY = returnSummaryY + 10;
       }
       
       // Reset text color to black for any remaining content
@@ -1367,8 +1796,8 @@ function BillGeneration() {
       // Prepare table data with SL No.
       const tableData = billToPrint.items.map((item, index) => {
         const price = parseFloat(item.price || 0);
-        const quantity = parseInt(item.quantity || 0);
-        const amount = parseFloat(item.subtotal || (price * quantity));
+        const quantity = getOriginalItemQuantity(item);
+        const amount = price * quantity;
         
         const productName = formatProductWithVariation(
           item.productName || 'N/A',
@@ -1395,12 +1824,12 @@ function BillGeneration() {
         // Draw "PAID IN FULL" stamp on the left side
         const stampX = 20;
         const stampY = tableStartY + 30; // Position stamp below customer info, above/beside table
-        pdfDoc.setDrawColor(200, 0, 0); // Red border
+        pdfDoc.setDrawColor(100, 100, 100);
         pdfDoc.setLineWidth(2);
         pdfDoc.roundedRect(stampX, stampY - 8, 50, 12, 2, 2); // Rounded rectangle
         pdfDoc.setFont('helvetica', 'bold');
         pdfDoc.setFontSize(10);
-        pdfDoc.setTextColor(200, 0, 0); // Red text
+        pdfDoc.setTextColor(80, 80, 80);
         pdfDoc.text('PAID IN FULL', stampX + 25, stampY, { align: 'center' });
         pdfDoc.setLineWidth(0.5); // Reset line width
         pdfDoc.setDrawColor(0, 0, 0); // Reset draw color
@@ -1438,34 +1867,148 @@ function BillGeneration() {
       // Calculate final Y position after table
       let finalY = pdfDoc.lastAutoTable.finalY + 10;
       
-      // Check for returned items and add returned items table
+      // Main Summary section directly below main table
+      pdfDoc.setFontSize(10);
+      pdfDoc.setTextColor(0, 0, 0);
+      
+      const subtotal = getOriginalBillSubtotal(billToPrint);
+      const discount = getOriginalBillDiscount(billToPrint);
+      const total = billToPrint.originalTotal !== undefined && billToPrint.originalTotal !== null
+        ? parseFloat(billToPrint.originalTotal || 0)
+        : subtotal - discount;
+      
+      let summaryY = finalY;
+      
+      // 1. SUBTOTAL
+      pdfDoc.setFont('helvetica', 'normal');
+      pdfDoc.text('Subtotal Rs.', 150, summaryY, { align: 'right' });
+      pdfDoc.text(subtotal.toFixed(2), 190, summaryY, { align: 'right' });
+      summaryY += 7;
+      
+      // 2. DISCOUNT
+      if (discount > 0) {
+        pdfDoc.text('Discount Rs.', 150, summaryY, { align: 'right' });
+        pdfDoc.text(discount.toFixed(2), 190, summaryY, { align: 'right' });
+        summaryY += 7;
+      }
+      
+      // 3. Total Rs.
+      pdfDoc.setFont('helvetica', 'bold');
+      pdfDoc.text('Total Rs.', 150, summaryY, { align: 'right' });
+      pdfDoc.text(total.toFixed(2), 190, summaryY, { align: 'right' });
+      summaryY += 9;
+
+      // 4. Bill no. X, Adjusted Amount Rs.  +  Adjusted Total Rs.
+      const billAdjustments = billToPrint.adjustments || [];
+      if (billAdjustments.length > 0) {
+        pdfDoc.setFont('helvetica', 'normal');
+        pdfDoc.setFontSize(9);
+        billAdjustments.forEach(adj => {
+          pdfDoc.setTextColor(80, 80, 80);
+          const prefix = adj.type === 'due' ? '+' : '-';
+          pdfDoc.text(`Bill no. ${adj.billNumber}, Adjusted Amount Rs.`, 150, summaryY, { align: 'right' });
+          pdfDoc.text(`${prefix}${adj.amount.toFixed(2)}`, 190, summaryY, { align: 'right' });
+          summaryY += 6;
+        });
+        pdfDoc.setFont('helvetica', 'bold');
+        pdfDoc.setFontSize(10);
+        pdfDoc.setTextColor(0, 0, 0);
+        const adjTotal = parseFloat(billToPrint.adjustedTotal || total);
+        pdfDoc.text('Adjusted Total Rs.', 150, summaryY, { align: 'right' });
+        pdfDoc.text(adjTotal.toFixed(2), 190, summaryY, { align: 'right' });
+        summaryY += 9;
+      }
+      
+      // 5. Paid Rs.
+      pdfDoc.setFont('helvetica', 'normal');
+      pdfDoc.setFontSize(10);
+      pdfDoc.setTextColor(40, 40, 40);
+      
+      let initialDue = getInitialDueForBill(billToPrint);
+      const dueHistory = billToPrint.dueHistory || [];
+      const currentOutstandingDue = parseFloat(billToPrint.due || 0);
+      const dueBeforePayments = currentOutstandingDue + getPaidAgainstDue(billToPrint);
+      
+      const paidAmount = billToPrint.paidAmount !== undefined ? parseFloat(billToPrint.paidAmount) : (initialDue > 0 ? (total - initialDue) : total);
+      pdfDoc.text('Paid Rs.', 150, summaryY, { align: 'right' });
+      pdfDoc.text(paidAmount.toFixed(2), 190, summaryY, { align: 'right' });
+      summaryY += 7;
+      
+      // 6. Due Rs. (initial due at bill creation)
+      if (currentOutstandingDue > 0) {
+        pdfDoc.setTextColor(40, 40, 40);
+        pdfDoc.text('Due Rs.', 150, summaryY, { align: 'right' });
+        pdfDoc.text(dueBeforePayments.toFixed(2), 190, summaryY, { align: 'right' });
+        summaryY += 10;
+        
+        // 7. Dd.mm.yyyy  Paid .....  Due ....
+        const filteredHistory = dueHistory.filter(entry => entry.amountPaid !== undefined);
+        if (filteredHistory.length > 0) {
+          pdfDoc.setFontSize(9);
+          filteredHistory.forEach(entry => {
+            const entryDate = formatPdfHistoryDate(entry.date || entry.timestamp);
+            const amtPaid = parseFloat(entry.amountPaid || 0);
+            pdfDoc.setTextColor(40, 40, 40);
+            pdfDoc.text(
+              `${entryDate}  Paid Rs. ${amtPaid.toFixed(2)}`,
+              190, summaryY, { align: 'right' }
+            );
+            summaryY += 6;
+          });
+          summaryY += 4;
+        }
+      }
+      
+      // 8. Due Amount (current outstanding — bold red, always last)
+      if (currentOutstandingDue > 0) {
+        drawFinalBalanceBox(pdfDoc, 'DUE AMOUNT', currentOutstandingDue, summaryY);
+        summaryY += 11;
+      }
+      
+      finalY = summaryY + 10;
+
+      // Check for returned items and add returned items table and summary
       const returnedItems = billToPrint.returnedItems || [];
       if (returnedItems.length > 0) {
+        let previousReturnedItems = [];
+        groupReturnedItemsByEvent(returnedItems).forEach((returnGroup) => {
+          finalY = drawReturnedItemsSection(pdfDoc, billToPrint, returnGroup, finalY, previousReturnedItems);
+          previousReturnedItems = [...previousReturnedItems, ...returnGroup.items];
+        });
+      }
+
+      if (false && returnedItems.length > 0) {
         // Add spacing before returned items section
-        finalY += 10;
+        finalY += 5;
         
         // "Returned Items" heading
         pdfDoc.setFontSize(12);
         pdfDoc.setFont('helvetica', 'bold');
-        pdfDoc.setTextColor(200, 0, 0); // Red color for returned items heading
+        pdfDoc.setTextColor(40, 40, 40);
         pdfDoc.text('RETURNED ITEMS', 20, finalY);
-        finalY += 8;
         
-        // Prepare returned items table data
+        // Return Date (Top-right of Returned Items section)
+        pdfDoc.setFontSize(10);
+        pdfDoc.setFont('helvetica', 'normal');
+        pdfDoc.setTextColor(100, 100, 100);
+        const lastReturn = returnedItems[returnedItems.length - 1];
+        const returnDate = lastReturn?.returnedAt?.toDate ? lastReturn.returnedAt.toDate().toLocaleDateString('en-GB') : (lastReturn?.returnedAt instanceof Date ? lastReturn.returnedAt.toLocaleDateString('en-GB') : 'N/A');
+        pdfDoc.text(`Date - ${returnDate}`, 190, finalY, { align: 'right' });
+        
+        finalY += 5;
+        
         const returnedTableData = returnedItems.map((item, index) => {
-          const price = parseFloat(item.price || 0);
-          const quantity = parseInt(item.quantity || 0);
-          const amount = parseFloat(item.subtotal || (price * quantity));
-          
           const productName = formatProductWithVariation(
-            item.productName || 'N/A',
+            item.productName || item.name,
             item.variationSize,
             positionForSavedBillItem(item)
           );
-          
+          const quantity = item.quantity || 0;
+          const price = item.price || 0;
+          const amount = item.subtotal || (quantity * price);
           return [
             String(index + 1), // SL No.
-            productName, // Product (with variation size if applicable)
+            productName, // Product
             String(quantity), // Qty.
             'Rs. ' + price.toFixed(2), // Price
             'Rs. ' + amount.toFixed(2) // Amount
@@ -1478,7 +2021,7 @@ function BillGeneration() {
           body: returnedTableData,
           theme: 'striped',
           headStyles: { 
-            fillColor: [200, 0, 0], // Red header for returned items
+            fillColor: [100, 100, 100],
             textColor: [255, 255, 255], // White text
             fontStyle: 'bold',
             fontSize: 10
@@ -1489,7 +2032,7 @@ function BillGeneration() {
             textColor: [0, 0, 0]
           },
           alternateRowStyles: {
-            fillColor: [255, 245, 245] // Light red for alternating rows
+            fillColor: [245, 245, 245]
           },
           margin: { left: 20, right: 20 },
           columnStyles: {
@@ -1501,143 +2044,56 @@ function BillGeneration() {
           }
         });
         
-        finalY = pdfDoc.lastAutoTable.finalY + 10;
-      }
-      
-      // Summary section at bottom right
-      pdfDoc.setFontSize(10);
-      pdfDoc.setFont('helvetica', 'normal');
-      pdfDoc.setTextColor(0, 0, 0);
-      
-      const subtotal = parseFloat(billToPrint.subtotal || 0);
-      const discount = parseFloat(billToPrint.discount || 0);
-      const total = parseFloat(billToPrint.total || subtotal);
-      
-      // Calculate total return amount
-      const totalReturnAmount = returnedItems.reduce((sum, item) => {
-        return sum + parseFloat(item.subtotal || ((item.price || 0) * (item.quantity || 0)));
-      }, 0);
-      
-      let summaryY = finalY;
-      
-      // DISCOUNT
-      if (discount > 0) {
-        pdfDoc.text('DISCOUNT Rs.', 150, summaryY, { align: 'right' });
-        pdfDoc.text(discount.toFixed(2), 190, summaryY, { align: 'right' });
-        summaryY += 7;
-      }
-      
-      // TOTAL (bold)
-      pdfDoc.setFont('helvetica', 'bold');
-      pdfDoc.text('TOTAL Rs.', 150, summaryY, { align: 'right' });
-      pdfDoc.text(total.toFixed(2), 190, summaryY, { align: 'right' });
-      summaryY += 7;
-      
-      // PAID (calculated: if no due, then subtotal; if due exists, then subtotal - due)
-      pdfDoc.setFont('helvetica', 'normal');
-      pdfDoc.setTextColor(0, 0, 200); // Blue color for PAID amount
-      const dueHistory = billToPrint.dueHistory || [];
-      // Get initial due amount: use initialDueAmount if available, otherwise use first dueHistory entry, or current due as fallback
-      let initialDue = parseFloat(billToPrint.initialDueAmount || 0);
-      if (initialDue === 0 && dueHistory.length > 0) {
-        // Find first entry that has 'amount' (initial entry) or use first entry's newDue
-        const firstEntry = dueHistory[0];
-        if (firstEntry.amount !== undefined && firstEntry.amountPaid === undefined) {
-          initialDue = parseFloat(firstEntry.amount || 0);
-        } else if (firstEntry.newDue !== undefined) {
-          // If first entry is a payment, we need to find the initial due from history
-          // Look for the highest previousDue in history
-          let maxPreviousDue = 0;
-          dueHistory.forEach(entry => {
-            if (entry.previousDue !== undefined) {
-              maxPreviousDue = Math.max(maxPreviousDue, parseFloat(entry.previousDue || 0));
-            }
-          });
-          initialDue = maxPreviousDue > 0 ? maxPreviousDue : parseFloat(firstEntry.newDue || 0);
-        }
-      }
-      if (initialDue === 0) {
-        initialDue = due; // Fallback to current due if no history
-      }
-      const paidAmount = initialDue > 0 ? (subtotal - initialDue) : subtotal;
-      pdfDoc.text('PAID Rs.', 150, summaryY, { align: 'right' });
-      pdfDoc.text(paidAmount.toFixed(2), 190, summaryY, { align: 'right' });
-      summaryY += 7;
-      
-      // DUE AMOUNT (fixed label, shows initial due amount - never changes)
-      // Only show due section if there's an initial due amount
-      if (initialDue > 0) {
-        pdfDoc.setTextColor(200, 0, 0); // Red color
-        pdfDoc.text('DUE AMOUNT', 150, summaryY, { align: 'right' });
-        pdfDoc.text(initialDue.toFixed(2), 190, summaryY, { align: 'right' });
-        summaryY += 7;
+        let returnSummaryY = pdfDoc.lastAutoTable.finalY + 10;
         
-        // DUE HISTORY entries (in red, right-aligned under due amount)
-        // Filter out initial entry (entries that only have 'amount' without 'amountPaid')
-        const filteredHistory = dueHistory.filter(entry => entry.amountPaid !== undefined);
-        if (filteredHistory.length > 0) {
-          pdfDoc.setFontSize(9);
-          filteredHistory.forEach((entry) => {
-            const entryDate = entry.date || (entry.timestamp?.toDate ? entry.timestamp.toDate().toLocaleDateString('en-GB') : 'N/A');
-            const amountPaid = parseFloat(entry.amountPaid || 0);
-            const newDue = parseFloat(entry.newDue || 0);
-            pdfDoc.setTextColor(200, 0, 0); // Red color for date and new due
-            pdfDoc.text(`${entryDate} - Paid: Rs. ${amountPaid.toFixed(2)}, New Due: Rs. ${newDue.toFixed(2)}`, 190, summaryY, { align: 'right' });
-            summaryY += 6;
-          });
-        }
-      }
-      
-      // Handle returned items adjustment
-      if (totalReturnAmount > 0) {
-        summaryY += 5;
+        // Calculate return summary
+        const returnSummary = calculateReturnSummary(billToPrint, returnedItems);
+        const returnSettlement = calculateReturnSettlement(billToPrint, returnSummary);
+        
+        pdfDoc.setFontSize(10);
+        pdfDoc.setTextColor(0, 0, 0);
+        
+        // Sub total Rs.
         pdfDoc.setFont('helvetica', 'normal');
         pdfDoc.setFontSize(10);
-        pdfDoc.setTextColor(200, 0, 0); // Red color for return amount
-        pdfDoc.text('RETURNED AMOUNT Rs.', 150, summaryY, { align: 'right' });
-        pdfDoc.text(totalReturnAmount.toFixed(2), 190, summaryY, { align: 'right' });
-        summaryY += 7;
+        pdfDoc.setTextColor(0, 0, 0);
+        pdfDoc.text('Sub total Rs.', 150, returnSummaryY, { align: 'right' });
+        pdfDoc.text(returnSummary.subtotal.toFixed(2), 190, returnSummaryY, { align: 'right' });
+        returnSummaryY += 7;
         
-        // Check if bill was fully paid (no initial due)
-        if (initialDue === 0) {
-          // All amount was paid - show amount to return to customer
-          pdfDoc.setFont('helvetica', 'bold');
-          pdfDoc.setFontSize(12);
-          pdfDoc.setTextColor(0, 150, 0); // Green color
-          pdfDoc.text('AMOUNT TO RETURN TO CUSTOMER Rs.', 150, summaryY, { align: 'right' });
-          pdfDoc.text(totalReturnAmount.toFixed(2), 190, summaryY, { align: 'right' });
-          summaryY += 8;
-        } else {
-          // There was due amount - adjust the due
-          const adjustedDue = Math.max(0, due - totalReturnAmount);
-          pdfDoc.setFont('helvetica', 'bold');
-          pdfDoc.setFontSize(12);
-          pdfDoc.setTextColor(200, 0, 0); // Red color
-          pdfDoc.text('ADJUSTED DUE AMOUNT Rs.', 150, summaryY, { align: 'right' });
-          pdfDoc.text(adjustedDue.toFixed(2), 190, summaryY, { align: 'right' });
-          summaryY += 8;
+        // Prev. Discount Adjusted - (-x)
+        if (returnSummary.discountAdjustment > 0) {
+          pdfDoc.text('Prev. Discount Adjusted -', 150, returnSummaryY, { align: 'right' });
+          pdfDoc.text(`(-${returnSummary.discountAdjustment.toFixed(2)})`, 190, returnSummaryY, { align: 'right' });
+          returnSummaryY += 7;
         }
-      }
-      
-      // "Due now" in bold and big size (only show if there's a current due amount and no returns adjusted)
-      if ((due > 0 || initialDue > 0) && totalReturnAmount === 0) {
-        summaryY += 5;
+        
+        // Round off :
+        pdfDoc.text('Round off :', 150, returnSummaryY, { align: 'right' });
+        pdfDoc.text(returnSummary.roundOff.toFixed(2), 190, returnSummaryY, { align: 'right' });
+        returnSummaryY += 7;
+        
+        // Total :
         pdfDoc.setFont('helvetica', 'bold');
-        pdfDoc.setFontSize(14);
-        pdfDoc.setTextColor(200, 0, 0); // Red color
-        pdfDoc.text('Due now', 150, summaryY, { align: 'right' });
-        pdfDoc.text(due.toFixed(2), 190, summaryY, { align: 'right' });
-      } else if (totalReturnAmount > 0 && initialDue > 0) {
-        // Show adjusted due now if returns were processed
-        const adjustedDue = Math.max(0, due - totalReturnAmount);
-        if (adjustedDue > 0) {
-          summaryY += 5;
+        pdfDoc.text('Total :', 150, returnSummaryY, { align: 'right' });
+        pdfDoc.text(returnSummary.cashReturn.toFixed(2), 190, returnSummaryY, { align: 'right' });
+        returnSummaryY += 8;
+        
+        if (returnSettlement.cashReturn > 0) {
+          // Cash Return : (green bold, double-underlined)
           pdfDoc.setFont('helvetica', 'bold');
-          pdfDoc.setFontSize(14);
-          pdfDoc.setTextColor(200, 0, 0); // Red color
-          pdfDoc.text('Due now', 150, summaryY, { align: 'right' });
-          pdfDoc.text(adjustedDue.toFixed(2), 190, summaryY, { align: 'right' });
+          pdfDoc.setFontSize(11);
+          pdfDoc.setTextColor(0, 150, 0);
+          pdfDoc.text('Cash Return :', 150, returnSummaryY, { align: 'right' });
+          pdfDoc.text(returnSettlement.cashReturn.toFixed(2), 190, returnSummaryY, { align: 'right' });
+          returnSummaryY += 7;
+          pdfDoc.setDrawColor(0, 150, 0);
+          pdfDoc.setLineWidth(0.5);
+          pdfDoc.line(155, returnSummaryY - 5.5, 190, returnSummaryY - 5.5);
+          pdfDoc.line(155, returnSummaryY - 4.5, 190, returnSummaryY - 4.5);
         }
+        
+        finalY = returnSummaryY + 10;
       }
       
       // Reset text color to black for any remaining content
@@ -2713,16 +3169,128 @@ function BillGeneration() {
                   <span><strong>Total Amount:</strong></span>
                   <span><strong>₹{calculateFinalTotal().toFixed(2)}</strong></span>
                 </div>
-                <div className="form-group due-field">
-                  <label>Due</label>
+
+                {/* Adjust from Previous Bill */}
+                <div className="form-group" style={{ marginTop: '12px', borderTop: '1px dashed #ccc', paddingTop: '12px' }}>
+                  <label style={{ fontWeight: '600', color: '#555' }}>Adjust from Previous Bill</label>
+                  <div className="product-search-container" style={{ position: 'relative' }}>
+                    <input
+                      type="text"
+                      value={adjustBillSearchQuery}
+                      onChange={(e) => {
+                        setAdjustBillSearchQuery(e.target.value);
+                        setShowAdjustBillDropdown(true);
+                      }}
+                      onFocus={() => setShowAdjustBillDropdown(true)}
+                      onBlur={() => setTimeout(() => setShowAdjustBillDropdown(false), 200)}
+                      placeholder="Search by bill number (e.g. MPS/00001)..."
+                      style={{ width: '100%', padding: '8px 12px', border: '1px solid #ddd', borderRadius: '6px', fontSize: '14px' }}
+                    />
+                    {showAdjustBillDropdown && adjustBillSearchQuery.trim() && (
+                      <div className="product-dropdown" style={{ maxHeight: '200px', overflowY: 'auto' }}>
+                        {(() => {
+                          const query = adjustBillSearchQuery.toLowerCase().trim();
+                          const matching = bills.filter(b => {
+                            const billNum = (b.billNumber || '').toLowerCase();
+                            const name = (b.fullName || b.customerName || '').toLowerCase();
+                            const alreadyAdded = adjustments.some(a => a.billId === b.id);
+                            if (alreadyAdded) return false;
+                            const info = getBillAdjustmentInfo(b);
+                            if (info.due <= 0 && info.cashReturn <= 0) return false;
+                            return billNum.includes(query) || name.includes(query);
+                          });
+                          if (matching.length === 0) {
+                            return (
+                              <div className="product-dropdown-item no-results" style={{ padding: '10px', color: '#999' }}>
+                                No bills found with due or cash return
+                              </div>
+                            );
+                          }
+                          return matching.slice(0, 10).map(bill => {
+                            const info = getBillAdjustmentInfo(bill);
+                            return (
+                              <div
+                                key={bill.id}
+                                className="product-dropdown-item"
+                                onMouseDown={(e) => {
+                                  e.preventDefault();
+                                  handleAdjustBill(bill);
+                                }}
+                                style={{ padding: '10px 12px', cursor: 'pointer', borderBottom: '1px solid #f0f0f0', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}
+                              >
+                                <div>
+                                  <strong>{bill.billNumber || bill.id.slice(0, 8)}</strong>
+                                  <span style={{ marginLeft: '8px', color: '#888', fontSize: '12px' }}>{bill.fullName || bill.customerName}</span>
+                                </div>
+                                <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                                  {info.due > 0 && (
+                                    <span style={{ color: '#e74c3c', fontSize: '12px', fontWeight: '600' }}>Due: ₹{info.due.toFixed(2)}</span>
+                                  )}
+                                  {info.cashReturn > 0 && (
+                                    <span style={{ color: '#27ae60', fontSize: '12px', fontWeight: '600' }}>Return: ₹{info.cashReturn.toFixed(2)}</span>
+                                  )}
+                                </div>
+                              </div>
+                            );
+                          });
+                        })()}
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* Applied Adjustments */}
+                {adjustments.length > 0 && (
+                  <div style={{ marginTop: '8px' }}>
+                    {adjustments.map((adj, idx) => (
+                      <div key={idx} className="summary-row" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '6px 0', color: '#9b59b6' }}>
+                        <span style={{ fontSize: '13px', fontWeight: '600' }}>
+                          ** Bill no. {adj.billNumber}, Amount Adjusted
+                        </span>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                          <span style={{ fontWeight: '600' }}>
+                            {adj.type === 'due' ? '+' : '-'}₹{adj.amount.toFixed(2)}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => removeAdjustment(adj.billId)}
+                            style={{ background: 'none', border: 'none', color: '#999', cursor: 'pointer', fontSize: '16px', padding: '0 4px', lineHeight: '1' }}
+                            title="Remove adjustment"
+                          >✕</button>
+                        </div>
+                      </div>
+                    ))}
+                    <div className="summary-row total-row" style={{ marginTop: '4px', borderTop: '1px solid #ddd', paddingTop: '6px' }}>
+                      <span><strong>Adjusted Total:</strong></span>
+                      <span><strong>₹{calculateAdjustedTotal().toFixed(2)}</strong></span>
+                    </div>
+                  </div>
+                )}
+
+                <div className="form-group due-field" style={{ marginTop: '12px', borderTop: '1px dashed #ccc', paddingTop: '12px' }}>
+                  <label>Paid Amount (₹)</label>
                   <input
-                    type="text"
-                    name="due"
-                    value={billForm.due}
+                    type="number"
+                    name="paidAmount"
+                    value={billForm.paidAmount}
                     onChange={handleFormChange}
-                    placeholder="Enter due amount or description (optional)"
+                    onWheel={handleNumberInputWheel}
+                    placeholder="Enter amount paid by customer (optional)"
+                    min="0"
+                    step="0.01"
                   />
                 </div>
+                {hasPaidAmountEntry() && calculateDueAmount() > 0 && (
+                  <div className="summary-row due-row" style={{ color: '#e74c3c', fontWeight: 'bold', marginTop: '8px' }}>
+                    <span>Due (Remaining):</span>
+                    <span>₹{calculateDueAmount().toFixed(2)}</span>
+                  </div>
+                )}
+                {hasPaidAmountEntry() && calculatePaidAmount() >= calculateAdjustedTotal() && (
+                  <div className="summary-row" style={{ color: '#27ae60', fontWeight: 'bold', marginTop: '8px' }}>
+                    <span>✅ Fully Paid</span>
+                  </div>
+                )}
               </div>
             </div>
 
@@ -2870,38 +3438,92 @@ function BillGeneration() {
               </table>
             </div>
             
-            <div style={{ 
-              display: 'flex', 
-              justifyContent: 'space-between', 
-              alignItems: 'center',
-              marginTop: '1.5rem',
-              paddingTop: '1.5rem',
-              borderTop: '2px solid #ddd'
-            }}>
-              <div>
-                <strong style={{ fontSize: '1.1em' }}>Total Return Amount: </strong>
-                <span style={{ color: '#27ae60', fontSize: '1.3em', fontWeight: 'bold' }}>
-                  ₹{returnItems.reduce((sum, item) => sum + ((item.price || 0) * (item.returnQuantity || 0)), 0).toFixed(2)}
-                </span>
-              </div>
-              <div style={{ display: 'flex', gap: '12px' }}>
-                <button
-                  className="cancel-due-btn"
-                  onClick={handleCancelReturn}
-                  style={{ padding: '10px 24px', fontSize: '1rem' }}
-                >
-                  Cancel
-                </button>
-                <button
-                  className="save-due-btn"
-                  onClick={handleProcessReturn}
-                  disabled={returnItems.filter(item => item.returnQuantity > 0).length === 0}
-                  style={{ padding: '10px 24px', fontSize: '1rem' }}
-                >
-                  Process Return
-                </button>
-              </div>
-            </div>
+            {(() => {
+              const returningBill = bills.find(b => b.id === returningBillId);
+              const returnSummary = returningBill 
+                ? calculateReturnSummary(returningBill, returnItems) 
+                : { subtotal: 0, discountPercent: 0, discountAdjustment: 0, roundOff: 0, cashReturn: 0 };
+              
+              return (
+                <div style={{ 
+                  marginTop: '1.5rem',
+                  paddingTop: '1.5rem',
+                  borderTop: '2px solid #ddd',
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'flex-start',
+                  flexWrap: 'wrap',
+                  gap: '20px'
+                }}>
+                  {/* Left part: Actions */}
+                  <div style={{ display: 'flex', gap: '12px', marginTop: 'auto' }}>
+                    <button
+                      className="cancel-due-btn"
+                      onClick={handleCancelReturn}
+                      style={{ padding: '10px 24px', fontSize: '1rem' }}
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      className="save-due-btn"
+                      onClick={handleProcessReturn}
+                      disabled={returnItems.filter(item => item.returnQuantity > 0).length === 0}
+                      style={{ padding: '10px 24px', fontSize: '1rem' }}
+                    >
+                      Process Return
+                    </button>
+                  </div>
+
+                  {/* Right part: Summary Card */}
+                  <div style={{
+                    width: '340px',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '10px',
+                    backgroundColor: '#f9f9f9',
+                    padding: '1.2rem',
+                    borderRadius: '8px',
+                    border: '1px solid #eee',
+                    boxShadow: '0 2px 4px rgba(0,0,0,0.02)'
+                  }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '14px', color: '#555' }}>
+                      <span>Sub total:</span>
+                      <span style={{ fontWeight: '500' }}>₹{returnSummary.subtotal.toFixed(2)}</span>
+                    </div>
+                    {returnSummary.discountAdjustment > 0 && (
+                      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '14px', color: '#e74c3c' }}>
+                        <span>% discount adjusted ({returnSummary.discountPercent.toFixed(1)}%):</span>
+                        <span style={{ fontWeight: '500' }}>-₹{returnSummary.discountAdjustment.toFixed(2)}</span>
+                      </div>
+                    )}
+                    {Math.abs(returnSummary.roundOff) > 0.001 && (
+                      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '14px', color: '#555' }}>
+                        <span>Round off:</span>
+                        <span style={{ fontWeight: '500' }}>
+                          {returnSummary.roundOff > 0 ? '+' : '-'}₹{Math.abs(returnSummary.roundOff).toFixed(2)}
+                        </span>
+                      </div>
+                    )}
+                    <div style={{ 
+                      display: 'flex', 
+                      justifyContent: 'space-between', 
+                      fontSize: '18px', 
+                      color: '#27ae60', 
+                      fontWeight: 'bold',
+                      borderTop: '1px solid #ddd',
+                      paddingTop: '8px',
+                      marginTop: '4px'
+                    }}>
+                      <span>Cash return:</span>
+                      <span style={{ 
+                        borderBottom: '3px double #27ae60',
+                        paddingBottom: '2px'
+                      }}>₹{returnSummary.cashReturn.toFixed(2)}</span>
+                    </div>
+                  </div>
+                </div>
+              );
+            })()}
           </div>
         </div>
       )}
@@ -2910,4 +3532,3 @@ function BillGeneration() {
 }
 
 export default BillGeneration;
-
