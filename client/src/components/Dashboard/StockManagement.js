@@ -28,7 +28,10 @@ function StockManagement() {
     hsnCode: '',
     catalogueNumber: '',
     lowStockQuantity: '',
-    unit: ''
+    unit: '',
+    primaryUnit: '',
+    secondaryUnit: '',
+    conversionFactor: ''
   });
   const [loading, setLoading] = useState(false);
   const [initialLoading, setInitialLoading] = useState(true);
@@ -199,7 +202,17 @@ function StockManagement() {
         productData.catalogueNumber = formData.catalogueNumber?.trim() || '';
         productData.lowStockQuantity = formData.lowStockQuantity ? parseInt(formData.lowStockQuantity) : null;
         productData.unit = formData.unit?.trim() || '';
-        productData.enableDualUnit = false;
+        productData.enableDualUnit = Boolean(enableDualUnit);
+        if (enableDualUnit) {
+          if (!formData.primaryUnit?.trim() || !formData.secondaryUnit?.trim() || !formData.conversionFactor || parseFloat(formData.conversionFactor) <= 0) {
+            setMessage({ type: 'error', text: 'Dual unit requires Primary Unit, Secondary Unit, and Conversion Factor > 0.' });
+            setLoading(false);
+            return;
+          }
+          productData.primaryUnit = formData.primaryUnit.trim();
+          productData.secondaryUnit = formData.secondaryUnit.trim();
+          productData.conversionFactor = parseFloat(formData.conversionFactor);
+        }
       }
 
       await addDoc(collection(db, 'products'), productData);
@@ -214,7 +227,10 @@ function StockManagement() {
         hsnCode: '',
         catalogueNumber: '',
         lowStockQuantity: '',
-        unit: ''
+        unit: '',
+        primaryUnit: '',
+        secondaryUnit: '',
+        conversionFactor: ''
       });
       setSelectedCategoryId('');
       setVariationEnabled(true);
@@ -258,7 +274,10 @@ function StockManagement() {
       hsnCode: product.hsnCode || '',
       catalogueNumber: product.catalogueNumber || '',
       lowStockQuantity: product.lowStockQuantity?.toString() || '',
-      unit: product.unit || ''
+      unit: product.unit || '',
+      primaryUnit: product.primaryUnit || '',
+      secondaryUnit: product.secondaryUnit || '',
+      conversionFactor: product.conversionFactor?.toString() || ''
     });
     // Load variations if they exist
     if (product.variations && Array.isArray(product.variations) && product.variations.length > 0) {
@@ -372,7 +391,21 @@ function StockManagement() {
         updateData.catalogueNumber = formData.catalogueNumber?.trim() || '';
         updateData.lowStockQuantity = formData.lowStockQuantity ? parseInt(formData.lowStockQuantity) : null;
         updateData.unit = formData.unit?.trim() || '';
-        updateData.enableDualUnit = false;
+        updateData.enableDualUnit = Boolean(enableDualUnit);
+        if (enableDualUnit) {
+          if (!formData.primaryUnit?.trim() || !formData.secondaryUnit?.trim() || !formData.conversionFactor || parseFloat(formData.conversionFactor) <= 0) {
+            setMessage({ type: 'error', text: 'Dual unit requires Primary Unit, Secondary Unit, and Conversion Factor > 0.' });
+            setLoading(false);
+            return;
+          }
+          updateData.primaryUnit = formData.primaryUnit.trim();
+          updateData.secondaryUnit = formData.secondaryUnit.trim();
+          updateData.conversionFactor = parseFloat(formData.conversionFactor);
+        } else {
+          updateData.primaryUnit = deleteField();
+          updateData.secondaryUnit = deleteField();
+          updateData.conversionFactor = deleteField();
+        }
         // Remove variations if switching from variations to single product
         updateData.variations = null;
         updateData.sizeNamePosition = deleteField();
@@ -390,7 +423,10 @@ function StockManagement() {
         hsnCode: '',
         catalogueNumber: '',
         lowStockQuantity: '',
-        unit: ''
+        unit: '',
+        primaryUnit: '',
+        secondaryUnit: '',
+        conversionFactor: ''
       });
       setSelectedCategoryId('');
       setVariationEnabled(true);
@@ -412,13 +448,17 @@ function StockManagement() {
     setFormData({
       name: '',
       price: '',
+      purchasePrice: '',
       quantity: '',
       category: '',
       subcategory: '',
       hsnCode: '',
       catalogueNumber: '',
       lowStockQuantity: '',
-      unit: ''
+      unit: '',
+      primaryUnit: '',
+      secondaryUnit: '',
+      conversionFactor: ''
     });
     setShowAddForm(false);
     setEditingProduct(null);
@@ -687,7 +727,10 @@ function StockManagement() {
                 hsnCode: '',
                 catalogueNumber: '',
                 lowStockQuantity: '',
-                unit: ''
+                unit: '',
+                primaryUnit: '',
+                secondaryUnit: '',
+                conversionFactor: ''
               });
               setSelectedCategoryId('');
               setSubcategories([]);
@@ -791,7 +834,6 @@ function StockManagement() {
                           setVariationEnabled(e.target.checked);
                           if (!e.target.checked) {
                             setVariations([]);
-                            setEnableDualUnit(false);
                           } else {
                             if (variations.length === 0) {
                               setVariations([{ size: '', price: '', purchasePrice: '', quantity: '', lowStockQuantity: '', catalogueNumber: '', primaryUnit: formData.unit || '', secondaryUnit: '', conversionFactor: '' }]);
@@ -902,7 +944,6 @@ function StockManagement() {
                           setVariationEnabled(e.target.checked);
                           if (!e.target.checked) {
                             setVariations([]);
-                            setEnableDualUnit(false);
                           } else {
                             if (variations.length === 0) {
                               setVariations([{ size: '', price: '', purchasePrice: '', quantity: '', lowStockQuantity: '', catalogueNumber: '', primaryUnit: formData.unit || '', secondaryUnit: '', conversionFactor: '' }]);
@@ -916,27 +957,17 @@ function StockManagement() {
                     </label>
                   </div>
                   <div className="form-group" style={{ flex: '1 1 240px', marginBottom: 0 }}>
-                    <label
-                      style={{
-                        display: 'flex',
-                        alignItems: 'flex-start',
-                        gap: '10px',
-                        cursor: variationEnabled ? 'pointer' : 'default',
-                        opacity: variationEnabled ? 1 : 0.55
-                      }}
-                      title={!variationEnabled ? 'Turn on variations to use dual units' : undefined}
-                    >
+                    <label style={{ display: 'flex', alignItems: 'flex-start', gap: '10px', cursor: 'pointer' }}>
                       <input
                         type="checkbox"
                         checked={enableDualUnit}
-                        onChange={(e) => variationEnabled && setEnableDualUnit(e.target.checked)}
-                        disabled={!variationEnabled}
+                        onChange={(e) => setEnableDualUnit(e.target.checked)}
                         style={{ width: 'auto', marginTop: '3px' }}
                       />
                       <span>
                         <strong>Enable dual unit</strong>
                         <span style={{ display: 'block', fontSize: '0.82rem', color: '#555', fontWeight: 400, marginTop: '4px' }}>
-                          Requires variations. Secondary unit + conversion for POs.
+                          Secondary unit + conversion factor (e.g. sell by box, stock in pcs).
                         </span>
                       </span>
                     </label>
@@ -1006,6 +1037,46 @@ function StockManagement() {
                     />
                   </div>
                 </div>
+                {enableDualUnit && (
+                  <div className="form-row" style={{ marginTop: '10px' }}>
+                    <div className="form-group">
+                      <label>Primary Unit *</label>
+                      <input
+                        type="text"
+                        name="primaryUnit"
+                        value={formData.primaryUnit}
+                        onChange={handleInputChange}
+                        placeholder="e.g., piece, kg"
+                        required={enableDualUnit}
+                      />
+                    </div>
+                    <div className="form-group">
+                      <label>Secondary Unit *</label>
+                      <input
+                        type="text"
+                        name="secondaryUnit"
+                        value={formData.secondaryUnit}
+                        onChange={handleInputChange}
+                        placeholder="e.g., box, carton"
+                        required={enableDualUnit}
+                      />
+                    </div>
+                    <div className="form-group">
+                      <label>Conversion Factor *</label>
+                      <input
+                        type="number"
+                        name="conversionFactor"
+                        value={formData.conversionFactor}
+                        onChange={handleInputChange}
+                        onWheel={handleNumberInputWheel}
+                        min="0.0001"
+                        step="0.0001"
+                        placeholder="e.g., 20 (1 box = 20 pcs)"
+                        required={enableDualUnit}
+                      />
+                    </div>
+                  </div>
+                )}
               </>
             )}
             
