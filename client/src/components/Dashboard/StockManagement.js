@@ -12,27 +12,253 @@ import {
 import { db } from '../../firebase';
 import { categoryService } from '../../services/firebaseService';
 import { normalizeSizeNamePosition } from '../../utils/productDisplay';
+import { applyMrpFieldChange, parseOptionalFloat } from '../../utils/priceMrp';
 import './StockManagement.css';
+
+const EMPTY_FORM_DATA = {
+  name: '',
+  price: '',
+  purchasePrice: '',
+  purchaseMrp: '',
+  purchaseDiscount: '',
+  sellingMrp: '',
+  sellingDiscount: '',
+  quantity: '',
+  category: '',
+  subcategory: '',
+  hsnCode: '',
+  catalogueNumber: '',
+  lowStockQuantity: '',
+  unit: '',
+  primaryUnit: '',
+  secondaryUnit: '',
+  conversionFactor: ''
+};
+
+const EMPTY_VARIATION = {
+  size: '',
+  price: '',
+  purchasePrice: '',
+  purchaseMrp: '',
+  purchaseDiscount: '',
+  sellingMrp: '',
+  sellingDiscount: '',
+  quantity: '',
+  lowStockQuantity: '',
+  catalogueNumber: '',
+  primaryUnit: '',
+  secondaryUnit: '',
+  conversionFactor: ''
+};
+
+function buildMrpSaveFields(enabled, mrp, discount, price) {
+  if (!enabled) {
+    return {
+      mrp: null,
+      discount: null,
+      price: parseOptionalFloat(price)
+    };
+  }
+  return {
+    mrp: parseOptionalFloat(mrp),
+    discount: parseOptionalFloat(discount),
+    price: parseOptionalFloat(price)
+  };
+}
+
+function MrpField({ label, value, onChange, onWheel, required = false, placeholder = '' }) {
+  return (
+    <div className="form-group" style={{ marginBottom: 0 }}>
+      <label>{label}</label>
+      <input
+        type="number"
+        value={value}
+        onChange={onChange}
+        onWheel={onWheel}
+        step="0.01"
+        min="0"
+        placeholder={placeholder}
+        required={required}
+      />
+    </div>
+  );
+}
+
+function MrpPricingSection({
+  showToggles = true,
+  enablePp,
+  enableSp,
+  onTogglePp,
+  onToggleSp,
+  purchaseMrp,
+  purchaseDiscount,
+  purchasePrice,
+  sellingMrp,
+  sellingDiscount,
+  sellingPrice,
+  onPurchaseChange,
+  onSellingChange,
+  onWheel,
+  sellingPriceRequired = false
+}) {
+  const bothMrp = enablePp && enableSp;
+
+  return (
+    <div style={{ marginBottom: '1rem' }}>
+      {showToggles && (
+        <div
+          className="form-row"
+          style={{ marginBottom: bothMrp || enablePp || enableSp ? '0.75rem' : 0 }}
+        >
+          <div className="form-group" style={{ marginBottom: 0 }}>
+            <label style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer' }}>
+              <input
+                type="checkbox"
+                checked={enablePp}
+                onChange={onTogglePp}
+                style={{ width: 'auto', margin: 0 }}
+              />
+              <span><strong>Enable PP MRP System</strong></span>
+            </label>
+          </div>
+          <div className="form-group" style={{ marginBottom: 0 }}>
+            <label style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer' }}>
+              <input
+                type="checkbox"
+                checked={enableSp}
+                onChange={onToggleSp}
+                style={{ width: 'auto', margin: 0 }}
+              />
+              <span><strong>Enable Selling Price MRP System</strong></span>
+            </label>
+          </div>
+        </div>
+      )}
+
+      {bothMrp ? (
+        <div className="form-row-6">
+          <MrpField
+            label="MRP (₹)"
+            value={purchaseMrp}
+            onChange={(e) => onPurchaseChange('mrp', e.target.value)}
+            onWheel={onWheel}
+          />
+          <MrpField
+            label="Discount (%)"
+            value={purchaseDiscount}
+            onChange={(e) => onPurchaseChange('discount', e.target.value)}
+            onWheel={onWheel}
+          />
+          <MrpField
+            label="Purchase Price (₹)"
+            value={purchasePrice}
+            onChange={(e) => onPurchaseChange('price', e.target.value)}
+            onWheel={onWheel}
+          />
+          <MrpField
+            label="MRP (₹)"
+            value={sellingMrp}
+            onChange={(e) => onSellingChange('mrp', e.target.value)}
+            onWheel={onWheel}
+          />
+          <MrpField
+            label="Discount (%)"
+            value={sellingDiscount}
+            onChange={(e) => onSellingChange('discount', e.target.value)}
+            onWheel={onWheel}
+          />
+          <MrpField
+            label="Selling Price (₹) *"
+            value={sellingPrice}
+            onChange={(e) => onSellingChange('price', e.target.value)}
+            onWheel={onWheel}
+            required={sellingPriceRequired}
+          />
+        </div>
+      ) : enablePp ? (
+        <div className="form-row-4">
+          <MrpField
+            label="MRP (₹)"
+            value={purchaseMrp}
+            onChange={(e) => onPurchaseChange('mrp', e.target.value)}
+            onWheel={onWheel}
+          />
+          <MrpField
+            label="Discount (%)"
+            value={purchaseDiscount}
+            onChange={(e) => onPurchaseChange('discount', e.target.value)}
+            onWheel={onWheel}
+          />
+          <MrpField
+            label="Purchase Price (₹)"
+            value={purchasePrice}
+            onChange={(e) => onPurchaseChange('price', e.target.value)}
+            onWheel={onWheel}
+          />
+          <MrpField
+            label="Selling Price (₹) *"
+            value={sellingPrice}
+            onChange={(e) => onSellingChange('price', e.target.value)}
+            onWheel={onWheel}
+            required={sellingPriceRequired}
+          />
+        </div>
+      ) : enableSp ? (
+        <div className="form-row-4">
+          <MrpField
+            label="Purchase Price (₹)"
+            value={purchasePrice}
+            onChange={(e) => onPurchaseChange('price', e.target.value)}
+            onWheel={onWheel}
+            placeholder="Cost price"
+          />
+          <MrpField
+            label="MRP (₹)"
+            value={sellingMrp}
+            onChange={(e) => onSellingChange('mrp', e.target.value)}
+            onWheel={onWheel}
+          />
+          <MrpField
+            label="Discount (%)"
+            value={sellingDiscount}
+            onChange={(e) => onSellingChange('discount', e.target.value)}
+            onWheel={onWheel}
+          />
+          <MrpField
+            label="Selling Price (₹) *"
+            value={sellingPrice}
+            onChange={(e) => onSellingChange('price', e.target.value)}
+            onWheel={onWheel}
+            required={sellingPriceRequired}
+          />
+        </div>
+      ) : (
+        <div className="form-row">
+          <MrpField
+            label="Purchase Price (₹)"
+            value={purchasePrice}
+            onChange={(e) => onPurchaseChange('price', e.target.value)}
+            onWheel={onWheel}
+            placeholder="Cost price"
+          />
+          <MrpField
+            label="Selling Price (₹) *"
+            value={sellingPrice}
+            onChange={(e) => onSellingChange('price', e.target.value)}
+            onWheel={onWheel}
+            required={sellingPriceRequired}
+          />
+        </div>
+      )}
+    </div>
+  );
+}
 
 function StockManagement() {
   const [products, setProducts] = useState([]);
   const [showAddForm, setShowAddForm] = useState(false);
   const [editingProduct, setEditingProduct] = useState(null);
-  const [formData, setFormData] = useState({
-    name: '',
-    price: '',
-    purchasePrice: '',
-    quantity: '',
-    category: '',
-    subcategory: '',
-    hsnCode: '',
-    catalogueNumber: '',
-    lowStockQuantity: '',
-    unit: '',
-    primaryUnit: '',
-    secondaryUnit: '',
-    conversionFactor: ''
-  });
+  const [formData, setFormData] = useState({ ...EMPTY_FORM_DATA });
   const [loading, setLoading] = useState(false);
   const [initialLoading, setInitialLoading] = useState(true);
   const [message, setMessage] = useState({ type: '', text: '' });
@@ -47,6 +273,8 @@ function StockManagement() {
   const [variations, setVariations] = useState([]);
   /** Per product: when true, variations use primary/secondary units and POs use secondary qty. */
   const [enableDualUnit, setEnableDualUnit] = useState(true);
+  const [enablePpMrpSystem, setEnablePpMrpSystem] = useState(false);
+  const [enableSpMrpSystem, setEnableSpMrpSystem] = useState(false);
   const [openVariationProductId, setOpenVariationProductId] = useState(null);
   /** Per-product setting: applies to all variations of this product on bills and POs */
   const [productSizeNamePosition, setProductSizeNamePosition] = useState('left');
@@ -112,6 +340,105 @@ function StockManagement() {
     });
   };
 
+  const handlePurchaseMrpChange = (field, value) => {
+    const updated = applyMrpFieldChange(field, value, {
+      mrp: formData.purchaseMrp,
+      discount: formData.purchaseDiscount,
+      price: formData.purchasePrice
+    });
+
+    let sellingMrp = formData.sellingMrp;
+    let sellingPrice = formData.price;
+
+    if (field === 'mrp') {
+      sellingMrp = value;
+      const sellingUpdated = applyMrpFieldChange('mrp', value, {
+        mrp: value,
+        discount: formData.sellingDiscount,
+        price: formData.price
+      });
+      sellingPrice = sellingUpdated.price;
+    }
+
+    setFormData({
+      ...formData,
+      purchaseMrp: updated.mrp,
+      purchaseDiscount: updated.discount,
+      purchasePrice: updated.price,
+      sellingMrp,
+      price: sellingPrice
+    });
+  };
+
+  const handleSellingMrpChange = (field, value) => {
+    const updated = applyMrpFieldChange(field, value, {
+      mrp: formData.sellingMrp,
+      discount: formData.sellingDiscount,
+      price: formData.price
+    });
+
+    let purchaseMrp = formData.purchaseMrp;
+    let purchasePrice = formData.purchasePrice;
+
+    if (field === 'mrp') {
+      purchaseMrp = value;
+      const purchaseUpdated = applyMrpFieldChange('mrp', value, {
+        mrp: value,
+        discount: formData.purchaseDiscount,
+        price: formData.purchasePrice
+      });
+      purchasePrice = purchaseUpdated.price;
+    }
+
+    setFormData({
+      ...formData,
+      sellingMrp: updated.mrp,
+      sellingDiscount: updated.discount,
+      price: updated.price,
+      purchaseMrp,
+      purchasePrice
+    });
+  };
+
+  const handleVariationMrpChange = (index, type, field, value) => {
+    const variation = variations[index];
+    const mrpKey = type === 'purchase' ? 'purchaseMrp' : 'sellingMrp';
+    const otherMrpKey = type === 'purchase' ? 'sellingMrp' : 'purchaseMrp';
+    const discountKey = type === 'purchase' ? 'purchaseDiscount' : 'sellingDiscount';
+    const otherDiscountKey = type === 'purchase' ? 'sellingDiscount' : 'purchaseDiscount';
+    const priceKey = type === 'purchase' ? 'purchasePrice' : 'price';
+    const otherPriceKey = type === 'purchase' ? 'price' : 'purchasePrice';
+
+    const updated = applyMrpFieldChange(field, value, {
+      mrp: variation[mrpKey] || '',
+      discount: variation[discountKey] || '',
+      price: variation[priceKey] || ''
+    });
+
+    const patch = {
+      [mrpKey]: updated.mrp,
+      [discountKey]: updated.discount,
+      [priceKey]: updated.price
+    };
+
+    if (field === 'mrp') {
+      patch[otherMrpKey] = value;
+      const otherUpdated = applyMrpFieldChange('mrp', value, {
+        mrp: value,
+        discount: variation[otherDiscountKey] || '',
+        price: variation[otherPriceKey] || ''
+      });
+      patch[otherPriceKey] = otherUpdated.price;
+    }
+
+    const updatedVariations = [...variations];
+    updatedVariations[index] = {
+      ...updatedVariations[index],
+      ...patch
+    };
+    setVariations(updatedVariations);
+  };
+
   // Prevent number input from changing value on scroll
   const handleNumberInputWheel = (e) => {
     e.target.blur();
@@ -144,31 +471,64 @@ function StockManagement() {
         category: categoryName,
         subcategory: formData.subcategory?.trim() || '',
         hsnCode: formData.hsnCode?.trim() || '',
-        purchasePrice: formData.purchasePrice ? parseFloat(formData.purchasePrice) : null,
+        enablePpMrpSystem: Boolean(enablePpMrpSystem),
+        enableSpMrpSystem: Boolean(enableSpMrpSystem),
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp()
       };
+
+      const ppFields = buildMrpSaveFields(
+        enablePpMrpSystem,
+        formData.purchaseMrp,
+        formData.purchaseDiscount,
+        formData.purchasePrice
+      );
+      productData.purchasePrice = ppFields.price;
+      if (enablePpMrpSystem) {
+        productData.purchaseMrp = ppFields.mrp;
+        productData.purchaseDiscount = ppFields.discount;
+      }
 
       // If variations are enabled, save variations instead of single price/quantity
       if (variationEnabled && variations.length > 0) {
         // Validate variations
         const validVariations = variations
           .filter(v => v.size && v.price && v.quantity)
-          .map(v => ({
-            size: v.size.trim(),
-            price: parseFloat(v.price),
-            purchasePrice: v.purchasePrice ? parseFloat(v.purchasePrice) : null,
-            quantity: parseInt(v.quantity),
-            lowStockQuantity: v.lowStockQuantity ? parseInt(v.lowStockQuantity) : null,
-            catalogueNumber: v.catalogueNumber?.trim() || '',
-            ...(enableDualUnit
-              ? {
-                  primaryUnit: v.primaryUnit?.trim() || '',
-                  secondaryUnit: v.secondaryUnit?.trim() || '',
-                  conversionFactor: v.conversionFactor ? parseFloat(v.conversionFactor) : null
-                }
-              : {})
-          }));
+          .map(v => {
+            const pp = buildMrpSaveFields(
+              enablePpMrpSystem,
+              v.purchaseMrp,
+              v.purchaseDiscount,
+              v.purchasePrice
+            );
+            const sp = buildMrpSaveFields(
+              enableSpMrpSystem,
+              v.sellingMrp,
+              v.sellingDiscount,
+              v.price
+            );
+            return {
+              size: v.size.trim(),
+              price: sp.price,
+              purchasePrice: pp.price,
+              quantity: parseInt(v.quantity),
+              lowStockQuantity: v.lowStockQuantity ? parseInt(v.lowStockQuantity) : null,
+              catalogueNumber: v.catalogueNumber?.trim() || '',
+              ...(enablePpMrpSystem
+                ? { purchaseMrp: pp.mrp, purchaseDiscount: pp.discount }
+                : {}),
+              ...(enableSpMrpSystem
+                ? { sellingMrp: sp.mrp, sellingDiscount: sp.discount }
+                : {}),
+              ...(enableDualUnit
+                ? {
+                    primaryUnit: v.primaryUnit?.trim() || '',
+                    secondaryUnit: v.secondaryUnit?.trim() || '',
+                    conversionFactor: v.conversionFactor ? parseFloat(v.conversionFactor) : null
+                  }
+                : {})
+            };
+          });
         
         if (validVariations.length === 0) {
           setMessage({ type: 'error', text: 'Please add at least one valid variation with size, price, and quantity' });
@@ -197,7 +557,17 @@ function StockManagement() {
         productData.enableDualUnit = Boolean(enableDualUnit);
       } else {
         // Single product without variations
-        productData.price = parseFloat(formData.price);
+        const spFields = buildMrpSaveFields(
+          enableSpMrpSystem,
+          formData.sellingMrp,
+          formData.sellingDiscount,
+          formData.price
+        );
+        productData.price = spFields.price;
+        if (enableSpMrpSystem) {
+          productData.sellingMrp = spFields.mrp;
+          productData.sellingDiscount = spFields.discount;
+        }
         productData.quantity = parseInt(formData.quantity);
         productData.catalogueNumber = formData.catalogueNumber?.trim() || '';
         productData.lowStockQuantity = formData.lowStockQuantity ? parseInt(formData.lowStockQuantity) : null;
@@ -217,26 +587,14 @@ function StockManagement() {
 
       await addDoc(collection(db, 'products'), productData);
       
-      setFormData({
-        name: '',
-        price: '',
-        purchasePrice: '',
-        quantity: '',
-        category: '',
-        subcategory: '',
-        hsnCode: '',
-        catalogueNumber: '',
-        lowStockQuantity: '',
-        unit: '',
-        primaryUnit: '',
-        secondaryUnit: '',
-        conversionFactor: ''
-      });
+      setFormData({ ...EMPTY_FORM_DATA });
       setSelectedCategoryId('');
       setVariationEnabled(true);
       setVariations([]);
       setProductSizeNamePosition('left');
       setEnableDualUnit(true);
+      setEnablePpMrpSystem(false);
+      setEnableSpMrpSystem(false);
       setShowAddForm(false);
       setMessage({ type: 'success', text: 'Product added successfully!' });
       
@@ -268,6 +626,10 @@ function StockManagement() {
       name: product.name || '',
       price: product.price?.toString() || '',
       purchasePrice: product.purchasePrice?.toString() || '',
+      purchaseMrp: product.purchaseMrp?.toString() || '',
+      purchaseDiscount: product.purchaseDiscount?.toString() || '',
+      sellingMrp: product.sellingMrp?.toString() || '',
+      sellingDiscount: product.sellingDiscount?.toString() || '',
       quantity: product.quantity?.toString() || '',
       category: product.category || '',
       subcategory: product.subcategory || '',
@@ -286,6 +648,10 @@ function StockManagement() {
         size: v.size || '',
         price: v.price?.toString() || '',
         purchasePrice: v.purchasePrice?.toString() || '',
+        purchaseMrp: v.purchaseMrp?.toString() || '',
+        purchaseDiscount: v.purchaseDiscount?.toString() || '',
+        sellingMrp: v.sellingMrp?.toString() || '',
+        sellingDiscount: v.sellingDiscount?.toString() || '',
         quantity: v.quantity?.toString() || '',
         lowStockQuantity: v.lowStockQuantity?.toString() || '',
         catalogueNumber: v.catalogueNumber || '',
@@ -298,6 +664,8 @@ function StockManagement() {
       setVariations([]);
     }
     setEnableDualUnit(product.enableDualUnit === undefined ? true : Boolean(product.enableDualUnit));
+    setEnablePpMrpSystem(Boolean(product.enablePpMrpSystem));
+    setEnableSpMrpSystem(Boolean(product.enableSpMrpSystem));
     setProductSizeNamePosition(normalizeSizeNamePosition(product.sizeNamePosition));
     // try to find category id by name
     const matched = categories.find((c) => c.name === (product.category || ''));
@@ -334,30 +702,66 @@ function StockManagement() {
         category: categoryName,
         subcategory: formData.subcategory?.trim() || '',
         hsnCode: formData.hsnCode?.trim() || '',
-        purchasePrice: formData.purchasePrice ? parseFloat(formData.purchasePrice) : null,
+        enablePpMrpSystem: Boolean(enablePpMrpSystem),
+        enableSpMrpSystem: Boolean(enableSpMrpSystem),
         updatedAt: serverTimestamp()
       };
+
+      const ppFields = buildMrpSaveFields(
+        enablePpMrpSystem,
+        formData.purchaseMrp,
+        formData.purchaseDiscount,
+        formData.purchasePrice
+      );
+      updateData.purchasePrice = ppFields.price;
+      if (enablePpMrpSystem) {
+        updateData.purchaseMrp = ppFields.mrp;
+        updateData.purchaseDiscount = ppFields.discount;
+      } else {
+        updateData.purchaseMrp = deleteField();
+        updateData.purchaseDiscount = deleteField();
+      }
 
       // If variations are enabled, save variations instead of single price/quantity
       if (variationEnabled && variations.length > 0) {
         // Validate variations
         const validVariations = variations
           .filter(v => v.size && v.price && v.quantity)
-          .map(v => ({
-            size: v.size.trim(),
-            price: parseFloat(v.price),
-            purchasePrice: v.purchasePrice ? parseFloat(v.purchasePrice) : null,
-            quantity: parseInt(v.quantity),
-            lowStockQuantity: v.lowStockQuantity ? parseInt(v.lowStockQuantity) : null,
-            catalogueNumber: v.catalogueNumber?.trim() || '',
-            ...(enableDualUnit
-              ? {
-                  primaryUnit: v.primaryUnit?.trim() || '',
-                  secondaryUnit: v.secondaryUnit?.trim() || '',
-                  conversionFactor: v.conversionFactor ? parseFloat(v.conversionFactor) : null
-                }
-              : {})
-          }));
+          .map(v => {
+            const pp = buildMrpSaveFields(
+              enablePpMrpSystem,
+              v.purchaseMrp,
+              v.purchaseDiscount,
+              v.purchasePrice
+            );
+            const sp = buildMrpSaveFields(
+              enableSpMrpSystem,
+              v.sellingMrp,
+              v.sellingDiscount,
+              v.price
+            );
+            return {
+              size: v.size.trim(),
+              price: sp.price,
+              purchasePrice: pp.price,
+              quantity: parseInt(v.quantity),
+              lowStockQuantity: v.lowStockQuantity ? parseInt(v.lowStockQuantity) : null,
+              catalogueNumber: v.catalogueNumber?.trim() || '',
+              ...(enablePpMrpSystem
+                ? { purchaseMrp: pp.mrp, purchaseDiscount: pp.discount }
+                : {}),
+              ...(enableSpMrpSystem
+                ? { sellingMrp: sp.mrp, sellingDiscount: sp.discount }
+                : {}),
+              ...(enableDualUnit
+                ? {
+                    primaryUnit: v.primaryUnit?.trim() || '',
+                    secondaryUnit: v.secondaryUnit?.trim() || '',
+                    conversionFactor: v.conversionFactor ? parseFloat(v.conversionFactor) : null
+                  }
+                : {})
+            };
+          });
         
         if (validVariations.length === 0) {
           setMessage({ type: 'error', text: 'Please add at least one valid variation with size, price, and quantity' });
@@ -386,7 +790,20 @@ function StockManagement() {
         updateData.enableDualUnit = Boolean(enableDualUnit);
       } else {
         // Single product without variations
-        updateData.price = parseFloat(formData.price);
+        const spFields = buildMrpSaveFields(
+          enableSpMrpSystem,
+          formData.sellingMrp,
+          formData.sellingDiscount,
+          formData.price
+        );
+        updateData.price = spFields.price;
+        if (enableSpMrpSystem) {
+          updateData.sellingMrp = spFields.mrp;
+          updateData.sellingDiscount = spFields.discount;
+        } else {
+          updateData.sellingMrp = deleteField();
+          updateData.sellingDiscount = deleteField();
+        }
         updateData.quantity = parseInt(formData.quantity);
         updateData.catalogueNumber = formData.catalogueNumber?.trim() || '';
         updateData.lowStockQuantity = formData.lowStockQuantity ? parseInt(formData.lowStockQuantity) : null;
@@ -413,26 +830,14 @@ function StockManagement() {
 
       await updateDoc(productRef, updateData);
       
-      setFormData({
-        name: '',
-        price: '',
-        purchasePrice: '',
-        quantity: '',
-        category: '',
-        subcategory: '',
-        hsnCode: '',
-        catalogueNumber: '',
-        lowStockQuantity: '',
-        unit: '',
-        primaryUnit: '',
-        secondaryUnit: '',
-        conversionFactor: ''
-      });
+      setFormData({ ...EMPTY_FORM_DATA });
       setSelectedCategoryId('');
       setVariationEnabled(true);
       setVariations([]);
       setProductSizeNamePosition('left');
       setEnableDualUnit(true);
+      setEnablePpMrpSystem(false);
+      setEnableSpMrpSystem(false);
       setShowAddForm(false);
       setEditingProduct(null);
       setMessage({ type: 'success', text: 'Product updated successfully!' });
@@ -445,21 +850,7 @@ function StockManagement() {
   };
 
   const handleCancel = () => {
-    setFormData({
-      name: '',
-      price: '',
-      purchasePrice: '',
-      quantity: '',
-      category: '',
-      subcategory: '',
-      hsnCode: '',
-      catalogueNumber: '',
-      lowStockQuantity: '',
-      unit: '',
-      primaryUnit: '',
-      secondaryUnit: '',
-      conversionFactor: ''
-    });
+    setFormData({ ...EMPTY_FORM_DATA });
     setShowAddForm(false);
     setEditingProduct(null);
     setMessage({ type: '', text: '' });
@@ -467,11 +858,13 @@ function StockManagement() {
     setVariations([]);
     setProductSizeNamePosition('left');
     setEnableDualUnit(true);
+    setEnablePpMrpSystem(false);
+    setEnableSpMrpSystem(false);
   };
 
   // Variation management helpers
   const handleAddVariation = () => {
-    setVariations([...variations, { size: '', price: '', purchasePrice: '', quantity: '', lowStockQuantity: '', catalogueNumber: '', primaryUnit: formData.unit || '', secondaryUnit: '', conversionFactor: '' }]);
+    setVariations([...variations, { ...EMPTY_VARIATION, primaryUnit: formData.unit || '' }]);
   };
 
   const handleRemoveVariation = (index) => {
@@ -706,32 +1099,10 @@ function StockManagement() {
               setVariationEnabled(true);
               setProductSizeNamePosition('left');
               setEnableDualUnit(true);
-              setVariations([{
-                size: '',
-                price: '',
-                purchasePrice: '',
-                quantity: '',
-                lowStockQuantity: '',
-                catalogueNumber: '',
-                primaryUnit: '',
-                secondaryUnit: '',
-                conversionFactor: ''
-              }]);
-              setFormData({
-                name: '',
-                price: '',
-                purchasePrice: '',
-                quantity: '',
-                category: '',
-                subcategory: '',
-                hsnCode: '',
-                catalogueNumber: '',
-                lowStockQuantity: '',
-                unit: '',
-                primaryUnit: '',
-                secondaryUnit: '',
-                conversionFactor: ''
-              });
+              setEnablePpMrpSystem(false);
+              setEnableSpMrpSystem(false);
+              setVariations([{ ...EMPTY_VARIATION }]);
+              setFormData({ ...EMPTY_FORM_DATA });
               setSelectedCategoryId('');
               setSubcategories([]);
               // Scroll to form after a short delay to ensure DOM is updated
@@ -836,7 +1207,7 @@ function StockManagement() {
                             setVariations([]);
                           } else {
                             if (variations.length === 0) {
-                              setVariations([{ size: '', price: '', purchasePrice: '', quantity: '', lowStockQuantity: '', catalogueNumber: '', primaryUnit: formData.unit || '', secondaryUnit: '', conversionFactor: '' }]);
+                              setVariations([{ ...EMPTY_VARIATION, primaryUnit: formData.unit || '' }]);
                             }
                             setEnableDualUnit(true);
                           }
@@ -931,11 +1302,8 @@ function StockManagement() {
                     />
                   </div>
                 </div>
-                <div
-                  className="form-row"
-                  style={{ display: 'flex', flexWrap: 'wrap', gap: '16px', alignItems: 'flex-start' }}
-                >
-                  <div className="form-group" style={{ flex: '1 1 180px', marginBottom: 0 }}>
+                <div className="form-options-row">
+                  <div className="form-group toggle-group">
                     <label style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
                       <input
                         type="checkbox"
@@ -946,7 +1314,7 @@ function StockManagement() {
                             setVariations([]);
                           } else {
                             if (variations.length === 0) {
-                              setVariations([{ size: '', price: '', purchasePrice: '', quantity: '', lowStockQuantity: '', catalogueNumber: '', primaryUnit: formData.unit || '', secondaryUnit: '', conversionFactor: '' }]);
+                              setVariations([{ ...EMPTY_VARIATION, primaryUnit: formData.unit || '' }]);
                             }
                             setEnableDualUnit(true);
                           }
@@ -956,7 +1324,7 @@ function StockManagement() {
                       <span>Enable Variations</span>
                     </label>
                   </div>
-                  <div className="form-group" style={{ flex: '1 1 240px', marginBottom: 0 }}>
+                  <div className="form-group toggle-group">
                     <label style={{ display: 'flex', alignItems: 'flex-start', gap: '10px', cursor: 'pointer' }}>
                       <input
                         type="checkbox"
@@ -972,7 +1340,9 @@ function StockManagement() {
                       </span>
                     </label>
                   </div>
-                  <div className="form-group" style={{ flex: '1 1 160px', marginBottom: 0 }}>
+                </div>
+                <div className="form-row" style={{ gridTemplateColumns: '1fr' }}>
+                  <div className="form-group" style={{ maxWidth: '220px', marginBottom: 0 }}>
                     <label>Quantity *</label>
                     <input
                       type="number"
@@ -985,34 +1355,22 @@ function StockManagement() {
                     />
                   </div>
                 </div>
-                <div className="form-row">
-                  <div className="form-group">
-                    <label>Purchase Price</label>
-                    <input
-                      type="number"
-                      name="purchasePrice"
-                      value={formData.purchasePrice}
-                      onChange={handleInputChange}
-                      onWheel={handleNumberInputWheel}
-                      step="0.01"
-                      min="0"
-                      placeholder="Cost price"
-                    />
-                  </div>
-                  <div className="form-group">
-                    <label>Price *</label>
-                    <input
-                      type="number"
-                      name="price"
-                      value={formData.price}
-                      onChange={handleInputChange}
-                      onWheel={handleNumberInputWheel}
-                      step="0.01"
-                      min="0"
-                      required={!variationEnabled}
-                    />
-                  </div>
-                </div>
+                <MrpPricingSection
+                  enablePp={enablePpMrpSystem}
+                  enableSp={enableSpMrpSystem}
+                  onTogglePp={(e) => setEnablePpMrpSystem(e.target.checked)}
+                  onToggleSp={(e) => setEnableSpMrpSystem(e.target.checked)}
+                  purchaseMrp={formData.purchaseMrp}
+                  purchaseDiscount={formData.purchaseDiscount}
+                  purchasePrice={formData.purchasePrice}
+                  sellingMrp={formData.sellingMrp}
+                  sellingDiscount={formData.sellingDiscount}
+                  sellingPrice={formData.price}
+                  onPurchaseChange={handlePurchaseMrpChange}
+                  onSellingChange={handleSellingMrpChange}
+                  onWheel={handleNumberInputWheel}
+                  sellingPriceRequired={!variationEnabled}
+                />
                 <div className="form-row">
                   <div className="form-group">
                     <label>Low Stock Quantity</label>
@@ -1038,7 +1396,7 @@ function StockManagement() {
                   </div>
                 </div>
                 {enableDualUnit && (
-                  <div className="form-row" style={{ marginTop: '10px' }}>
+                  <div className="form-row" style={{ gridTemplateColumns: 'repeat(3, 1fr)' }}>
                     <div className="form-group">
                       <label>Primary Unit *</label>
                       <input
@@ -1143,6 +1501,38 @@ function StockManagement() {
                     </button>
                   </div>
                 </div>
+                <div
+                  style={{
+                    marginBottom: '14px',
+                    padding: '10px 12px',
+                    background: '#f9f9f9',
+                    borderRadius: '6px',
+                    border: '1px solid #ddd',
+                    display: 'flex',
+                    flexWrap: 'wrap',
+                    gap: '20px',
+                    alignItems: 'center'
+                  }}
+                >
+                  <label style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer' }}>
+                    <input
+                      type="checkbox"
+                      checked={enablePpMrpSystem}
+                      onChange={(e) => setEnablePpMrpSystem(e.target.checked)}
+                      style={{ width: 'auto', margin: 0 }}
+                    />
+                    <span><strong>Enable PP MRP System</strong></span>
+                  </label>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer' }}>
+                    <input
+                      type="checkbox"
+                      checked={enableSpMrpSystem}
+                      onChange={(e) => setEnableSpMrpSystem(e.target.checked)}
+                      style={{ width: 'auto', margin: 0 }}
+                    />
+                    <span><strong>Enable Selling Price MRP System</strong></span>
+                  </label>
+                </div>
                 
                 {variations.length === 0 ? (
                   <p style={{ color: '#666', fontStyle: 'italic' }}>No variations added. Click "Add New Variation" button below to add one.</p>
@@ -1187,7 +1577,9 @@ function StockManagement() {
                               required
                             />
                           </div>
-                          <div className="form-group">
+                        </div>
+                        <div className="form-row" style={{ gridTemplateColumns: '1fr' }}>
+                          <div className="form-group" style={{ maxWidth: '220px', marginBottom: 0 }}>
                             <label>Quantity *</label>
                             <input
                               type="number"
@@ -1195,36 +1587,25 @@ function StockManagement() {
                               onChange={(e) => handleVariationChange(index, 'quantity', e.target.value)}
                               onWheel={handleNumberInputWheel}
                               min="0"
-                              placeholder="0"
-                              required
-                            />
-                          </div>
-                          <div className="form-group">
-                            <label>Purchase Price</label>
-                            <input
-                              type="number"
-                              value={variation.purchasePrice || ''}
-                              onChange={(e) => handleVariationChange(index, 'purchasePrice', e.target.value)}
-                              onWheel={handleNumberInputWheel}
-                              step="0.01"
-                              min="0"
-                              placeholder="Cost price"
-                            />
-                          </div>
-                          <div className="form-group">
-                            <label>Price *</label>
-                            <input
-                              type="number"
-                              value={variation.price}
-                              onChange={(e) => handleVariationChange(index, 'price', e.target.value)}
-                              onWheel={handleNumberInputWheel}
-                              step="0.01"
-                              min="0"
-                              placeholder="0.00"
                               required
                             />
                           </div>
                         </div>
+                        <MrpPricingSection
+                          showToggles={false}
+                          enablePp={enablePpMrpSystem}
+                          enableSp={enableSpMrpSystem}
+                          purchaseMrp={variation.purchaseMrp || ''}
+                          purchaseDiscount={variation.purchaseDiscount || ''}
+                          purchasePrice={variation.purchasePrice || ''}
+                          sellingMrp={variation.sellingMrp || ''}
+                          sellingDiscount={variation.sellingDiscount || ''}
+                          sellingPrice={variation.price || ''}
+                          onPurchaseChange={(field, value) => handleVariationMrpChange(index, 'purchase', field, value)}
+                          onSellingChange={(field, value) => handleVariationMrpChange(index, 'selling', field, value)}
+                          onWheel={handleNumberInputWheel}
+                          sellingPriceRequired
+                        />
                         <div className="form-row">
                           <div className="form-group">
                             <label>Low Stock Quantity</label>
@@ -1248,7 +1629,17 @@ function StockManagement() {
                           </div>
                         </div>
                         {enableDualUnit && (
-                          <div className="form-row">
+                          <div className="form-row" style={{ gridTemplateColumns: 'repeat(3, 1fr)' }}>
+                            <div className="form-group">
+                              <label>Primary Unit *</label>
+                              <input
+                                type="text"
+                                value={variation.primaryUnit || ''}
+                                onChange={(e) => handleVariationChange(index, 'primaryUnit', e.target.value)}
+                                placeholder="e.g., piece"
+                                required={enableDualUnit}
+                              />
+                            </div>
                             <div className="form-group">
                               <label>Secondary Unit *</label>
                               <input
@@ -1269,16 +1660,6 @@ function StockManagement() {
                                 min="0.0001"
                                 step="0.0001"
                                 placeholder="e.g., 20"
-                                required={enableDualUnit}
-                              />
-                            </div>
-                            <div className="form-group">
-                              <label>Primary Unit *</label>
-                              <input
-                                type="text"
-                                value={variation.primaryUnit || ''}
-                                onChange={(e) => handleVariationChange(index, 'primaryUnit', e.target.value)}
-                                placeholder="e.g., piece"
                                 required={enableDualUnit}
                               />
                             </div>
