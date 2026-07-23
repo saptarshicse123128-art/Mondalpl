@@ -237,7 +237,7 @@
 }
 
 /* Responsive Design */
-@media (max-width: 768px) {
+@media (max-width: 1024px) {
   .users-container {
     padding: 15px;
   }

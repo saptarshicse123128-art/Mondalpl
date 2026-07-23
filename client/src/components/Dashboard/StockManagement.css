@@ -361,7 +361,7 @@ tr:hover {
   border-color: #bbb;
 }
 
-@media (max-width: 768px) {
+@media (max-width: 1024px) {
   .stock-management {
     padding: 1rem;
   }
@@ -380,13 +380,6 @@ tr:hover {
     width: 100%;
     font-size: 0.9rem;
     padding: 0.6rem 1rem;
-  }
-
-  .form-row,
-  .form-row-3,
-  .form-row-4,
-  .form-row-6 {
-    grid-template-columns: 1fr;
   }
   
   .add-product-form {
@@ -427,6 +420,16 @@ tr:hover {
 
   .edit-btn, .delete-btn {
     width: 100%;
+  }
+}
+
+/* Mobile-only collapse of multi-column forms */
+@media (max-width: 768px) {
+  .form-row,
+  .form-row-3,
+  .form-row-4,
+  .form-row-6 {
+    grid-template-columns: 1fr;
   }
 }
 

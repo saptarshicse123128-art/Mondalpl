@@ -1710,7 +1710,7 @@ function PurchaseOrder() {
     <div className="analytics-container">
       <h2>📥 Purchase Order / Low Stock Items</h2>
 
-      <div style={{ marginBottom: '15px', display: 'flex', justifyContent: 'space-between', gap: '10px' }}>
+      <div style={{ marginBottom: '15px', display: 'flex', justifyContent: 'space-between', gap: '10px', flexWrap: 'wrap' }}>
         <button
           type="button"
           className="low-stock-more-btn"

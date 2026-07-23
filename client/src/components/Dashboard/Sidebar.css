@@ -11,16 +11,11 @@
   box-shadow: 2px 0 10px rgba(0, 0, 0, 0.1);
   z-index: 1000;
   transition: transform 0.3s ease-in-out;
+  transform: translateX(-100%);
 }
 
-@media (max-width: 768px) {
-  .sidebar {
-    transform: translateX(-100%);
-  }
-
-  .sidebar.sidebar-open {
-    transform: translateX(0);
-  }
+.sidebar.sidebar-open {
+  transform: translateX(0);
 }
 
 .sidebar-header {
@@ -80,5 +75,46 @@
 
 .logout-button:hover {
   background: #c0392b;
+}
+
+/* GST Dropdown styles */
+.dropdown-container {
+  display: flex;
+  flex-direction: column;
+}
+
+.dropdown-toggle {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  width: 100%;
+  background: none;
+  border: none;
+  font-family: inherit;
+  font-size: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+
+.dropdown-arrow {
+  font-size: 0.8rem;
+  transition: transform 0.2s ease;
+  color: rgba(255, 255, 255, 0.6);
+}
+
+.dropdown-arrow.open {
+  transform: rotate(90deg);
+}
+
+.dropdown-menu-list {
+  background: rgba(0, 0, 0, 0.15);
+  padding: 0.25rem 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.dropdown-menu-list .nav-item {
+  padding-left: 2.5rem;
+  font-size: 0.95rem;
 }
 

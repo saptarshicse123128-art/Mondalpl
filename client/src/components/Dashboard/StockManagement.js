@@ -85,11 +85,8 @@ function MrpField({ label, value, onChange, onWheel, required = false, placehold
 }
 
 function MrpPricingSection({
-  showToggles = true,
   enablePp,
   enableSp,
-  onTogglePp,
-  onToggleSp,
   purchaseMrp,
   purchaseDiscount,
   purchasePrice,
@@ -105,35 +102,6 @@ function MrpPricingSection({
 
   return (
     <div style={{ marginBottom: '1rem' }}>
-      {showToggles && (
-        <div
-          className="form-row"
-          style={{ marginBottom: bothMrp || enablePp || enableSp ? '0.75rem' : 0 }}
-        >
-          <div className="form-group" style={{ marginBottom: 0 }}>
-            <label style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer' }}>
-              <input
-                type="checkbox"
-                checked={enablePp}
-                onChange={onTogglePp}
-                style={{ width: 'auto', margin: 0 }}
-              />
-              <span><strong>Enable PP MRP System</strong></span>
-            </label>
-          </div>
-          <div className="form-group" style={{ marginBottom: 0 }}>
-            <label style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer' }}>
-              <input
-                type="checkbox"
-                checked={enableSp}
-                onChange={onToggleSp}
-                style={{ width: 'auto', margin: 0 }}
-              />
-              <span><strong>Enable Selling Price MRP System</strong></span>
-            </label>
-          </div>
-        </div>
-      )}
 
       {bothMrp ? (
         <div className="form-row-6">
@@ -269,10 +237,10 @@ function StockManagement() {
   const [showCategoryPanel, setShowCategoryPanel] = useState(false);
   const [newCategoryName, setNewCategoryName] = useState('');
   const [newSubcategoryName, setNewSubcategoryName] = useState('');
-  const [variationEnabled, setVariationEnabled] = useState(true);
+  const [variationEnabled, setVariationEnabled] = useState(false);
   const [variations, setVariations] = useState([]);
   /** Per product: when true, variations use primary/secondary units and POs use secondary qty. */
-  const [enableDualUnit, setEnableDualUnit] = useState(true);
+  const [enableDualUnit, setEnableDualUnit] = useState(false);
   const [enablePpMrpSystem, setEnablePpMrpSystem] = useState(false);
   const [enableSpMrpSystem, setEnableSpMrpSystem] = useState(false);
   const [openVariationProductId, setOpenVariationProductId] = useState(null);
@@ -599,10 +567,10 @@ function StockManagement() {
       
       setFormData({ ...EMPTY_FORM_DATA });
       setSelectedCategoryId('');
-      setVariationEnabled(true);
+      setVariationEnabled(false);
       setVariations([]);
       setProductSizeNamePosition('left');
-      setEnableDualUnit(true);
+      setEnableDualUnit(false);
       setEnablePpMrpSystem(false);
       setEnableSpMrpSystem(false);
       setShowAddForm(false);
@@ -842,10 +810,10 @@ function StockManagement() {
       
       setFormData({ ...EMPTY_FORM_DATA });
       setSelectedCategoryId('');
-      setVariationEnabled(true);
+      setVariationEnabled(false);
       setVariations([]);
       setProductSizeNamePosition('left');
-      setEnableDualUnit(true);
+      setEnableDualUnit(false);
       setEnablePpMrpSystem(false);
       setEnableSpMrpSystem(false);
       setShowAddForm(false);
@@ -864,10 +832,10 @@ function StockManagement() {
     setShowAddForm(false);
     setEditingProduct(null);
     setMessage({ type: '', text: '' });
-    setVariationEnabled(true);
+    setVariationEnabled(false);
     setVariations([]);
     setProductSizeNamePosition('left');
-    setEnableDualUnit(true);
+    setEnableDualUnit(false);
     setEnablePpMrpSystem(false);
     setEnableSpMrpSystem(false);
   };
@@ -1105,13 +1073,13 @@ function StockManagement() {
             } else {
               setShowAddForm(true);
               setEditingProduct(null);
-              // When adding a fresh product, start with one default variation row
-              setVariationEnabled(true);
+              // By default, start with all configurations OFF (disabled)
+              setVariationEnabled(false);
               setProductSizeNamePosition('left');
-              setEnableDualUnit(true);
+              setEnableDualUnit(false);
               setEnablePpMrpSystem(false);
               setEnableSpMrpSystem(false);
-              setVariations([{ ...EMPTY_VARIATION }]);
+              setVariations([]);
               setFormData({ ...EMPTY_FORM_DATA });
               setSelectedCategoryId('');
               setSubcategories([]);
@@ -1138,219 +1106,206 @@ function StockManagement() {
         <div className="add-product-form" ref={formRef}>
           <h3>{editingProduct ? 'Edit Product' : 'Add New Product'}</h3>
           <form onSubmit={editingProduct ? handleUpdateProduct : handleAddProduct}>
-            {variationEnabled ? (
-              <>
-                {/* When Variations Enabled: Product Name, Brand, HSN Code, Unit in first row */}
-                <div className="form-row">
-                  <div className="form-group">
-                    <label>Product Name *</label>
-                    <input
-                      type="text"
-                      name="name"
-                      value={formData.name}
-                      onChange={handleInputChange}
-                      required
-                    />
-                  </div>
-                  <div className="form-group">
-                    <label>Brand</label>
-                    <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-                      <select
-                        name="categoryId"
-                        value={selectedCategoryId}
-                        onChange={handleCategorySelect}
-                      >
-                        <option value="">Select brand</option>
-                        {categories.map((c) => (
-                          <option key={c.id} value={c.id}>{c.name}</option>
-                        ))}
-                      </select>
-                      <select
-                        name="subcategory"
-                        value={formData.subcategory}
-                        onChange={handleInputChange}
-                        style={{ minWidth: 160 }}
-                      >
-                        <option value="">No category</option>
-                        {subcategories.map((s) => (
-                          <option key={s} value={s}>{s}</option>
-                        ))}
-                      </select>
-                      <button type="button" className="small-btn" onClick={() => setShowCategoryPanel((v) => !v)}>
-                        Manage
-                      </button>
-                    </div>
-                  </div>
-                  <div className="form-group">
-                    <label>HSN Code</label>
-                    <input
-                      type="text"
-                      name="hsnCode"
-                      value={formData.hsnCode}
-                      onChange={handleInputChange}
-                      placeholder="Enter HSN code"
-                    />
-                  </div>
-                  <div className="form-group">
-                    <label>Unit</label>
-                    <input
-                      type="text"
-                      name="unit"
-                      value={formData.unit}
-                      onChange={handleInputChange}
-                      placeholder="e.g., kg, pcs, liters"
-                    />
-                  </div>
+            {/* 1. Core Product Details */}
+            <div className="form-row">
+              <div className="form-group">
+                <label>Product Name *</label>
+                <input
+                  type="text"
+                  name="name"
+                  value={formData.name}
+                  onChange={handleInputChange}
+                  required
+                />
+              </div>
+              <div className="form-group">
+                <label>Brand</label>
+                <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                  <select
+                    name="categoryId"
+                    value={selectedCategoryId}
+                    onChange={handleCategorySelect}
+                  >
+                    <option value="">Select brand</option>
+                    {categories.map((c) => (
+                      <option key={c.id} value={c.id}>{c.name}</option>
+                    ))}
+                  </select>
+                  <select
+                    name="subcategory"
+                    value={formData.subcategory}
+                    onChange={handleInputChange}
+                    style={{ minWidth: 160 }}
+                  >
+                    <option value="">No category</option>
+                    {subcategories.map((s) => (
+                      <option key={s} value={s}>{s}</option>
+                    ))}
+                  </select>
+                  <button type="button" className="small-btn" onClick={() => setShowCategoryPanel((v) => !v)}>
+                    Manage
+                  </button>
                 </div>
-                <div
-                  className="form-row"
-                  style={{ display: 'flex', flexWrap: 'wrap', gap: '20px', alignItems: 'flex-start' }}
+              </div>
+            </div>
+
+            <div className="form-row">
+              <div className="form-group">
+                <label>HSN Code</label>
+                <input
+                  type="text"
+                  name="hsnCode"
+                  value={formData.hsnCode}
+                  onChange={handleInputChange}
+                  placeholder="Enter HSN code"
+                />
+              </div>
+              <div className="form-group">
+                <label>Unit</label>
+                <input
+                  type="text"
+                  name="unit"
+                  value={formData.unit}
+                  onChange={handleInputChange}
+                  placeholder="e.g., kg, pcs, liters"
+                />
+              </div>
+            </div>
+
+            {/* 2. All 4 enabling checkboxes grouped together */}
+            <div style={{ background: '#f8f9fa', padding: '15px', borderRadius: '8px', marginBottom: '20px', border: '1px solid #ddd' }}>
+              {/* Row 1: Enable Variations & Enable dual unit */}
+              <div className="form-row" style={{ marginBottom: '12px' }}>
+                <div className="form-group" style={{ marginBottom: 0 }}>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer' }}>
+                    <input
+                      type="checkbox"
+                      checked={variationEnabled}
+                      onChange={(e) => {
+                        setVariationEnabled(e.target.checked);
+                        if (!e.target.checked) {
+                          setVariations([]);
+                        } else {
+                          if (variations.length === 0) {
+                            setVariations([{ ...EMPTY_VARIATION, primaryUnit: formData.unit || '' }]);
+                          }
+                          setEnableDualUnit(true);
+                        }
+                      }}
+                      style={{ width: 'auto', margin: 0 }}
+                    />
+                    <span><strong>Enable Variations</strong></span>
+                  </label>
+                </div>
+                <div className="form-group" style={{ marginBottom: 0 }}>
+                  <label style={{ display: 'flex', alignItems: 'flex-start', gap: '10px', cursor: 'pointer' }}>
+                    <input
+                      type="checkbox"
+                      checked={enableDualUnit}
+                      onChange={(e) => setEnableDualUnit(e.target.checked)}
+                      style={{ width: 'auto', marginTop: '3px' }}
+                    />
+                    <span>
+                      <strong>Enable dual unit</strong>
+                      <span style={{ display: 'block', fontSize: '0.82rem', color: '#555', fontWeight: 400, marginTop: '4px' }}>
+                        Secondary unit + conversion to primary stock; purchase orders use secondary qty.
+                      </span>
+                    </span>
+                  </label>
+                </div>
+              </div>
+
+              {/* Row 2: Enable PP MRP & Enable Selling Price MRP */}
+              <div className="form-row" style={{ marginBottom: 0 }}>
+                <div className="form-group" style={{ marginBottom: 0 }}>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer' }}>
+                    <input
+                      type="checkbox"
+                      checked={enablePpMrpSystem}
+                      onChange={(e) => setEnablePpMrpSystem(e.target.checked)}
+                      style={{ width: 'auto', margin: 0 }}
+                    />
+                    <span><strong>Enable PP MRP System</strong></span>
+                  </label>
+                </div>
+                <div className="form-group" style={{ marginBottom: 0 }}>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer' }}>
+                    <input
+                      type="checkbox"
+                      checked={enableSpMrpSystem}
+                      onChange={(e) => setEnableSpMrpSystem(e.target.checked)}
+                      style={{ width: 'auto', margin: 0 }}
+                    />
+                    <span><strong>Enable Selling Price MRP System</strong></span>
+                  </label>
+                </div>
+              </div>
+            </div>
+
+            {/* Size name on bills & purchase orders selection (Independent) */}
+            <div
+              style={{
+                marginBottom: '20px',
+                padding: '12px 15px',
+                background: '#f0f4ff',
+                borderRadius: '8px',
+                border: '1px solid #dde4f7',
+                display: 'flex',
+                flexWrap: 'wrap',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                gap: '10px'
+              }}
+            >
+              <div style={{ flex: '1 1 300px' }}>
+                <div style={{ fontWeight: 600, fontSize: '0.92rem', color: '#2c3e50', marginBottom: '2px' }}>Size name on bills &amp; purchase orders</div>
+                <div style={{ fontSize: '0.82rem', color: '#555' }}>
+                  Choose whether size appears before (Left) or after (Right) the product name.
+                </div>
+              </div>
+              <div
+                style={{
+                  display: 'inline-flex',
+                  borderRadius: '8px',
+                  overflow: 'hidden',
+                  border: '1px solid #ccc'
+                }}
+              >
+                <button
+                  type="button"
+                  onClick={() => setProductSizeNamePosition('left')}
+                  style={{
+                    padding: '8px 14px',
+                    border: 'none',
+                    cursor: 'pointer',
+                    fontWeight: 600,
+                    background: productSizeNamePosition === 'left' ? '#667eea' : '#fff',
+                    color: productSizeNamePosition === 'left' ? '#fff' : '#333'
+                  }}
                 >
-                  <div className="form-group" style={{ flex: '1 1 200px', marginBottom: 0 }}>
-                    <label style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                      <input
-                        type="checkbox"
-                        checked={variationEnabled}
-                        onChange={(e) => {
-                          setVariationEnabled(e.target.checked);
-                          if (!e.target.checked) {
-                            setVariations([]);
-                          } else {
-                            if (variations.length === 0) {
-                              setVariations([{ ...EMPTY_VARIATION, primaryUnit: formData.unit || '' }]);
-                            }
-                            setEnableDualUnit(true);
-                          }
-                        }}
-                        style={{ width: 'auto', margin: 0 }}
-                      />
-                      <span>Enable Variations</span>
-                    </label>
-                  </div>
-                  <div className="form-group" style={{ flex: '1 1 260px', marginBottom: 0 }}>
-                    <label style={{ display: 'flex', alignItems: 'flex-start', gap: '10px', cursor: 'pointer' }}>
-                      <input
-                        type="checkbox"
-                        checked={enableDualUnit}
-                        onChange={(e) => setEnableDualUnit(e.target.checked)}
-                        disabled={!variationEnabled}
-                        style={{ width: 'auto', marginTop: '3px' }}
-                      />
-                      <span>
-                        <strong>Enable dual unit</strong>
-                        <span style={{ display: 'block', fontSize: '0.82rem', color: '#555', fontWeight: 400, marginTop: '4px' }}>
-                          Secondary unit + conversion to primary stock; purchase orders use secondary qty.
-                        </span>
-                      </span>
-                    </label>
-                  </div>
-                </div>
-              </>
-            ) : (
+                  Left
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setProductSizeNamePosition('right')}
+                  style={{
+                    padding: '8px 14px',
+                    border: 'none',
+                    borderLeft: '1px solid #ccc',
+                    cursor: 'pointer',
+                    fontWeight: 600,
+                    background: productSizeNamePosition === 'right' ? '#667eea' : '#fff',
+                    color: productSizeNamePosition === 'right' ? '#fff' : '#333'
+                  }}
+                >
+                  Right
+                </button>
+              </div>
+            </div>
+
+            {/* 3. Non-Variation Specific Fields */}
+            {!variationEnabled && (
               <>
-                {/* When Variations Disabled: Two column layout matching the image */}
-                <div className="form-row">
-                  <div className="form-group">
-                    <label>Product Name *</label>
-                    <input
-                      type="text"
-                      name="name"
-                      value={formData.name}
-                      onChange={handleInputChange}
-                      required
-                    />
-                  </div>
-                  <div className="form-group">
-                    <label>Brand</label>
-                    <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-                      <select
-                        name="categoryId"
-                        value={selectedCategoryId}
-                        onChange={handleCategorySelect}
-                      >
-                        <option value="">Select brand</option>
-                        {categories.map((c) => (
-                          <option key={c.id} value={c.id}>{c.name}</option>
-                        ))}
-                      </select>
-                      <select
-                        name="subcategory"
-                        value={formData.subcategory}
-                        onChange={handleInputChange}
-                        style={{ minWidth: 160 }}
-                      >
-                        <option value="">No category</option>
-                        {subcategories.map((s) => (
-                          <option key={s} value={s}>{s}</option>
-                        ))}
-                      </select>
-                      <button type="button" className="small-btn" onClick={() => setShowCategoryPanel((v) => !v)}>
-                        Manage
-                      </button>
-                    </div>
-                  </div>
-                </div>
-                <div className="form-row">
-                  <div className="form-group">
-                    <label>HSN Code</label>
-                    <input
-                      type="text"
-                      name="hsnCode"
-                      value={formData.hsnCode}
-                      onChange={handleInputChange}
-                      placeholder="Enter HSN code"
-                    />
-                  </div>
-                  <div className="form-group">
-                    <label>Unit</label>
-                    <input
-                      type="text"
-                      name="unit"
-                      value={formData.unit}
-                      onChange={handleInputChange}
-                      placeholder="e.g., kg, pcs, liters"
-                    />
-                  </div>
-                </div>
-                <div className="form-options-row">
-                  <div className="form-group toggle-group">
-                    <label style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                      <input
-                        type="checkbox"
-                        checked={variationEnabled}
-                        onChange={(e) => {
-                          setVariationEnabled(e.target.checked);
-                          if (!e.target.checked) {
-                            setVariations([]);
-                          } else {
-                            if (variations.length === 0) {
-                              setVariations([{ ...EMPTY_VARIATION, primaryUnit: formData.unit || '' }]);
-                            }
-                            setEnableDualUnit(true);
-                          }
-                        }}
-                        style={{ width: 'auto', margin: 0 }}
-                      />
-                      <span>Enable Variations</span>
-                    </label>
-                  </div>
-                  <div className="form-group toggle-group">
-                    <label style={{ display: 'flex', alignItems: 'flex-start', gap: '10px', cursor: 'pointer' }}>
-                      <input
-                        type="checkbox"
-                        checked={enableDualUnit}
-                        onChange={(e) => setEnableDualUnit(e.target.checked)}
-                        style={{ width: 'auto', marginTop: '3px' }}
-                      />
-                      <span>
-                        <strong>Enable dual unit</strong>
-                        <span style={{ display: 'block', fontSize: '0.82rem', color: '#555', fontWeight: 400, marginTop: '4px' }}>
-                          Secondary unit + conversion factor (e.g. sell by box, stock in pcs).
-                        </span>
-                      </span>
-                    </label>
-                  </div>
-                </div>
                 <div className="form-row" style={{ gridTemplateColumns: '1fr' }}>
                   <div className="form-group" style={{ maxWidth: '220px', marginBottom: 0 }}>
                     <label>Quantity *</label>
@@ -1365,11 +1320,10 @@ function StockManagement() {
                     />
                   </div>
                 </div>
+
                 <MrpPricingSection
                   enablePp={enablePpMrpSystem}
                   enableSp={enableSpMrpSystem}
-                  onTogglePp={(e) => setEnablePpMrpSystem(e.target.checked)}
-                  onToggleSp={(e) => setEnableSpMrpSystem(e.target.checked)}
                   purchaseMrp={formData.purchaseMrp}
                   purchaseDiscount={formData.purchaseDiscount}
                   purchasePrice={formData.purchasePrice}
@@ -1381,6 +1335,7 @@ function StockManagement() {
                   onWheel={handleNumberInputWheel}
                   sellingPriceRequired={!variationEnabled}
                 />
+
                 <div className="form-row">
                   <div className="form-group">
                     <label>Low Stock Quantity</label>
@@ -1405,6 +1360,7 @@ function StockManagement() {
                     />
                   </div>
                 </div>
+
                 {enableDualUnit && (
                   <div className="form-row" style={{ gridTemplateColumns: 'repeat(3, 1fr)' }}>
                     <div className="form-group">
@@ -1453,96 +1409,7 @@ function StockManagement() {
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
                   <label style={{ fontWeight: 'bold' }}>Product Variations</label>
                 </div>
-                <div
-                  style={{
-                    marginBottom: '14px',
-                    padding: '10px 12px',
-                    background: '#f0f4ff',
-                    borderRadius: '6px',
-                    border: '1px solid #dde4f7',
-                    display: 'flex',
-                    flexWrap: 'wrap',
-                    alignItems: 'center',
-                    gap: '10px'
-                  }}
-                >
-                  <div style={{ flex: '1 1 200px' }}>
-                    <div style={{ fontWeight: 600, marginBottom: '4px' }}>Size name on bills &amp; purchase orders</div>
-                    <div style={{ fontSize: '0.88rem', color: '#555' }}>
-                      For <strong>this product only</strong>: size before or after the name for <strong>every variation</strong> (not a global setting).
-                    </div>
-                  </div>
-                  <div
-                    style={{
-                      display: 'inline-flex',
-                      borderRadius: '8px',
-                      overflow: 'hidden',
-                      border: '1px solid #ccc'
-                    }}
-                  >
-                    <button
-                      type="button"
-                      onClick={() => setProductSizeNamePosition('left')}
-                      style={{
-                        padding: '8px 14px',
-                        border: 'none',
-                        cursor: 'pointer',
-                        fontWeight: 600,
-                        background: productSizeNamePosition === 'left' ? '#667eea' : '#fff',
-                        color: productSizeNamePosition === 'left' ? '#fff' : '#333'
-                      }}
-                    >
-                      Left
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setProductSizeNamePosition('right')}
-                      style={{
-                        padding: '8px 14px',
-                        border: 'none',
-                        borderLeft: '1px solid #ccc',
-                        cursor: 'pointer',
-                        fontWeight: 600,
-                        background: productSizeNamePosition === 'right' ? '#667eea' : '#fff',
-                        color: productSizeNamePosition === 'right' ? '#fff' : '#333'
-                      }}
-                    >
-                      Right
-                    </button>
-                  </div>
-                </div>
-                <div
-                  style={{
-                    marginBottom: '14px',
-                    padding: '10px 12px',
-                    background: '#f9f9f9',
-                    borderRadius: '6px',
-                    border: '1px solid #ddd',
-                    display: 'flex',
-                    flexWrap: 'wrap',
-                    gap: '20px',
-                    alignItems: 'center'
-                  }}
-                >
-                  <label style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer' }}>
-                    <input
-                      type="checkbox"
-                      checked={enablePpMrpSystem}
-                      onChange={(e) => setEnablePpMrpSystem(e.target.checked)}
-                      style={{ width: 'auto', margin: 0 }}
-                    />
-                    <span><strong>Enable PP MRP System</strong></span>
-                  </label>
-                  <label style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer' }}>
-                    <input
-                      type="checkbox"
-                      checked={enableSpMrpSystem}
-                      onChange={(e) => setEnableSpMrpSystem(e.target.checked)}
-                      style={{ width: 'auto', margin: 0 }}
-                    />
-                    <span><strong>Enable Selling Price MRP System</strong></span>
-                  </label>
-                </div>
+
                 
                 {variations.length === 0 ? (
                   <p style={{ color: '#666', fontStyle: 'italic' }}>No variations added. Click "Add New Variation" button below to add one.</p>
@@ -1602,7 +1469,6 @@ function StockManagement() {
                           </div>
                         </div>
                         <MrpPricingSection
-                          showToggles={false}
                           enablePp={enablePpMrpSystem}
                           enableSp={enableSpMrpSystem}
                           purchaseMrp={variation.purchaseMrp || ''}

@@ -4,7 +4,7 @@
 }
 
 .dashboard-content {
-  margin-left: 250px;
+  margin-left: 0; /* Globally 0 since sidebar is off-canvas */
   flex: 1;
   display: flex;
   flex-direction: column;
@@ -13,18 +13,19 @@
 
 .dashboard-header {
   background: white;
-  padding: 1.5rem 2rem;
+  padding: 1rem 1.5rem;
   box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
   display: flex;
-  justify-content: space-between;
+  justify-content: flex-start;
   align-items: center;
   position: sticky;
   top: 0;
   z-index: 100;
+  gap: 1rem;
 }
 
 .hamburger-menu {
-  display: none;
+  display: flex; /* Always visible */
   flex-direction: column;
   justify-content: space-around;
   width: 30px;
@@ -45,7 +46,7 @@
 }
 
 .sidebar-overlay {
-  display: none;
+  display: block; /* Managed by React state rendering */
   position: fixed;
   top: 0;
   left: 0;
@@ -56,58 +57,18 @@
 }
 
 @media (max-width: 768px) {
-  .dashboard-content {
-    margin-left: 0;
-  }
-
-  .hamburger-menu {
-    display: flex;
-  }
-
-  .sidebar-overlay {
-    display: block;
-  }
-
-  .dashboard-header {
-    padding: 1rem 1.5rem;
-    justify-content: flex-start;
-    gap: 1rem;
-  }
-
-  .dashboard-header .desktop-title {
-    display: none !important;
-  }
-
-  .dashboard-header .mobile-title {
-    display: block !important;
-    font-size: 1.3rem;
-    margin: 0;
-    color: #2c3e50;
-    flex: 1;
-    text-align: left;
-  }
-
-  .dashboard-header .desktop-user-info,
-  .dashboard-header .user-info {
-    display: none !important;
-  }
-
   .dashboard-main {
     padding: 1rem;
   }
 }
 
-.dashboard-header .desktop-title {
+.page-title {
   margin: 0;
   color: #2c3e50;
-  font-size: 1.8rem;
-  display: block;
-}
-
-.dashboard-header .mobile-title {
-  display: none;
-  margin: 0;
-  color: #2c3e50;
+  font-size: 1.4rem;
+  font-weight: 600;
+  flex: 1;
+  text-align: left;
 }
 
 .user-info {
@@ -117,6 +78,12 @@
 
 .desktop-user-info {
   display: block;
+}
+
+@media (max-width: 768px) {
+  .desktop-user-info {
+    display: none !important;
+  }
 }
 
 .dashboard-main {
@@ -222,5 +189,18 @@
 
 @media (max-width: 700px) {
   .category-management .form-row { flex-direction: column; }
+}
+
+/* Responsive party management container */
+.party-container {
+  display: grid;
+  grid-template-columns: 400px 1fr;
+  gap: 20px;
+}
+
+@media (max-width: 1024px) {
+  .party-container {
+    grid-template-columns: 1fr;
+  }
 }
 

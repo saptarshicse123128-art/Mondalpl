@@ -8,6 +8,9 @@ import Analytics from './Analytics';
 import CategoryManagement from './CategoryManagement';
 import Users from './Users';
 import PurchaseOrder from './PurchaseOrder';
+import GstBillGeneration from './GstBillGeneration';
+import PartyManagement from './PartyManagement';
+import GstInvoiceHistory from './GstInvoiceHistory';
 import './Dashboard.css';
 
 function Dashboard() {
@@ -27,6 +30,12 @@ function Dashboard() {
       return 'Stock Management';
     } else if (path.includes('/bills')) {
       return 'Bill Generation';
+    } else if (path.includes('/gst-bills')) {
+      return 'GST Bill Generation';
+    } else if (path.includes('/gst-parties')) {
+      return 'Party Management';
+    } else if (path.includes('/gst-history')) {
+      return 'GST Invoice History';
     } else if (path.includes('/categories')) {
       return 'Brands & Categories';
     } else if (path.includes('/users')) {
@@ -63,8 +72,7 @@ function Dashboard() {
             <span></span>
             <span></span>
           </button>
-          <h1 className="desktop-title">Dashboard</h1>
-          <h1 className="mobile-title">{getPageName()}</h1>
+          <h1 className="page-title">{getPageName()}</h1>
           <div className="user-info desktop-user-info">
             <span>Welcome, {currentUser?.email}</span>
           </div>
@@ -77,6 +85,9 @@ function Dashboard() {
             <Route path="stock" element={<StockManagement />} />
             <Route path="categories" element={<CategoryManagement />} />
             <Route path="bills" element={<BillGeneration />} />
+            <Route path="gst-bills" element={<GstBillGeneration />} />
+            <Route path="gst-parties" element={<PartyManagement />} />
+            <Route path="gst-history" element={<GstInvoiceHistory />} />
             <Route path="users" element={<Users />} />
           </Routes>
         </div>

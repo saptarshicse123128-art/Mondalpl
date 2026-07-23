@@ -1,4 +1,5 @@
-import React, { useState, useEffect } from 'react';
+﻿import React, { useState, useEffect, useRef } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { collection, addDoc, getDocs, onSnapshot, serverTimestamp, doc, updateDoc, getDoc, deleteDoc, writeBatch } from 'firebase/firestore';
 import { db } from '../../firebase';
 import jsPDF from 'jspdf';
@@ -38,6 +39,8 @@ const getCartItemDiscountPct = (item) => {
 };
 
 function BillGeneration() {
+  const navigate = useNavigate();
+  const hasPushedStateRef = useRef(false);
   const [products, setProducts] = useState([]);
   const [cart, setCart] = useState([]);
   const [billForm, setBillForm] = useState({
@@ -80,9 +83,14 @@ function BillGeneration() {
   const [discPctMode, setDiscPctMode] = useState(false);
   const [discPctSelectedKeys, setDiscPctSelectedKeys] = useState(new Set());
   const [bulkDiscPct, setBulkDiscPct] = useState('');
+  const [isWholesale, setIsWholesale] = useState(false);
+  const [sizeSearchQuery, setSizeSearchQuery] = useState('');
+  const [showSizeDropdown, setShowSizeDropdown] = useState(false);
+  const [showDraftsModal, setShowDraftsModal] = useState(false);
+  const [draftBills, setDraftBills] = useState([]);
 
   useEffect(() => {
-    const unsubscribe = onSnapshot(collection(db, 'products'), (snapshot) => {
+    const unsubscribeProducts = onSnapshot(collection(db, 'products'), (snapshot) => {
       const productsList = [];
       snapshot.forEach((doc) => {
         productsList.push({ id: doc.id, ...doc.data() });
@@ -90,8 +98,197 @@ function BillGeneration() {
       setProducts(productsList);
     });
 
-    return () => unsubscribe();
+    const unsubscribeDrafts = onSnapshot(collection(db, 'draft_bills'), (snapshot) => {
+      const draftsList = [];
+      snapshot.forEach((doc) => {
+        draftsList.push({ id: doc.id, ...doc.data() });
+      });
+      draftsList.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+      setDraftBills(draftsList);
+    });
+
+    return () => {
+      unsubscribeProducts();
+      unsubscribeDrafts();
+    };
   }, []);
+
+  // 1. Sync 'billGenerationUnsaved' flag in localStorage
+  useEffect(() => {
+    const hasChanges = cart.length > 0 || 
+                       (billForm.fullName || '').trim() !== '' || 
+                       (billForm.phone || '').trim() !== '' || 
+                       (billForm.address || '').trim() !== '';
+    if (hasChanges) {
+      localStorage.setItem('billGenerationUnsaved', 'true');
+    } else {
+      localStorage.removeItem('billGenerationUnsaved');
+    }
+  }, [cart, billForm]);
+
+  // 2. Tab close / reload browser listener
+  useEffect(() => {
+    const handleBeforeUnload = (e) => {
+      const hasChanges = cart.length > 0 || 
+                         (billForm.fullName || '').trim() !== '' || 
+                         (billForm.phone || '').trim() !== '' || 
+                         (billForm.address || '').trim() !== '';
+      if (hasChanges) {
+        e.preventDefault();
+        e.returnValue = 'Are you sure you want to leave? Your changes will be lost.';
+        return e.returnValue;
+      }
+    };
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => {
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+    };
+  }, [cart, billForm]);
+
+  // 2.1 Browser Back / Swipe Back popstate blocker listener
+  useEffect(() => {
+    const hasChanges = cart.length > 0 || 
+                       (billForm.fullName || '').trim() !== '' || 
+                       (billForm.phone || '').trim() !== '' || 
+                       (billForm.address || '').trim() !== '';
+
+    if (hasChanges) {
+      if (!hasPushedStateRef.current) {
+        window.history.pushState(null, '', window.location.href);
+        hasPushedStateRef.current = true;
+      }
+    } else {
+      if (hasPushedStateRef.current) {
+        hasPushedStateRef.current = false;
+        window.history.back();
+      }
+    }
+
+    const handlePopState = async (e) => {
+      if (hasPushedStateRef.current) {
+        // Intercept back action
+        const confirmLeave = window.confirm("Are you sure you want to leave? Your unsaved billing data will be lost.");
+        if (confirmLeave) {
+          const saveDraft = window.confirm("Do you want to save this bill as a draft?");
+          if (saveDraft) {
+            try {
+              await saveCurrentAsDraft();
+            } catch (err) {
+              console.error("Failed to save draft on history back", err);
+            }
+          }
+          localStorage.removeItem('billGenerationUnsaved');
+          hasPushedStateRef.current = false;
+          navigate(-1); // Perform the back action programmatically
+        } else {
+          // Push dummy state again to keep blocking future back clicks
+          window.history.pushState(null, '', window.location.href);
+        }
+      }
+    };
+
+    window.addEventListener('popstate', handlePopState);
+    return () => {
+      window.removeEventListener('popstate', handlePopState);
+    };
+  }, [cart, billForm, isWholesale]);
+
+  // 3. Trigger Save Draft from navigation event listener
+  useEffect(() => {
+    const handleTriggerSaveDraft = async (e) => {
+      const nextPath = e.detail.nextPath;
+      try {
+        await saveCurrentAsDraft();
+        localStorage.removeItem('billGenerationUnsaved');
+        navigate(nextPath);
+      } catch (err) {
+        console.error("Failed to save draft", err);
+        alert("Failed to save draft bill.");
+      }
+    };
+
+    window.addEventListener('triggerSaveDraft', handleTriggerSaveDraft);
+    return () => {
+      window.removeEventListener('triggerSaveDraft', handleTriggerSaveDraft);
+    };
+  }, [cart, billForm, isWholesale]);
+
+  // 4. Draft Bills helper operations
+  const saveCurrentAsDraft = async () => {
+    const draftData = {
+      fullName: billForm.fullName || '',
+      date: billForm.date || new Date().toISOString().split('T')[0],
+      address: billForm.address || '',
+      phone: billForm.phone || '',
+      discount: billForm.discount || '',
+      paidAmount: billForm.paidAmount || '',
+      isWholesale: isWholesale,
+      items: cart.map(item => ({
+        productId: item.id,
+        productName: item.name,
+        price: item.price,
+        quantity: item.quantity,
+        originalQuantity: item.quantity,
+        subtotal: item.price * item.quantity,
+        variationSize: item.variationSize || null,
+        sellingMrp: item.sellingMrp || null,
+        sellingDiscount: item.sellingDiscount || null
+      })),
+      createdAt: new Date().toISOString()
+    };
+    await addDoc(collection(db, 'draft_bills'), draftData);
+  };
+
+  const handleContinueDraft = async (draft) => {
+    const hasActiveBill = cart.length > 0 || (billForm.fullName || '').trim() !== '';
+    if (hasActiveBill) {
+      const confirmLoad = window.confirm("Continuing this draft will overwrite your current active bill. Do you want to proceed?");
+      if (!confirmLoad) return;
+    }
+
+    setBillForm({
+      fullName: draft.fullName || '',
+      date: draft.date || new Date().toISOString().split('T')[0],
+      address: draft.address || '',
+      phone: draft.phone || '',
+      discount: draft.discount || '',
+      paidAmount: draft.paidAmount || ''
+    });
+    setIsWholesale(draft.isWholesale || false);
+    
+    const mappedCart = (draft.items || []).map(item => ({
+      id: item.productId,
+      name: item.productName,
+      price: item.price,
+      quantity: item.quantity,
+      variationSize: item.variationSize || undefined,
+      sellingMrp: item.sellingMrp || null,
+      sellingDiscount: item.sellingDiscount || null
+    }));
+    setCart(mappedCart);
+
+    // Delete draft from Firestore
+    try {
+      await deleteDoc(doc(db, 'draft_bills', draft.id));
+      setShowDraftsModal(false);
+      alert('Draft loaded successfully!');
+    } catch (err) {
+      console.error("Failed to delete draft after loading", err);
+    }
+  };
+
+  const handleDeleteDraft = async (draftId) => {
+    const confirmDelete = window.confirm("Are you sure you want to delete this draft bill?");
+    if (!confirmDelete) return;
+
+    try {
+      await deleteDoc(doc(db, 'draft_bills', draftId));
+      alert('Draft deleted successfully.');
+    } catch (err) {
+      console.error("Failed to delete draft", err);
+      alert("Failed to delete draft.");
+    }
+  };
 
   const positionForSavedBillItem = (item) => {
     const pid = item.productId;
@@ -262,7 +459,7 @@ function BillGeneration() {
     }
 
     let availableQuantity = product.quantity;
-    let productPrice = product.price;
+    let productPrice = isWholesale ? (product.purchasePrice || product.price) : product.price;
     let sellingMrp = product.sellingMrp ?? null;
     let sellingDiscount = product.sellingDiscount ?? null;
 
@@ -274,7 +471,9 @@ function BillGeneration() {
         return;
       }
       availableQuantity = variation.quantity || 0;
-      productPrice = variation.price || product.price;
+      productPrice = isWholesale
+        ? (variation.purchasePrice || product.purchasePrice || variation.price || product.price)
+        : (variation.price || product.price);
       sellingMrp = variation.sellingMrp ?? product.sellingMrp ?? null;
       sellingDiscount = variation.sellingDiscount ?? product.sellingDiscount ?? null;
     }
@@ -1420,6 +1619,7 @@ function BillGeneration() {
         total: finalTotal,
         originalDiscount: discount,
         originalTotal: finalTotal,
+        isWholesale: isWholesale,
         createdAt: serverTimestamp()
       };
 
@@ -1455,6 +1655,8 @@ function BillGeneration() {
       // Note: Stock is already updated when products were added to cart
       // So we just clear the cart and form
       setCart([]);
+      setIsWholesale(false);
+      setSizeSearchQuery('');
       setAdjustments([]);
       setSelectedSuggestedBillIds([]);
       setAdjustBillSearchQuery('');
@@ -2501,9 +2703,38 @@ function BillGeneration() {
   return (
     <div className="bill-generation">
       <div className="bill-header">
-        <h2>Bill Generation</h2>
+        <div className="bill-header-left">
+          <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', fontWeight: 600, color: '#2c3e50', fontSize: '1rem' }}>
+            <input
+              type="checkbox"
+              checked={isWholesale}
+              onChange={(e) => setIsWholesale(e.target.checked)}
+              style={{ width: '18px', height: '18px', cursor: 'pointer', margin: 0 }}
+            />
+            <span>Regular Wholesale Bill</span>
+          </label>
+        </div>
+        <div className="bill-header-middle">
+          <button
+            type="button"
+            className="toggle-bills-btn"
+            onClick={() => setShowDraftsModal(true)}
+            style={{
+              background: '#f1f5f9',
+              border: '1px solid #cbd5e1',
+              color: '#334155',
+              fontWeight: 600,
+              padding: '0.75rem 1.25rem',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '6px'
+            }}
+          >
+            📂 Draft Bills ({draftBills.length})
+          </button>
+        </div>
         <div className="bill-header-right">
-        <button
+          <button
           className="toggle-bills-btn"
           onClick={() => setShowBills(!showBills)}
         >
@@ -2970,6 +3201,8 @@ function BillGeneration() {
                           setShowProductDropdown(true);
                           if (!e.target.value) {
                             setSelectedProduct('');
+                            setSelectedVariation('');
+                            setSizeSearchQuery('');
                           }
                         }}
                         onFocus={() => setShowProductDropdown(true)}
@@ -2978,7 +3211,36 @@ function BillGeneration() {
                           setTimeout(() => setShowProductDropdown(false), 200);
                         }}
                         className="product-search-input"
+                        placeholder="Search product..."
                       />
+                      {productSearchQuery && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setProductSearchQuery('');
+                            setSelectedProduct('');
+                            setSelectedVariation('');
+                            setSizeSearchQuery('');
+                          }}
+                          style={{
+                            position: 'absolute',
+                            right: '10px',
+                            top: '50%',
+                            transform: 'translateY(-50%)',
+                            background: 'none',
+                            border: 'none',
+                            fontSize: '18px',
+                            cursor: 'pointer',
+                            color: '#999',
+                            padding: '2px 6px',
+                            lineHeight: 1,
+                            zIndex: 2
+                          }}
+                          title="Clear product"
+                        >
+                          ×
+                        </button>
+                      )}
                       {showProductDropdown && (
                         <div className="product-dropdown">
                           {(() => {
@@ -3016,16 +3278,26 @@ function BillGeneration() {
                                   e.preventDefault(); // Prevent input blur
                                   setSelectedProduct(product.id);
                                   setSelectedVariation(''); // Reset variation when product changes
+                                  setSizeSearchQuery(''); // Reset size search query
                                   setProductSearchQuery(product.name);
                                   setShowProductDropdown(false);
                                 }}
                               >
                                 <span className="product-name">{product.name}</span>
-                                {(!product.variations || !Array.isArray(product.variations) || product.variations.length === 0) && (
-                                  <span className="product-price">₹{product.price?.toFixed(2)}</span>
-                                )}
-                                {product.variations && Array.isArray(product.variations) && product.variations.length > 0 && (
-                                  <span className="product-stock" style={{ color: '#667eea' }}>Has variations - Select size</span>
+                                {(!product.variations || !Array.isArray(product.variations) || product.variations.length === 0) ? (
+                                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                    <span className="product-price">₹{product.price?.toFixed(2)}</span>
+                                    <span className="product-stock" style={{ fontSize: '0.8rem', color: '#888' }}>
+                                      Stock: {product.quantity ?? 0}
+                                    </span>
+                                  </div>
+                                ) : (
+                                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                    <span className="product-stock" style={{ color: '#667eea' }}>Has variations — Select size</span>
+                                    <span className="product-stock" style={{ fontSize: '0.8rem', color: '#888' }}>
+                                      Stock: {(product.variations || []).reduce((sum, v) => sum + (v.quantity || 0), 0)}
+                                    </span>
+                                  </div>
                                 )}
                               </div>
                             ));
@@ -3040,26 +3312,96 @@ function BillGeneration() {
                     
                     if (hasVariations) {
                       return (
-                        <div className="form-group">
+                        <div className="form-group product-search-group">
                           <label>Select Size *</label>
-                          <select
-                            value={selectedVariation}
-                            onChange={(e) => {
-                              setSelectedVariation(e.target.value);
-                              setProductQuantity(''); // Reset quantity when size changes
-                            }}
-                            className="product-search-input"
-                            required
-                          >
-                            <option value="">Choose a size...</option>
-                            {selectedProductData.variations
-                              .filter(v => (v.quantity || 0) > 0) // Only show variations with stock
-                              .map((variation, index) => (
-                                <option key={index} value={variation.size}>
-                                  {variation.size}
-                                </option>
-                              ))}
-                          </select>
+                          <div className="product-search-container">
+                            <input
+                              type="text"
+                              value={sizeSearchQuery}
+                              onChange={(e) => {
+                                setSizeSearchQuery(e.target.value);
+                                setShowSizeDropdown(true);
+                                if (!e.target.value) {
+                                  setSelectedVariation('');
+                                }
+                              }}
+                              onFocus={() => setShowSizeDropdown(true)}
+                              onBlur={() => {
+                                // Delay hiding dropdown to allow click
+                                setTimeout(() => setShowSizeDropdown(false), 200);
+                              }}
+                              placeholder="Search or choose size..."
+                              className="product-search-input"
+                              required
+                            />
+                            {sizeSearchQuery && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setSizeSearchQuery('');
+                                  setSelectedVariation('');
+                                }}
+                                style={{
+                                  position: 'absolute',
+                                  right: '10px',
+                                  top: '50%',
+                                  transform: 'translateY(-50%)',
+                                  background: 'none',
+                                  border: 'none',
+                                  fontSize: '18px',
+                                  cursor: 'pointer',
+                                  color: '#999',
+                                  padding: '2px 6px',
+                                  lineHeight: 1,
+                                  zIndex: 2
+                                }}
+                                title="Clear size"
+                              >
+                                ×
+                              </button>
+                            )}
+                            {showSizeDropdown && (
+                              <div className="product-dropdown">
+                                {(() => {
+                                  const trimmedQuery = (sizeSearchQuery || '').trim().toLowerCase();
+                                  const matching = selectedProductData.variations.filter(v =>
+                                    (v.quantity || 0) > 0 &&
+                                    (!trimmedQuery || v.size.toLowerCase().includes(trimmedQuery))
+                                  );
+                                  
+                                  if (matching.length === 0) {
+                                    return (
+                                      <div className="product-dropdown-item no-results">
+                                        No matching sizes
+                                      </div>
+                                    );
+                                  }
+                                  
+                                  return matching.map((v, idx) => (
+                                    <div
+                                      key={idx}
+                                      className="product-dropdown-item"
+                                      onMouseDown={(e) => {
+                                        e.preventDefault(); // Prevent input blur
+                                        setSelectedVariation(v.size);
+                                        setSizeSearchQuery(v.size);
+                                        setProductQuantity('');
+                                        setShowSizeDropdown(false);
+                                      }}
+                                    >
+                                      <span className="product-name">{v.size}</span>
+                                      <span className="product-price">
+                                        {isWholesale
+                                          ? `₹${(v.purchasePrice || selectedProductData.purchasePrice || v.price || selectedProductData.price || 0).toFixed(2)}`
+                                          : `₹${(v.price || selectedProductData.price || 0).toFixed(2)}`}
+                                      </span>
+                                      <span className="product-stock">Stock: {v.quantity}</span>
+                                    </div>
+                                  ));
+                                })()}
+                              </div>
+                            )}
+                          </div>
                         </div>
                       );
                     }
@@ -3201,9 +3543,9 @@ function BillGeneration() {
                         <th>Brand / Category</th>
                         <th>Qty</th>
                         <th>MRP</th>
-                        <th>% Off</th>
+                        <th>Discount (%)</th>
                         <th>Price</th>
-                        <th>Subtotal</th>
+                        <th>Amount</th>
                         <th>Action</th>
                       </tr>
                     </thead>
@@ -3261,8 +3603,8 @@ function BillGeneration() {
                             <td data-label="MRP">
                               {mrp != null ? `₹${mrp.toFixed(2)}` : '-'}
                             </td>
-                            {/* % Off — editable, linked to Price */}
-                            <td data-label="% Off">
+                            {/* Discount (%) — editable, linked to Price */}
+                            <td data-label="Discount (%)">
                               {isEditing ? (
                                 mrp != null && mrp > 0 ? (
                                   <input
@@ -3316,23 +3658,23 @@ function BillGeneration() {
                                 />
                               ) : `₹${item.price?.toFixed(2)}`}
                             </td>
-                            {/* Subtotal */}
-                            <td data-label="Subtotal">
+                            {/* Amount */}
+                            <td data-label="Amount">
                               {isEditing
                                 ? `₹${((parseFloat(editingCartValues.price) || 0) * (parseInt(editingCartValues.quantity) || 0)).toFixed(2)}`
                                 : `₹${(item.price * item.quantity).toFixed(2)}`}
                             </td>
                             {/* Action */}
-                            <td data-label="Action">
+                            <td data-label="Action" style={{ whiteSpace: 'nowrap' }}>
                               {isEditing ? (
                                 <>
-                                  <button className="add-product-btn" type="button" onClick={() => saveCartItemEdit(item)} style={{ marginRight: '0.4rem' }}>Save</button>
-                                  <button className="remove-btn" type="button" onClick={cancelCartItemEdit}>Cancel</button>
+                                  <button className="small-action-btn save" type="button" onClick={() => saveCartItemEdit(item)} style={{ marginRight: '0.4rem' }}>Save</button>
+                                  <button className="small-action-btn cancel" type="button" onClick={cancelCartItemEdit}>Cancel</button>
                                 </>
                               ) : (
                                 <>
-                                  <button className="add-product-btn" type="button" onClick={() => startCartItemEdit(item)} style={{ marginRight: '0.4rem' }}>Edit</button>
-                                  <button className="remove-btn" type="button" onClick={() => removeFromCart(itemKey)}>Remove</button>
+                                  <button className="small-action-btn edit" type="button" onClick={() => startCartItemEdit(item)} style={{ marginRight: '0.4rem' }}>Edit</button>
+                                  <button className="small-action-btn remove" type="button" onClick={() => removeFromCart(itemKey)}>Remove</button>
                                 </>
                               )}
                             </td>
@@ -3346,167 +3688,152 @@ function BillGeneration() {
             </div>
 
             <div className="form-section">
-              <h3>Bill Summary</h3>
-              <div className="bill-summary">
-                <div className="summary-row">
-                  <span><strong>Subtotal:</strong></span>
-                  <span><strong>₹{calculateSubtotal().toFixed(2)}</strong></span>
+              <div className="bill-summary-table">
+
+                {/* Sub total row */}
+                <div className="bst-row">
+                  <div className="bst-label">Sub Total</div>
+                  <div className="bst-value">₹{calculateSubtotal().toFixed(2)}</div>
                 </div>
-                <div className="form-group discount-field">
-                  <label>Discount (₹)</label>
-                  <input
-                    type="number"
-                    name="discount"
-                    value={billForm.discount}
-                    onChange={handleFormChange}
-                    onWheel={handleNumberInputWheel}
-                    placeholder="Enter discount amount"
-                    min="0"
-                    step="0.01"
-                  />
-                </div>
-                {billForm.discount && parseFloat(billForm.discount) > 0 && (
-                  <div className="summary-row">
-                    <span>Discount:</span>
-                    <span>-₹{calculateDiscount().toFixed(2)}</span>
+
+                {/* Discount row */}
+                <div className="bst-row">
+                  <div className="bst-label">Discount (₹)</div>
+                  <div className="bst-value bst-input-cell">
+                    <input
+                      type="number"
+                      name="discount"
+                      value={billForm.discount}
+                      onChange={handleFormChange}
+                      onWheel={handleNumberInputWheel}
+                      placeholder="0.00"
+                      min="0"
+                      step="0.01"
+                      className="bst-input"
+                    />
                   </div>
-                )}
-                <div className="summary-row total-row">
-                  <span><strong>Total Amount:</strong></span>
-                  <span><strong>₹{calculateFinalTotal().toFixed(2)}</strong></span>
                 </div>
 
-                {/* Adjust from Previous Bill */}
-                <div className="form-group" style={{ marginTop: '12px', borderTop: '1px dashed #ccc', paddingTop: '12px' }}>
-                  <label style={{ fontWeight: '600', color: '#555' }}>Adjust from Previous Bill</label>
+                {/* Total Amt row */}
+                <div className="bst-row bst-total-row">
+                  <div className="bst-label">Total Amt.</div>
+                  <div className="bst-value">₹{calculateFinalTotal().toFixed(2)}</div>
+                </div>
 
+                {/* Adj from prev. Bill row */}
+                <div className="bst-adj-row-wrap">
+
+                  {/* Header: label left + search right */}
+                  <div className="bst-adj-header">
+                    <div className="bst-adj-title">Adj. from prev. Bill</div>
+                    <div className="bst-adj-search-wrap">
+                      <div className="product-search-container" style={{ position: 'relative' }}>
+                        <input
+                          type="text"
+                          value={adjustBillSearchQuery}
+                          onChange={(e) => { setAdjustBillSearchQuery(e.target.value); setShowAdjustBillDropdown(true); }}
+                          onFocus={() => setShowAdjustBillDropdown(true)}
+                          onBlur={() => setTimeout(() => setShowAdjustBillDropdown(false), 200)}
+                          placeholder="Search bill no, name, or phone..."
+                          style={{ width: '100%', padding: '6px 10px', border: '1px solid #ddd', borderRadius: '5px', fontSize: '13px' }}
+                        />
+                        {showAdjustBillDropdown && adjustBillSearchQuery.trim() && (
+                          <div className="product-dropdown" style={{ maxHeight: '200px', overflowY: 'auto' }}>
+                            {(() => {
+                              const query = adjustBillSearchQuery.toLowerCase().trim();
+                              const queryDigits = normalizePhone(adjustBillSearchQuery);
+                              const matching = bills.filter((b) => {
+                                const billNum = (b.billNumber || '').toLowerCase();
+                                const name = (b.fullName || b.customerName || '').toLowerCase();
+                                const phone = normalizePhone(b.phone || b.customerPhone);
+                                const alreadyAdded = adjustments.some((a) => a.billId === b.id);
+                                if (alreadyAdded) return false;
+                                const info = getBillAdjustmentInfo(b);
+                                if (info.due <= 0 && info.cashReturn <= 0) return false;
+                                return billNum.includes(query) || name.includes(query) || (queryDigits.length >= 3 && phone.includes(queryDigits));
+                              });
+                              if (matching.length === 0) return <div className="product-dropdown-item no-results" style={{ padding: '10px', color: '#999' }}>No bills found with due or cash return</div>;
+                              return matching.slice(0, 10).map((bill) => {
+                                const info = getBillAdjustmentInfo(bill);
+                                return (
+                                  <div key={bill.id} className="product-dropdown-item" onMouseDown={(e) => { e.preventDefault(); handleAdjustBill(bill); }}
+                                    style={{ padding: '8px 12px', cursor: 'pointer', borderBottom: '1px solid #f0f0f0', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                    <div>
+                                      <strong>{bill.billNumber || bill.id.slice(0, 8)}</strong>
+                                      <span style={{ marginLeft: '8px', color: '#888', fontSize: '12px' }}>{bill.fullName || bill.customerName}</span>
+                                    </div>
+                                    <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                                      {info.due > 0 && <span style={{ color: '#e74c3c', fontSize: '12px', fontWeight: '600' }}>Due: ₹{info.due.toFixed(2)}</span>}
+                                      {info.cashReturn > 0 && <span style={{ color: '#27ae60', fontSize: '12px', fontWeight: '600' }}>Return: ₹{info.cashReturn.toFixed(2)}</span>}
+                                    </div>
+                                  </div>
+                                );
+                              });
+                            })()}
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Applied adjustments below search */}
+                      {adjustments.length > 0 && (
+                        <div style={{ marginTop: '6px' }}>
+                          {adjustments.map((adj, idx) => (
+                            <div key={idx} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '4px 0', color: '#9b59b6', fontSize: '13px' }}>
+                              <span style={{ fontWeight: 600 }}>** Bill {adj.billNumber}, Adjusted</span>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                <span style={{ fontWeight: 600 }}>{adj.type === 'due' ? '+' : '-'}₹{adj.amount.toFixed(2)}</span>
+                                <button type="button" onClick={() => removeAdjustment(adj.billId)} style={{ background: 'none', border: 'none', color: '#999', cursor: 'pointer', fontSize: '15px', padding: '0 3px', lineHeight: '1' }} title="Remove">✕</button>
+                              </div>
+                            </div>
+                          ))}
+                          <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '4px', borderTop: '1px solid #ddd', paddingTop: '5px', fontWeight: 700, fontSize: '13px' }}>
+                            <span>Adjusted Total:</span>
+                            <span>₹{calculateAdjustedTotal().toFixed(2)}</span>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Suggested bills below the header */}
                   {(() => {
                     const suggestedBills = getSuggestedBillsForPhone(billForm.phone);
                     if (suggestedBills.length === 0) return null;
-
                     const allSuggestedSelected =
                       suggestedBills.length > 0 &&
                       suggestedBills.every((b) => selectedSuggestedBillIds.includes(b.id));
-
                     return (
-                      <div
-                        style={{
-                          marginBottom: '10px',
-                          border: '1px solid #dbeafe',
-                          background: '#f8fbff',
-                          borderRadius: '8px',
-                          padding: '10px'
-                        }}
-                      >
-                        <div
-                          style={{
-                            display: 'flex',
-                            justifyContent: 'space-between',
-                            alignItems: 'center',
-                            gap: '8px',
-                            marginBottom: '8px',
-                            flexWrap: 'wrap'
-                          }}
-                        >
-                          <span style={{ fontSize: '13px', fontWeight: 700, color: '#1d4ed8' }}>
-                            Suggested bills (same mobile) — {suggestedBills.length}
-                          </span>
-                          <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
-                            <button
-                              type="button"
-                              className="cancel-due-btn"
-                              style={{ padding: '4px 10px', fontSize: '12px', minWidth: 'auto' }}
-                              onClick={() => {
-                                if (allSuggestedSelected) {
-                                  setSelectedSuggestedBillIds([]);
-                                } else {
-                                  setSelectedSuggestedBillIds(suggestedBills.map((b) => b.id));
-                                }
-                              }}
-                            >
+                      <div className="bst-adj-suggested">
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px', flexWrap: 'wrap', gap: '4px' }}>
+                          <span style={{ fontSize: '12px', fontWeight: 700, color: '#1d4ed8' }}>Suggested ({suggestedBills.length})</span>
+                          <div style={{ display: 'flex', gap: '4px' }}>
+                            <button type="button" className="cancel-due-btn" style={{ padding: '2px 8px', fontSize: '11px', minWidth: 'auto' }}
+                              onClick={() => allSuggestedSelected ? setSelectedSuggestedBillIds([]) : setSelectedSuggestedBillIds(suggestedBills.map(b => b.id))}>
                               {allSuggestedSelected ? 'Unselect All' : 'Select All'}
                             </button>
-                            <button
-                              type="button"
-                              className="save-due-btn"
-                              style={{ padding: '4px 10px', fontSize: '12px', minWidth: 'auto' }}
-                              onClick={() => {
-                                const selected = suggestedBills.filter((b) =>
-                                  selectedSuggestedBillIds.includes(b.id)
-                                );
-                                handleAdjustMultipleBills(
-                                  selected.length > 0 ? selected : suggestedBills
-                                );
-                              }}
-                            >
-                              {selectedSuggestedBillIds.length > 0
-                                ? `Adjust Selected (${selectedSuggestedBillIds.length})`
-                                : 'Adjust All'}
+                            <button type="button" className="save-due-btn" style={{ padding: '2px 8px', fontSize: '11px', minWidth: 'auto' }}
+                              onClick={() => { const selected = suggestedBills.filter(b => selectedSuggestedBillIds.includes(b.id)); handleAdjustMultipleBills(selected.length > 0 ? selected : suggestedBills); }}>
+                              {selectedSuggestedBillIds.length > 0 ? `Adjust (${selectedSuggestedBillIds.length})` : 'Adjust All'}
                             </button>
                           </div>
                         </div>
-
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
                           {suggestedBills.map((bill) => {
                             const info = getBillAdjustmentInfo(bill);
                             const checked = selectedSuggestedBillIds.includes(bill.id);
                             return (
-                              <div
-                                key={bill.id}
-                                style={{
-                                  display: 'flex',
-                                  alignItems: 'center',
-                                  justifyContent: 'space-between',
-                                  gap: '8px',
-                                  padding: '8px 10px',
-                                  background: '#fff',
-                                  border: '1px solid #e5e7eb',
-                                  borderRadius: '6px'
-                                }}
-                              >
-                                <label
-                                  style={{
-                                    display: 'flex',
-                                    alignItems: 'center',
-                                    gap: '8px',
-                                    cursor: 'pointer',
-                                    flex: 1,
-                                    margin: 0
-                                  }}
-                                >
-                                  <input
-                                    type="checkbox"
-                                    checked={checked}
-                                    onChange={() => toggleSuggestedBillSelection(bill.id)}
-                                    style={{ width: 'auto', margin: 0 }}
-                                  />
-                                  <span>
+                              <div key={bill.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '6px', padding: '5px 8px', background: '#fff', border: '1px solid #e5e7eb', borderRadius: '5px' }}>
+                                <label style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', flex: 1, margin: 0 }}>
+                                  <input type="checkbox" checked={checked} onChange={() => toggleSuggestedBillSelection(bill.id)} style={{ width: 'auto', margin: 0 }} />
+                                  <span style={{ fontSize: '12px' }}>
                                     <strong>{bill.billNumber || bill.id.slice(0, 8)}</strong>
-                                    <span style={{ marginLeft: '8px', color: '#888', fontSize: '12px' }}>
-                                      {bill.fullName || bill.customerName || ''}
-                                      {bill.date ? ` · ${bill.date}` : ''}
-                                    </span>
+                                    <span style={{ marginLeft: '6px', color: '#888' }}>{bill.fullName || bill.customerName || ''}{bill.date ? ` · ${bill.date}` : ''}</span>
                                   </span>
                                 </label>
-                                <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexShrink: 0 }}>
-                                  {info.due > 0 && (
-                                    <span style={{ color: '#e74c3c', fontSize: '12px', fontWeight: 600 }}>
-                                      Due: ₹{info.due.toFixed(2)}
-                                    </span>
-                                  )}
-                                  {info.cashReturn > 0 && (
-                                    <span style={{ color: '#27ae60', fontSize: '12px', fontWeight: 600 }}>
-                                      Return: ₹{info.cashReturn.toFixed(2)}
-                                    </span>
-                                  )}
-                                  <button
-                                    type="button"
-                                    className="save-due-btn"
-                                    style={{ padding: '3px 8px', fontSize: '11px', minWidth: 'auto' }}
-                                    onClick={() => handleAdjustBill(bill)}
-                                  >
-                                    Adjust
-                                  </button>
+                                <div style={{ display: 'flex', gap: '6px', alignItems: 'center', flexShrink: 0 }}>
+                                  {info.due > 0 && <span style={{ color: '#e74c3c', fontSize: '11px', fontWeight: 600 }}>Due: ₹{info.due.toFixed(2)}</span>}
+                                  {info.cashReturn > 0 && <span style={{ color: '#27ae60', fontSize: '11px', fontWeight: 600 }}>Ret: ₹{info.cashReturn.toFixed(2)}</span>}
+                                  <button type="button" className="save-due-btn" style={{ padding: '2px 6px', fontSize: '10px', minWidth: 'auto' }} onClick={() => handleAdjustBill(bill)}>Adjust</button>
                                 </div>
                               </div>
                             );
@@ -3516,130 +3843,36 @@ function BillGeneration() {
                     );
                   })()}
 
-                  <div className="product-search-container" style={{ position: 'relative' }}>
+                </div>
+
+                {/* Paid Amt row */}
+                <div className="bst-row">
+                  <div className="bst-label">Paid Amt.</div>
+                  <div className="bst-value bst-input-cell">
                     <input
-                      type="text"
-                      value={adjustBillSearchQuery}
-                      onChange={(e) => {
-                        setAdjustBillSearchQuery(e.target.value);
-                        setShowAdjustBillDropdown(true);
-                      }}
-                      onFocus={() => setShowAdjustBillDropdown(true)}
-                      onBlur={() => setTimeout(() => setShowAdjustBillDropdown(false), 200)}
-                      placeholder="Search by bill no, name, or phone..."
-                      style={{ width: '100%', padding: '8px 12px', border: '1px solid #ddd', borderRadius: '6px', fontSize: '14px' }}
+                      type="number"
+                      name="paidAmount"
+                      value={billForm.paidAmount}
+                      onChange={handleFormChange}
+                      onWheel={handleNumberInputWheel}
+                      placeholder="0.00"
+                      min="0"
+                      step="0.01"
+                      className="bst-input"
                     />
-                    {showAdjustBillDropdown && adjustBillSearchQuery.trim() && (
-                      <div className="product-dropdown" style={{ maxHeight: '200px', overflowY: 'auto' }}>
-                        {(() => {
-                          const query = adjustBillSearchQuery.toLowerCase().trim();
-                          const queryDigits = normalizePhone(adjustBillSearchQuery);
-                          const matching = bills.filter((b) => {
-                            const billNum = (b.billNumber || '').toLowerCase();
-                            const name = (b.fullName || b.customerName || '').toLowerCase();
-                            const phone = normalizePhone(b.phone || b.customerPhone);
-                            const alreadyAdded = adjustments.some((a) => a.billId === b.id);
-                            if (alreadyAdded) return false;
-                            const info = getBillAdjustmentInfo(b);
-                            if (info.due <= 0 && info.cashReturn <= 0) return false;
-                            return (
-                              billNum.includes(query) ||
-                              name.includes(query) ||
-                              (queryDigits.length >= 3 && phone.includes(queryDigits))
-                            );
-                          });
-                          if (matching.length === 0) {
-                            return (
-                              <div className="product-dropdown-item no-results" style={{ padding: '10px', color: '#999' }}>
-                                No bills found with due or cash return
-                              </div>
-                            );
-                          }
-                          return matching.slice(0, 10).map((bill) => {
-                            const info = getBillAdjustmentInfo(bill);
-                            return (
-                              <div
-                                key={bill.id}
-                                className="product-dropdown-item"
-                                onMouseDown={(e) => {
-                                  e.preventDefault();
-                                  handleAdjustBill(bill);
-                                }}
-                                style={{ padding: '10px 12px', cursor: 'pointer', borderBottom: '1px solid #f0f0f0', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}
-                              >
-                                <div>
-                                  <strong>{bill.billNumber || bill.id.slice(0, 8)}</strong>
-                                  <span style={{ marginLeft: '8px', color: '#888', fontSize: '12px' }}>{bill.fullName || bill.customerName}</span>
-                                </div>
-                                <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-                                  {info.due > 0 && (
-                                    <span style={{ color: '#e74c3c', fontSize: '12px', fontWeight: '600' }}>Due: ₹{info.due.toFixed(2)}</span>
-                                  )}
-                                  {info.cashReturn > 0 && (
-                                    <span style={{ color: '#27ae60', fontSize: '12px', fontWeight: '600' }}>Return: ₹{info.cashReturn.toFixed(2)}</span>
-                                  )}
-                                </div>
-                              </div>
-                            );
-                          });
-                        })()}
-                      </div>
-                    )}
                   </div>
                 </div>
 
-                {/* Applied Adjustments */}
-                {adjustments.length > 0 && (
-                  <div style={{ marginTop: '8px' }}>
-                    {adjustments.map((adj, idx) => (
-                      <div key={idx} className="summary-row" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '6px 0', color: '#9b59b6' }}>
-                        <span style={{ fontSize: '13px', fontWeight: '600' }}>
-                          ** Bill no. {adj.billNumber}, Amount Adjusted
-                        </span>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                          <span style={{ fontWeight: '600' }}>
-                            {adj.type === 'due' ? '+' : '-'}₹{adj.amount.toFixed(2)}
-                          </span>
-                          <button
-                            type="button"
-                            onClick={() => removeAdjustment(adj.billId)}
-                            style={{ background: 'none', border: 'none', color: '#999', cursor: 'pointer', fontSize: '16px', padding: '0 4px', lineHeight: '1' }}
-                            title="Remove adjustment"
-                          >✕</button>
-                        </div>
-                      </div>
-                    ))}
-                    <div className="summary-row total-row" style={{ marginTop: '4px', borderTop: '1px solid #ddd', paddingTop: '6px' }}>
-                      <span><strong>Adjusted Total:</strong></span>
-                      <span><strong>₹{calculateAdjustedTotal().toFixed(2)}</strong></span>
-                    </div>
+                {/* Due row */}
+                <div className={`bst-row ${hasPaidAmountEntry() && calculatePaidAmount() >= calculateAdjustedTotal() ? 'bst-paid-row' : 'bst-due-row'}`}>
+                  <div className="bst-label">Due</div>
+                  <div className="bst-value">
+                    {hasPaidAmountEntry() && calculatePaidAmount() >= calculateAdjustedTotal()
+                      ? '✅ Fully Paid'
+                      : `₹${calculateDueAmount().toFixed(2)}`}
                   </div>
-                )}
-
-                <div className="form-group due-field" style={{ marginTop: '12px', borderTop: '1px dashed #ccc', paddingTop: '12px' }}>
-                  <label>Paid Amount (₹)</label>
-                  <input
-                    type="number"
-                    name="paidAmount"
-                    value={billForm.paidAmount}
-                    onChange={handleFormChange}
-                    onWheel={handleNumberInputWheel}
-                    placeholder="Enter amount paid by customer (optional)"
-                    min="0"
-                    step="0.01"
-                  />
                 </div>
-                {hasPaidAmountEntry() && calculateDueAmount() > 0 && (
-                  <div className="summary-row due-row" style={{ color: '#e74c3c', fontWeight: 'bold', marginTop: '8px' }}>
-                    <span>Due (Remaining):</span>
-                    <span>₹{calculateDueAmount().toFixed(2)}</span>
-                  </div>
-                )}
-                {hasPaidAmountEntry() && calculatePaidAmount() >= calculateAdjustedTotal() && (
-                  <div className="summary-row" style={{ color: '#27ae60', fontWeight: 'bold', marginTop: '8px' }}>
-                    <span>✅ Fully Paid</span>
-                  </div>
-                )}
+
               </div>
             </div>
 
@@ -3873,6 +4106,86 @@ function BillGeneration() {
                 </div>
               );
             })()}
+          </div>
+        </div>
+      )}
+
+      {/* Draft Bills Modal */}
+      {showDraftsModal && (
+        <div
+          style={{
+            position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
+            backgroundColor: 'rgba(0,0,0,0.5)', display: 'flex',
+            alignItems: 'center', justifyContent: 'center', zIndex: 10000,
+            padding: '20px'
+          }}
+          onClick={() => setShowDraftsModal(false)}
+        >
+          <div
+            style={{
+              backgroundColor: '#fff', borderRadius: '10px', maxWidth: '650px',
+              width: '100%', maxHeight: '80vh', overflow: 'auto', padding: '20px',
+              boxShadow: '0 4px 15px rgba(0,0,0,0.2)', position: 'relative'
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '15px' }}>
+              <h3 style={{ margin: 0, color: '#334155' }}>Draft Bills</h3>
+              <button
+                type="button"
+                onClick={() => setShowDraftsModal(false)}
+                style={{ background: 'none', border: 'none', fontSize: '24px', cursor: 'pointer', color: '#999' }}
+              >
+                ×
+              </button>
+            </div>
+            {draftBills.length === 0 ? (
+              <p style={{ textAlign: 'center', color: '#888', padding: '20px' }}>No draft bills saved.</p>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                {draftBills.map((draft) => {
+                  const draftItems = Array.isArray(draft.items) ? draft.items : [];
+                  const subtotal = draftItems.reduce((sum, item) => sum + (item.price * item.quantity), 0);
+                  const dateStr = draft.createdAt ? new Date(draft.createdAt).toLocaleString() : '-';
+                  return (
+                    <div
+                      key={draft.id}
+                      style={{
+                        border: '1px solid #ddd', borderRadius: '8px', padding: '12px',
+                        display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                        background: '#fcfcfc'
+                      }}
+                    >
+                      <div>
+                        <div style={{ fontWeight: 600, fontSize: '1rem' }}>{draft.fullName || '[No Name]'}</div>
+                        <div style={{ fontSize: '0.82rem', color: '#666', marginTop: '4px' }}>
+                          Items: {draftItems.length} | Amount: ₹{subtotal.toFixed(2)}
+                        </div>
+                        <div style={{ fontSize: '0.75rem', color: '#999', marginTop: '4px' }}>
+                          Saved: {dateStr}
+                        </div>
+                      </div>
+                      <div style={{ display: 'flex', gap: '8px' }}>
+                        <button
+                          type="button"
+                          className="small-action-btn save"
+                          onClick={() => handleContinueDraft(draft)}
+                        >
+                          Continue
+                        </button>
+                        <button
+                          type="button"
+                          className="small-action-btn remove"
+                          onClick={() => handleDeleteDraft(draft.id)}
+                        >
+                          Delete
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
           </div>
         </div>
       )}
