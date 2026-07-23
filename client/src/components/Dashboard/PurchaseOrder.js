@@ -200,6 +200,7 @@ function PurchaseOrder() {
   const [openOrderVariationProductId, setOpenOrderVariationProductId] = useState(null);
   const [showAllOrderProducts, setShowAllOrderProducts] = useState(false);
   const [oldOrdersSearch, setOldOrdersSearch] = useState('');
+  const [previewSearchQuery, setPreviewSearchQuery] = useState('');
   const [expandedHistoryOrderId, setExpandedHistoryOrderId] = useState(null);
   const [openMenuOrderId, setOpenMenuOrderId] = useState(null);
   const [openShareOrderId, setOpenShareOrderId] = useState(null);
@@ -253,7 +254,10 @@ function PurchaseOrder() {
             price: data.price || 0,
             unit: data.unit || '',
             sizeNamePosition: normalizeSizeNamePosition(data.sizeNamePosition),
-            enableDualUnit: Boolean(data.enableDualUnit)
+            enableDualUnit: Boolean(data.enableDualUnit),
+            primaryUnit: data.primaryUnit || '',
+            secondaryUnit: data.secondaryUnit || '',
+            conversionFactor: data.conversionFactor || null
           };
 
           const totalQuantity = data.quantity || 0;
@@ -657,6 +661,7 @@ function PurchaseOrder() {
     setSelectedIds([]);
     setSelectedProducts([]);
     setShowAllOrderProducts(false);
+    setPreviewSearchQuery('');
   };
 
   const startEditOrder = (order) => {
@@ -728,6 +733,7 @@ function PurchaseOrder() {
     setIsHistoryOpen(false);
     setExpandedHistoryOrderId(null);
     setIsCreatingOrder(true);
+    setPreviewSearchQuery('');
   };
 
   const shareOrderOnWhatsApp = (order) => {
@@ -793,9 +799,14 @@ function PurchaseOrder() {
             catalogueNumber: product.catalogueNumber || '',
             orderQuantity: '1',
             orderUnit: product.base?.unit || product.unit || '',
-            orderQuantitySecondary: '',
-            orderedQuantityPrimary: null,
-            primaryUnit: product.base?.unit || product.unit || '',
+            orderQuantitySecondary: product.enableDualUnit ? '1' : '',
+            orderedQuantityPrimary:
+              product.enableDualUnit && parsePositiveNumber(product.conversionFactor)
+                ? parsePositiveNumber(product.conversionFactor)
+                : null,
+            primaryUnit: product.primaryUnit || product.base?.unit || product.unit || '',
+            secondaryUnit: product.secondaryUnit || '',
+            conversionFactor: product.conversionFactor || null,
             enableDualUnit: Boolean(product.enableDualUnit)
           });
         }
@@ -934,6 +945,7 @@ function PurchaseOrder() {
     setEditingOrderId(null);
     setEditingOrderMeta(null);
     setShowExitConfirm(false);
+    setPreviewSearchQuery('');
   };
 
   const requestCloseOrderModal = () => {
@@ -2105,12 +2117,24 @@ function PurchaseOrder() {
                 <div
                   style={{
                     display: 'flex',
-                    justifyContent: 'flex-end',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
                     marginBottom: '10px',
-                    fontWeight: 700
+                    gap: '10px',
+                    flexWrap: 'wrap'
                   }}
                 >
-                  ORD NO. : {previewOrderNumber}
+                  <input
+                    type="text"
+                    placeholder="Search existing items in this purchase order..."
+                    value={previewSearchQuery}
+                    onChange={(e) => setPreviewSearchQuery(e.target.value)}
+                    className="low-stock-search-input"
+                    style={{ width: '100%', maxWidth: '400px', margin: 0 }}
+                  />
+                  <div style={{ fontWeight: 700 }}>
+                    ORD NO. : {previewOrderNumber}
+                  </div>
                 </div>
                 <div
                   style={{
@@ -2161,109 +2185,121 @@ function PurchaseOrder() {
                       </tr>
                     </thead>
                     <tbody>
-                      {selectedProducts.map((product, index) => (
-                        <tr key={product.id}>
-                          <td>{index + 1}</td>
-                          <td>
-                            {product.isCustom ? (
-                              <input
-                                type="text"
-                                value={product.name || ''}
-                                onChange={(e) => handleCustomFieldChange(index, 'name', e.target.value)}
-                                placeholder="Custom product name"
-                              />
-                            ) : (
-                              product.name
-                            )}
-                          </td>
-                          <td>
-                            {product.isCustom ? (
-                              <input
-                                type="text"
-                                value={product.productBrand || ''}
-                                onChange={(e) => handleCustomFieldChange(index, 'productBrand', e.target.value)}
-                                placeholder="Brand (optional)"
-                              />
-                            ) : (
-                              product.productBrand || '-'
-                            )}
-                          </td>
-                          <td>
-                            {product.isCustom ? (
-                              <input
-                                type="text"
-                                value={product.productCategory || ''}
-                                onChange={(e) => handleCustomFieldChange(index, 'productCategory', e.target.value)}
-                                placeholder="Category (optional)"
-                              />
-                            ) : (
-                              product.productCategory || '-'
-                            )}
-                          </td>
-                          <td>
-                            {product.isCustom ? (
-                              <input
-                                type="text"
-                                value={product.catalogueNumber || ''}
-                                onChange={(e) => handleCustomFieldChange(index, 'catalogueNumber', e.target.value)}
-                                placeholder="Catalogue no. (optional)"
-                              />
-                            ) : (
-                              product.catalogueNumber || ''
-                            )}
-                          </td>
-                          <td style={{ textAlign: 'center', verticalAlign: 'middle' }}>
-                            {previewItemUsesSecondaryQty(product) ? (
-                              <div
-                                style={{
-                                  display: 'flex',
-                                  flexDirection: 'column',
-                                  gap: '4px',
-                                  alignItems: 'center'
-                                }}
-                              >
-                                <div style={{ display: 'flex', alignItems: 'center', gap: '6px', justifyContent: 'center' }}>
-                                  <input
-                                    type="number"
-                                    min="0"
-                                    step="0.01"
-                                    value={product.orderQuantitySecondary || ''}
-                                    onChange={(e) => handleSecondaryQuantityChange(index, e.target.value)}
-                                    placeholder="0"
-                                    style={{ width: '90px', textAlign: 'center' }}
-                                  />
-                                  <span>{product.secondaryUnit}</span>
-                                </div>
-                                <small style={{ color: '#555' }}>
-                                  1 {product.secondaryUnit} = {product.conversionFactor} {product.primaryUnit || 'units'}
-                                </small>
-                                <small style={{ color: '#333', fontWeight: 600 }}>
-                                  Primary qty: {product.orderedQuantityPrimary ?? 0} {product.primaryUnit || ''}
-                                </small>
-                              </div>
-                            ) : (
-                              <div style={{ display: 'flex', justifyContent: 'center' }}>
+                      {selectedProducts
+                        .map((product, originalIndex) => ({ ...product, originalIndex }))
+                        .filter((product) => {
+                          if (!previewSearchQuery.trim()) return true;
+                          const q = previewSearchQuery.trim().toLowerCase();
+                          return (
+                            (product.name || '').toLowerCase().includes(q) ||
+                            (product.productBrand || '').toLowerCase().includes(q) ||
+                            (product.productCategory || '').toLowerCase().includes(q) ||
+                            (product.catalogueNumber || '').toLowerCase().includes(q)
+                          );
+                        })
+                        .map((product, displayIndex) => (
+                          <tr key={product.id}>
+                            <td>{displayIndex + 1}</td>
+                            <td>
+                              {product.isCustom ? (
                                 <input
                                   type="text"
-                                  value={product.orderQuantity || ''}
-                                  onChange={(e) => handleQuantityChange(index, e.target.value)}
-                                  placeholder="Qty (can include text)"
-                                  style={{ width: '120px', textAlign: 'center' }}
+                                  value={product.name || ''}
+                                  onChange={(e) => handleCustomFieldChange(product.originalIndex, 'name', e.target.value)}
+                                  placeholder="Custom product name"
                                 />
-                              </div>
-                            )}
-                          </td>
-                          <td>
-                            <button
-                              type="button"
-                              className="cancel-due-btn"
-                              onClick={() => handleRemoveProductFromOrder(index)}
-                            >
-                              Remove
-                            </button>
-                          </td>
-                        </tr>
-                      ))}
+                              ) : (
+                                product.name
+                              )}
+                            </td>
+                            <td>
+                              {product.isCustom ? (
+                                <input
+                                  type="text"
+                                  value={product.productBrand || ''}
+                                  onChange={(e) => handleCustomFieldChange(product.originalIndex, 'productBrand', e.target.value)}
+                                  placeholder="Brand (optional)"
+                                />
+                              ) : (
+                                product.productBrand || '-'
+                              )}
+                            </td>
+                            <td>
+                              {product.isCustom ? (
+                                <input
+                                  type="text"
+                                  value={product.productCategory || ''}
+                                  onChange={(e) => handleCustomFieldChange(product.originalIndex, 'productCategory', e.target.value)}
+                                  placeholder="Category (optional)"
+                                />
+                              ) : (
+                                product.productCategory || '-'
+                              )}
+                            </td>
+                            <td>
+                              {product.isCustom ? (
+                                <input
+                                  type="text"
+                                  value={product.catalogueNumber || ''}
+                                  onChange={(e) => handleCustomFieldChange(product.originalIndex, 'catalogueNumber', e.target.value)}
+                                  placeholder="Catalogue no. (optional)"
+                                />
+                              ) : (
+                                product.catalogueNumber || ''
+                              )}
+                            </td>
+                            <td style={{ textAlign: 'center', verticalAlign: 'middle' }}>
+                              {previewItemUsesSecondaryQty(product) ? (
+                                <div
+                                  style={{
+                                    display: 'flex',
+                                    flexDirection: 'column',
+                                    gap: '4px',
+                                    alignItems: 'center'
+                                  }}
+                                >
+                                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px', justifyContent: 'center' }}>
+                                    <input
+                                      type="number"
+                                      min="0"
+                                      step="0.01"
+                                      value={product.orderQuantitySecondary || ''}
+                                      onChange={(e) => handleSecondaryQuantityChange(product.originalIndex, e.target.value)}
+                                      placeholder="0"
+                                      style={{ width: '90px', textAlign: 'center' }}
+                                    />
+                                    <span>{product.secondaryUnit}</span>
+                                  </div>
+                                  <small style={{ color: '#555' }}>
+                                    1 {product.secondaryUnit} = {product.conversionFactor} {product.primaryUnit || 'units'}
+                                  </small>
+                                  <small style={{ color: '#333', fontWeight: 600 }}>
+                                    Primary qty: {product.orderedQuantityPrimary ?? 0} {product.primaryUnit || ''}
+                                  </small>
+                                </div>
+                              ) : (
+                                <div style={{ display: 'flex', justifyContent: 'center' }}>
+                                  <input
+                                    type="text"
+                                    value={product.orderQuantity || ''}
+                                    onChange={(e) => handleQuantityChange(product.originalIndex, e.target.value)}
+                                    placeholder="Qty (can include text)"
+                                    style={{ width: '120px', textAlign: 'center' }}
+                                  />
+                                </div>
+                              )}
+                            </td>
+                            <td>
+                              <button
+                                type="button"
+                                className="cancel-due-btn"
+                                onClick={() => handleRemoveProductFromOrder(product.originalIndex)}
+                              >
+                                Remove
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
                     </tbody>
                   </table>
                 </div>

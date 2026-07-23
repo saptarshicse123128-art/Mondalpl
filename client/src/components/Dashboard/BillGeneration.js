@@ -66,7 +66,7 @@ function BillGeneration() {
     price: ''
   });
   const [editingCartItemKey, setEditingCartItemKey] = useState(null);
-  const [editingCartValues, setEditingCartValues] = useState({ quantity: '', price: '' });
+  const [editingCartValues, setEditingCartValues] = useState({ quantity: '', price: '', discPct: '' });
   const [editingDueBillId, setEditingDueBillId] = useState(null);
   const [editingDueAmount, setEditingDueAmount] = useState('');
   const [currentDueAmount, setCurrentDueAmount] = useState(0);
@@ -77,6 +77,9 @@ function BillGeneration() {
   const [showAdjustBillDropdown, setShowAdjustBillDropdown] = useState(false);
   const [adjustments, setAdjustments] = useState([]);
   const [selectedSuggestedBillIds, setSelectedSuggestedBillIds] = useState([]);
+  const [discPctMode, setDiscPctMode] = useState(false);
+  const [discPctSelectedKeys, setDiscPctSelectedKeys] = useState(new Set());
+  const [bulkDiscPct, setBulkDiscPct] = useState('');
 
   useEffect(() => {
     const unsubscribe = onSnapshot(collection(db, 'products'), (snapshot) => {
@@ -437,16 +440,23 @@ function BillGeneration() {
   };
 
   const startCartItemEdit = (item) => {
+    const mrp = getCartItemMrp(item);
+    const price = item.price ?? 0;
+    let initDiscPct = '';
+    if (mrp != null && mrp > 0) {
+      initDiscPct = (((mrp - price) / mrp) * 100).toFixed(2);
+    }
     setEditingCartItemKey(getCartItemKey(item));
     setEditingCartValues({
       quantity: String(item.quantity),
-      price: String(item.price ?? '')
+      price: String(price),
+      discPct: initDiscPct
     });
   };
 
   const cancelCartItemEdit = () => {
     setEditingCartItemKey(null);
-    setEditingCartValues({ quantity: '', price: '' });
+    setEditingCartValues({ quantity: '', price: '', discPct: '' });
   };
 
   const saveCartItemEdit = async (item) => {
@@ -478,11 +488,37 @@ function BillGeneration() {
     }
 
     setCart((prev) =>
-      prev.map((ci) =>
-        getCartItemKey(ci) === cartItemKey ? { ...ci, quantity: newQty, price: newPrice } : ci
-      )
+      prev.map((ci) => {
+        if (getCartItemKey(ci) !== cartItemKey) return ci;
+        const updatedItem = { ...ci, quantity: newQty, price: newPrice };
+        const newDiscPct = parseFloat(editingCartValues.discPct);
+        if (!isNaN(newDiscPct)) updatedItem.sellingDiscount = newDiscPct;
+        return updatedItem;
+      })
     );
     cancelCartItemEdit();
+  };
+
+  const applyBulkDiscPct = () => {
+    const pct = parseFloat(bulkDiscPct);
+    if (isNaN(pct) || pct < 0 || pct > 100) {
+      alert('Please enter a valid discount % between 0 and 100');
+      return;
+    }
+    setCart((prev) =>
+      prev.map((item) => {
+        const key = getCartItemKey(item);
+        if (!discPctSelectedKeys.has(key)) return item;
+        const mrp = getCartItemMrp(item);
+        // Skip items with no MRP — % off only applies when MRP is known
+        if (mrp == null || mrp <= 0) return item;
+        const newPrice = mrp * (1 - pct / 100);
+        return { ...item, price: Math.max(0, parseFloat(newPrice.toFixed(2))), sellingDiscount: pct };
+      })
+    );
+    setDiscPctSelectedKeys(new Set());
+    setBulkDiscPct('');
+    setDiscPctMode(false);
   };
 
   const restoreProductStock = async (productId, quantityToRestore, variationSize = null) => {
@@ -608,10 +644,13 @@ function BillGeneration() {
       
       const updatedHistory = [...existingHistory, newHistoryEntry];
 
-      // Update bill with new due amount and history
+       const initialDueVal = getInitialDueForBill(billDoc.data());
+
+      // Update bill with new due amount, history and initialDueAmount
       await updateDoc(billRef, {
         due: newDueAmount > 0 ? newDueAmount.toString() : null,
         dueHistory: updatedHistory,
+        initialDueAmount: initialDueVal,
         updatedAt: serverTimestamp()
       });
 
@@ -718,9 +757,9 @@ function BillGeneration() {
       });
 
       // Calculate original discount percentage
-      const totalReturnedSoFar = (billData.returnedItems || []).reduce((sum, item) => sum + (item.subtotal || 0), 0);
-      const originalSubtotal = (billData.subtotal || 0) + totalReturnedSoFar;
-      const discountPercent = originalSubtotal > 0 ? (parseFloat(billData.discount || 0) / originalSubtotal) : 0;
+      const origDiscount = billData.originalDiscount !== undefined ? billData.originalDiscount : parseFloat(billData.discount || 0);
+      const origSubtotal = billData.originalSubtotal !== undefined ? billData.originalSubtotal : ((billData.subtotal || 0) + (billData.returnedItems || []).reduce((sum, item) => sum + (item.subtotal || 0), 0));
+      const discountPercent = origSubtotal > 0 ? (origDiscount / origSubtotal) : 0;
 
       // Calculate new subtotal (remaining items)
       const newSubtotal = updatedItems.reduce((sum, item) => sum + (item.subtotal || 0), 0);
@@ -754,16 +793,19 @@ function BillGeneration() {
         returnedAt: returnedAt
       }));
 
+      const initialDueVal = getInitialDueForBill(billData);
+
       // Update bill
       batch.update(billRef, {
         items: updatedItems,
-        originalSubtotal: billData.originalSubtotal ?? originalSubtotal,
+        originalSubtotal: billData.originalSubtotal ?? origSubtotal,
         originalDiscount: billData.originalDiscount ?? parseFloat(billData.discount || 0),
         originalTotal: billData.originalTotal ?? parseFloat(billData.total || 0),
         subtotal: newSubtotal,
         total: newTotal,
         discount: newDiscount,
         due: newDue > 0 ? newDue : null,
+        initialDueAmount: initialDueVal,
         returnedItems: [...existingReturnedItems, ...newReturnedItems],
         updatedAt: serverTimestamp()
       });
@@ -895,9 +937,9 @@ function BillGeneration() {
     const returnSubtotal = items.reduce((sum, item) => sum + ((item.price || 0) * (item.returnQuantity || item.quantity || 0)), 0);
     
     // Calculate original discount percentage
-    const totalReturnedSoFar = (bill.returnedItems || []).reduce((sum, item) => sum + (item.subtotal || 0), 0);
-    const originalSubtotal = (bill.subtotal || 0) + totalReturnedSoFar;
-    const discountPercent = originalSubtotal > 0 ? (parseFloat(bill.discount || 0) / originalSubtotal) : 0;
+    const origDiscount = bill.originalDiscount !== undefined ? bill.originalDiscount : parseFloat(bill.discount || 0);
+    const origSubtotal = bill.originalSubtotal !== undefined ? bill.originalSubtotal : ((bill.subtotal || 0) + (bill.returnedItems || []).reduce((sum, item) => sum + (item.subtotal || 0), 0));
+    const discountPercent = origSubtotal > 0 ? (origDiscount / origSubtotal) : 0;
     
     const discountAdjustment = returnSubtotal * discountPercent;
     const rawCashReturn = returnSubtotal - discountAdjustment;
@@ -1046,7 +1088,7 @@ function BillGeneration() {
     pdfDoc.text(amount.toFixed(2), boxX + boxWidth - 4, y, { align: 'right' });
   };
 
-  const drawReturnedItemsSection = (pdfDoc, bill, returnGroup, startY, previousReturnedItems) => {
+  const drawReturnedItemsSection = (pdfDoc, bill, returnGroup, startY, previousReturnedItems, dueAfterThis, cashReturnAfterThis, groupPayments) => {
     let finalY = startY + 5;
     const returnedItems = returnGroup.items;
 
@@ -1111,7 +1153,6 @@ function BillGeneration() {
 
     let returnSummaryY = pdfDoc.lastAutoTable.finalY + 10;
     const returnSummary = calculateReturnSummary(bill, returnedItems);
-    const cashReturn = calculateReturnEventCashReturn(bill, previousReturnedItems, returnedItems);
 
     pdfDoc.setFontSize(10);
     pdfDoc.setTextColor(0, 0, 0);
@@ -1126,18 +1167,49 @@ function BillGeneration() {
       returnSummaryY += 7;
     }
 
-    pdfDoc.text('Round off :', 150, returnSummaryY, { align: 'right' });
-    pdfDoc.text(returnSummary.roundOff.toFixed(2), 190, returnSummaryY, { align: 'right' });
-    returnSummaryY += 7;
+    if (returnSummary.roundOff !== 0) {
+      pdfDoc.text('Round off :', 150, returnSummaryY, { align: 'right' });
+      pdfDoc.text(returnSummary.roundOff.toFixed(2), 190, returnSummaryY, { align: 'right' });
+      returnSummaryY += 7;
+    }
 
     pdfDoc.setFont('helvetica', 'bold');
     pdfDoc.text('Total :', 150, returnSummaryY, { align: 'right' });
     pdfDoc.text(returnSummary.cashReturn.toFixed(2), 190, returnSummaryY, { align: 'right' });
     returnSummaryY += 8;
 
-    if (cashReturn > 0) {
-      drawFinalBalanceBox(pdfDoc, 'CASH RETURN', cashReturn, returnSummaryY);
-      returnSummaryY += 11;
+    pdfDoc.setFont('helvetica', 'normal');
+    pdfDoc.setFontSize(9.5);
+    pdfDoc.setTextColor(60, 60, 60);
+
+    if (dueAfterThis > 0) {
+      pdfDoc.text('Current Due till return:', 150, returnSummaryY, { align: 'right' });
+      pdfDoc.text(`Rs. ${dueAfterThis.toFixed(2)}`, 190, returnSummaryY, { align: 'right' });
+      returnSummaryY += 6;
+    }
+
+    if (cashReturnAfterThis > 0) {
+      pdfDoc.text('Cash Return till return:', 150, returnSummaryY, { align: 'right' });
+      pdfDoc.text(`Rs. ${cashReturnAfterThis.toFixed(2)}`, 190, returnSummaryY, { align: 'right' });
+      returnSummaryY += 7;
+    }
+
+    const totalGroupPayments = (groupPayments || []).reduce((sum, p) => sum + p.amountPaid, 0);
+    if (totalGroupPayments > 0) {
+      pdfDoc.setFont('helvetica', 'bold');
+      pdfDoc.text('Payments Received:', 150, returnSummaryY, { align: 'right' });
+      pdfDoc.setFont('helvetica', 'normal');
+      pdfDoc.text(`Rs. ${totalGroupPayments.toFixed(2)}`, 190, returnSummaryY, { align: 'right' });
+      returnSummaryY += 6;
+
+      pdfDoc.setFontSize(8.5);
+      pdfDoc.setTextColor(80, 80, 80);
+      groupPayments.forEach((entry) => {
+        const entryDate = formatPdfHistoryDate(entry.date || entry.timestamp);
+        const amountPaid = parseFloat(entry.amountPaid || 0);
+        pdfDoc.text(`- Paid on ${entryDate}: Rs. ${amountPaid.toFixed(2)}`, 190, returnSummaryY, { align: 'right' });
+        returnSummaryY += 5;
+      });
     }
 
     return returnSummaryY + 10;
@@ -1587,6 +1659,11 @@ function BillGeneration() {
       // Calculate final Y position after table
       let finalY = pdfDoc.lastAutoTable.finalY + 10;
       
+      if (finalY > 210) {
+        pdfDoc.addPage();
+        finalY = 20;
+      }
+      
       // Main Summary section directly below main table
       pdfDoc.setFontSize(10);
       pdfDoc.setTextColor(0, 0, 0);
@@ -1645,6 +1722,7 @@ function BillGeneration() {
       pdfDoc.setTextColor(40, 40, 40);
       
       let initialDue = getInitialDueForBill(billToDownload);
+      const returnedItems = billToDownload.returnedItems || [];
       const dueHistory = billToDownload.dueHistory || [];
       const currentOutstandingDue = parseFloat(billToDownload.due || 0);
       const dueBeforePayments = currentOutstandingDue + getPaidAgainstDue(billToDownload);
@@ -1655,15 +1733,15 @@ function BillGeneration() {
       summaryY += 7;
       
       // 6. DUE
-      if (currentOutstandingDue > 0) {
+      if (initialDue > 0) {
         pdfDoc.setTextColor(40, 40, 40);
         pdfDoc.text('Due Rs.', 150, summaryY, { align: 'right' });
-        pdfDoc.text(dueBeforePayments.toFixed(2), 190, summaryY, { align: 'right' });
+        pdfDoc.text(initialDue.toFixed(2), 190, summaryY, { align: 'right' });
         summaryY += 7;
         
         // 7. DUE HISTORY entries (Dd.mm.yyyy paid ..... due ....)
         const filteredHistory = dueHistory.filter(entry => entry.amountPaid !== undefined);
-        if (filteredHistory.length > 0) {
+        if (filteredHistory.length > 0 && returnedItems.length === 0) {
           pdfDoc.setFontSize(9);
           filteredHistory.forEach((entry) => {
             const entryDate = formatPdfHistoryDate(entry.date || entry.timestamp);
@@ -1676,7 +1754,7 @@ function BillGeneration() {
       }
       
       // 8. Due Amount (current outstanding — bold red, always last)
-      if (currentOutstandingDue > 0) {
+      if (initialDue > 0 && returnedItems.length === 0) {
         drawFinalBalanceBox(pdfDoc, 'DUE AMOUNT', currentOutstandingDue, summaryY);
         summaryY += 11;
       }
@@ -1684,132 +1762,133 @@ function BillGeneration() {
       finalY = summaryY + 10;
 
       // Check for returned items and add returned items table and summary
-      const returnedItems = billToDownload.returnedItems || [];
       if (returnedItems.length > 0) {
-        let previousReturnedItems = [];
-        groupReturnedItemsByEvent(returnedItems).forEach((returnGroup) => {
-          finalY = drawReturnedItemsSection(pdfDoc, billToDownload, returnGroup, finalY, previousReturnedItems);
-          previousReturnedItems = [...previousReturnedItems, ...returnGroup.items];
-        });
-      }
+        const returnGroups = groupReturnedItemsByEvent(returnedItems);
+        
+        // Calculate progressive state using a queue-based merge of returns and payments
+        let runningDue = initialDue;
+        let runningCashReturn = 0;
+        const returnGroupStates = {};
+        const allEvents = [];
 
-      if (false && returnedItems.length > 0) {
-        // Add spacing before returned items section
-        finalY += 5;
-        
-        // "Returned Items" heading
-        pdfDoc.setFontSize(12);
-        pdfDoc.setFont('helvetica', 'bold');
-        pdfDoc.setTextColor(40, 40, 40);
-        pdfDoc.text('RETURNED ITEMS', 20, finalY);
-        
-        // Return Date (Top-right of Returned Items section)
-        pdfDoc.setFontSize(10);
-        pdfDoc.setFont('helvetica', 'normal');
-        pdfDoc.setTextColor(100, 100, 100);
-        const lastReturn = returnedItems[returnedItems.length - 1];
-        const returnDate = lastReturn?.returnedAt?.toDate ? lastReturn.returnedAt.toDate().toLocaleDateString('en-GB') : (lastReturn?.returnedAt instanceof Date ? lastReturn.returnedAt.toLocaleDateString('en-GB') : 'N/A');
-        pdfDoc.text(`Date - ${returnDate}`, 190, finalY, { align: 'right' });
-        
-        finalY += 5;
-        
-        const returnedTableData = returnedItems.map((item, index) => {
-          const productName = formatProductWithVariation(
-            item.productName || item.name,
-            item.variationSize,
-            positionForSavedBillItem(item)
-          );
-          const quantity = item.quantity || 0;
-          const price = item.price || 0;
-          const amount = item.subtotal || (quantity * price);
-          return [
-            String(index + 1), // SL No.
-            productName, // Product
-            String(quantity), // Qty.
-            'Rs. ' + price.toFixed(2), // Price
-            'Rs. ' + amount.toFixed(2) // Amount
-          ];
+        const paymentQueue = (billToDownload.dueHistory || [])
+          .filter(entry => entry.amountPaid !== undefined)
+          .map(entry => {
+            const date = toDateObject(entry.date || entry.timestamp);
+            const prevDue = entry.previousDue !== undefined 
+              ? parseFloat(entry.previousDue) 
+              : parseFloat(entry.amountPaid || 0) + parseFloat(entry.newDue || 0);
+            return {
+              type: 'payment',
+              timestamp: date ? date.getTime() : 0,
+              amountPaid: parseFloat(entry.amountPaid || 0),
+              previousDue: prevDue,
+              date: entry.date || entry.timestamp
+            };
+          });
+
+        const returnQueue = returnGroups.map((group, index) => {
+          const eventSummary = calculateReturnSummary(billToDownload, group.items);
+          return {
+            type: 'return',
+            timestamp: group.timestamp,
+            groupIndex: index,
+            group: group,
+            returnAmount: eventSummary.cashReturn
+          };
         });
-        
-        pdfDoc.autoTable({
-          startY: finalY,
-          head: [['SL No.', 'Product', 'Qty.', 'Price', 'Amount']],
-          body: returnedTableData,
-          theme: 'striped',
-          headStyles: { 
-            fillColor: [100, 100, 100],
-            textColor: [255, 255, 255], // White text
-            fontStyle: 'bold',
-            fontSize: 10
-          },
-          styles: { 
-            fontSize: 9,
-            font: 'helvetica',
-            textColor: [0, 0, 0]
-          },
-          alternateRowStyles: {
-            fillColor: [245, 245, 245]
-          },
-          margin: { left: 20, right: 20 },
-          columnStyles: {
-            0: { cellWidth: 20 }, // SL No.
-            1: { cellWidth: 70 }, // Product
-            2: { cellWidth: 20 }, // Qty.
-            3: { cellWidth: 30 }, // Price
-            4: { cellWidth: 30 }  // Amount
+
+        // Merge queues chronologically but respect previousDue values
+        while (paymentQueue.length > 0 || returnQueue.length > 0) {
+          if (paymentQueue.length > 0) {
+            const nextPayment = paymentQueue[0];
+            // If the payment's previousDue matches the current runningDue (within tolerance)
+            // or if there are no more returns to process, apply the payment.
+            if (Math.abs(nextPayment.previousDue - runningDue) < 0.1 || returnQueue.length === 0) {
+              const payment = paymentQueue.shift();
+              runningDue = Math.max(0, runningDue - payment.amountPaid);
+              allEvents.push(payment);
+              continue;
+            }
+          }
+
+          if (returnQueue.length > 0) {
+            const returnEvent = returnQueue.shift();
+            const returnAmount = returnEvent.returnAmount;
+
+            const amountReducingDue = Math.min(returnAmount, runningDue);
+            runningDue = runningDue - amountReducingDue;
+            const cashReturnForThisEvent = returnAmount - amountReducingDue;
+
+            if (cashReturnForThisEvent > 0) {
+              runningCashReturn += cashReturnForThisEvent;
+            }
+
+            returnGroupStates[returnEvent.groupIndex] = {
+              dueAfterThis: runningDue,
+              cashReturnAfterThis: cashReturnForThisEvent > 0 ? runningCashReturn : 0
+            };
+
+            allEvents.push(returnEvent);
+          }
+        }
+
+        const finalCashReturn = runningCashReturn;
+
+        // Partition payments to their preceding return groups
+        const paymentsPerGroup = {};
+        returnGroups.forEach((_, idx) => {
+          paymentsPerGroup[idx] = [];
+        });
+
+        let currentGroupIndex = 0;
+        allEvents.forEach(event => {
+          if (event.type === 'return') {
+            currentGroupIndex = event.groupIndex;
+          } else if (event.type === 'payment') {
+            paymentsPerGroup[currentGroupIndex].push(event);
           }
         });
+
+        let previousReturnedItems = [];
+
+        returnGroups.forEach((returnGroup, index) => {
+          if (finalY > 210) {
+            pdfDoc.addPage();
+            finalY = 20;
+          }
+          
+          const state = returnGroupStates[index] || { dueAfterThis: 0, cashReturnAfterThis: 0 };
+          const groupPayments = paymentsPerGroup[index] || [];
+          
+          finalY = drawReturnedItemsSection(
+            pdfDoc,
+            billToDownload,
+            returnGroup,
+            finalY,
+            previousReturnedItems,
+            state.dueAfterThis,
+            state.cashReturnAfterThis,
+            groupPayments
+          );
+          previousReturnedItems = [...previousReturnedItems, ...returnGroup.items];
+        });
         
-        let returnSummaryY = pdfDoc.lastAutoTable.finalY + 10;
-        
-        // Calculate return summary
-        const returnSummary = calculateReturnSummary(billToDownload, returnedItems);
-        const returnSettlement = calculateReturnSettlement(billToDownload, returnSummary);
-        
-        pdfDoc.setFontSize(10);
-        pdfDoc.setTextColor(0, 0, 0);
-        
-        // Sub total Rs.
-        pdfDoc.setFont('helvetica', 'normal');
-        pdfDoc.setFontSize(10);
-        pdfDoc.setTextColor(0, 0, 0);
-        pdfDoc.text('Sub total Rs.', 150, returnSummaryY, { align: 'right' });
-        pdfDoc.text(returnSummary.subtotal.toFixed(2), 190, returnSummaryY, { align: 'right' });
-        returnSummaryY += 7;
-        
-        // Prev. Discount Adjusted - (-x)
-        if (returnSummary.discountAdjustment > 0) {
-          pdfDoc.text('Prev. Discount Adjusted -', 150, returnSummaryY, { align: 'right' });
-          pdfDoc.text(`(-${returnSummary.discountAdjustment.toFixed(2)})`, 190, returnSummaryY, { align: 'right' });
-          returnSummaryY += 7;
+        // Print the ultimate outstanding due or cash return at the very bottom
+        if (finalY > 240) {
+          pdfDoc.addPage();
+          finalY = 20;
         }
         
-        // Round off :
-        pdfDoc.text('Round off :', 150, returnSummaryY, { align: 'right' });
-        pdfDoc.text(returnSummary.roundOff.toFixed(2), 190, returnSummaryY, { align: 'right' });
-        returnSummaryY += 7;
-        
-        // Total :
-        pdfDoc.setFont('helvetica', 'bold');
-        pdfDoc.text('Total :', 150, returnSummaryY, { align: 'right' });
-        pdfDoc.text(returnSummary.cashReturn.toFixed(2), 190, returnSummaryY, { align: 'right' });
-        returnSummaryY += 8;
-        
-        if (returnSettlement.cashReturn > 0) {
-          // Cash Return : (green bold, double-underlined)
-          pdfDoc.setFont('helvetica', 'bold');
-          pdfDoc.setFontSize(11);
-          pdfDoc.setTextColor(0, 150, 0);
-          pdfDoc.text('Cash Return :', 150, returnSummaryY, { align: 'right' });
-          pdfDoc.text(returnSettlement.cashReturn.toFixed(2), 190, returnSummaryY, { align: 'right' });
-          returnSummaryY += 7;
-          pdfDoc.setDrawColor(0, 150, 0);
-          pdfDoc.setLineWidth(0.5);
-          pdfDoc.line(155, returnSummaryY - 5.5, 190, returnSummaryY - 5.5);
-          pdfDoc.line(155, returnSummaryY - 4.5, 190, returnSummaryY - 4.5);
+        finalY += 2;
+        if (runningDue > 0) {
+          drawFinalBalanceBox(pdfDoc, 'DUE AMOUNT', runningDue, finalY);
+        } else if (finalCashReturn > 0) {
+          drawFinalBalanceBox(pdfDoc, 'CASH RETURN', finalCashReturn, finalY);
+        } else {
+          drawFinalBalanceBox(pdfDoc, 'FULLY SETTLED', 0, finalY);
         }
-        
-        finalY = returnSummaryY + 10;
+        finalY += 12;
       }
       
       // Reset text color to black for any remaining content
@@ -1998,6 +2077,11 @@ function BillGeneration() {
       // Calculate final Y position after table
       let finalY = pdfDoc.lastAutoTable.finalY + 10;
       
+      if (finalY > 210) {
+        pdfDoc.addPage();
+        finalY = 20;
+      }
+      
       // Main Summary section directly below main table
       pdfDoc.setFontSize(10);
       pdfDoc.setTextColor(0, 0, 0);
@@ -2056,9 +2140,9 @@ function BillGeneration() {
       pdfDoc.setTextColor(40, 40, 40);
       
       let initialDue = getInitialDueForBill(billToPrint);
+      const returnedItems = billToPrint.returnedItems || [];
       const dueHistory = billToPrint.dueHistory || [];
       const currentOutstandingDue = parseFloat(billToPrint.due || 0);
-      const dueBeforePayments = currentOutstandingDue + getPaidAgainstDue(billToPrint);
       
       const paidAmount = billToPrint.paidAmount !== undefined ? parseFloat(billToPrint.paidAmount) : (initialDue > 0 ? (total - initialDue) : total);
       pdfDoc.text('Paid Rs.', 150, summaryY, { align: 'right' });
@@ -2066,15 +2150,15 @@ function BillGeneration() {
       summaryY += 7;
       
       // 6. Due Rs. (initial due at bill creation)
-      if (currentOutstandingDue > 0) {
+      if (initialDue > 0) {
         pdfDoc.setTextColor(40, 40, 40);
         pdfDoc.text('Due Rs.', 150, summaryY, { align: 'right' });
-        pdfDoc.text(dueBeforePayments.toFixed(2), 190, summaryY, { align: 'right' });
+        pdfDoc.text(initialDue.toFixed(2), 190, summaryY, { align: 'right' });
         summaryY += 10;
         
         // 7. Dd.mm.yyyy  Paid .....  Due ....
         const filteredHistory = dueHistory.filter(entry => entry.amountPaid !== undefined);
-        if (filteredHistory.length > 0) {
+        if (filteredHistory.length > 0 && returnedItems.length === 0) {
           pdfDoc.setFontSize(9);
           filteredHistory.forEach(entry => {
             const entryDate = formatPdfHistoryDate(entry.date || entry.timestamp);
@@ -2091,7 +2175,7 @@ function BillGeneration() {
       }
       
       // 8. Due Amount (current outstanding — bold red, always last)
-      if (currentOutstandingDue > 0) {
+      if (initialDue > 0 && returnedItems.length === 0) {
         drawFinalBalanceBox(pdfDoc, 'DUE AMOUNT', currentOutstandingDue, summaryY);
         summaryY += 11;
       }
@@ -2099,135 +2183,136 @@ function BillGeneration() {
       finalY = summaryY + 10;
 
       // Check for returned items and add returned items table and summary
-      const returnedItems = billToPrint.returnedItems || [];
       if (returnedItems.length > 0) {
-        let previousReturnedItems = [];
-        groupReturnedItemsByEvent(returnedItems).forEach((returnGroup) => {
-          finalY = drawReturnedItemsSection(pdfDoc, billToPrint, returnGroup, finalY, previousReturnedItems);
-          previousReturnedItems = [...previousReturnedItems, ...returnGroup.items];
-        });
-      }
+        const returnGroups = groupReturnedItemsByEvent(returnedItems);
+        
+        // Calculate progressive state
+        // Calculate progressive state using a queue-based merge of returns and payments
+        let runningDue = initialDue;
+        let runningCashReturn = 0;
+        const returnGroupStates = {};
+        const allEvents = [];
 
-      if (false && returnedItems.length > 0) {
-        // Add spacing before returned items section
-        finalY += 5;
-        
-        // "Returned Items" heading
-        pdfDoc.setFontSize(12);
-        pdfDoc.setFont('helvetica', 'bold');
-        pdfDoc.setTextColor(40, 40, 40);
-        pdfDoc.text('RETURNED ITEMS', 20, finalY);
-        
-        // Return Date (Top-right of Returned Items section)
-        pdfDoc.setFontSize(10);
-        pdfDoc.setFont('helvetica', 'normal');
-        pdfDoc.setTextColor(100, 100, 100);
-        const lastReturn = returnedItems[returnedItems.length - 1];
-        const returnDate = lastReturn?.returnedAt?.toDate ? lastReturn.returnedAt.toDate().toLocaleDateString('en-GB') : (lastReturn?.returnedAt instanceof Date ? lastReturn.returnedAt.toLocaleDateString('en-GB') : 'N/A');
-        pdfDoc.text(`Date - ${returnDate}`, 190, finalY, { align: 'right' });
-        
-        finalY += 5;
-        
-        const returnedTableData = returnedItems.map((item, index) => {
-          const productName = formatProductWithVariation(
-            item.productName || item.name,
-            item.variationSize,
-            positionForSavedBillItem(item)
-          );
-          const quantity = item.quantity || 0;
-          const price = item.price || 0;
-          const amount = item.subtotal || (quantity * price);
-          return [
-            String(index + 1), // SL No.
-            productName, // Product
-            String(quantity), // Qty.
-            'Rs. ' + price.toFixed(2), // Price
-            'Rs. ' + amount.toFixed(2) // Amount
-          ];
+        const paymentQueue = (billToPrint.dueHistory || [])
+          .filter(entry => entry.amountPaid !== undefined)
+          .map(entry => {
+            const date = toDateObject(entry.date || entry.timestamp);
+            const prevDue = entry.previousDue !== undefined 
+              ? parseFloat(entry.previousDue) 
+              : parseFloat(entry.amountPaid || 0) + parseFloat(entry.newDue || 0);
+            return {
+              type: 'payment',
+              timestamp: date ? date.getTime() : 0,
+              amountPaid: parseFloat(entry.amountPaid || 0),
+              previousDue: prevDue,
+              date: entry.date || entry.timestamp
+            };
+          });
+
+        const returnQueue = returnGroups.map((group, index) => {
+          const eventSummary = calculateReturnSummary(billToPrint, group.items);
+          return {
+            type: 'return',
+            timestamp: group.timestamp,
+            groupIndex: index,
+            group: group,
+            returnAmount: eventSummary.cashReturn
+          };
         });
-        
-        pdfDoc.autoTable({
-          startY: finalY,
-          head: [['SL No.', 'Product', 'Qty.', 'Price', 'Amount']],
-          body: returnedTableData,
-          theme: 'striped',
-          headStyles: { 
-            fillColor: [100, 100, 100],
-            textColor: [255, 255, 255], // White text
-            fontStyle: 'bold',
-            fontSize: 10
-          },
-          styles: { 
-            fontSize: 9,
-            font: 'helvetica',
-            textColor: [0, 0, 0]
-          },
-          alternateRowStyles: {
-            fillColor: [245, 245, 245]
-          },
-          margin: { left: 20, right: 20 },
-          columnStyles: {
-            0: { cellWidth: 20 }, // SL No.
-            1: { cellWidth: 70 }, // Product
-            2: { cellWidth: 20 }, // Qty.
-            3: { cellWidth: 30 }, // Price
-            4: { cellWidth: 30 }  // Amount
+
+        // Merge queues chronologically but respect previousDue values
+        while (paymentQueue.length > 0 || returnQueue.length > 0) {
+          if (paymentQueue.length > 0) {
+            const nextPayment = paymentQueue[0];
+            // If the payment's previousDue matches the current runningDue (within tolerance)
+            // or if there are no more returns to process, apply the payment.
+            if (Math.abs(nextPayment.previousDue - runningDue) < 0.1 || returnQueue.length === 0) {
+              const payment = paymentQueue.shift();
+              runningDue = Math.max(0, runningDue - payment.amountPaid);
+              allEvents.push(payment);
+              continue;
+            }
+          }
+
+          if (returnQueue.length > 0) {
+            const returnEvent = returnQueue.shift();
+            const returnAmount = returnEvent.returnAmount;
+
+            const amountReducingDue = Math.min(returnAmount, runningDue);
+            runningDue = runningDue - amountReducingDue;
+            const cashReturnForThisEvent = returnAmount - amountReducingDue;
+
+            if (cashReturnForThisEvent > 0) {
+              runningCashReturn += cashReturnForThisEvent;
+            }
+
+            returnGroupStates[returnEvent.groupIndex] = {
+              dueAfterThis: runningDue,
+              cashReturnAfterThis: cashReturnForThisEvent > 0 ? runningCashReturn : 0
+            };
+
+            allEvents.push(returnEvent);
+          }
+        }
+
+        const finalCashReturn = runningCashReturn;
+
+        // Partition payments to their preceding return groups
+        const paymentsPerGroup = {};
+        returnGroups.forEach((_, idx) => {
+          paymentsPerGroup[idx] = [];
+        });
+
+        let currentGroupIndex = 0;
+        allEvents.forEach(event => {
+          if (event.type === 'return') {
+            currentGroupIndex = event.groupIndex;
+          } else if (event.type === 'payment') {
+            paymentsPerGroup[currentGroupIndex].push(event);
           }
         });
+
+        let previousReturnedItems = [];
+
+        returnGroups.forEach((returnGroup, index) => {
+          if (finalY > 210) {
+            pdfDoc.addPage();
+            finalY = 20;
+          }
+          
+          const state = returnGroupStates[index] || { dueAfterThis: 0, cashReturnAfterThis: 0 };
+          const groupPayments = paymentsPerGroup[index] || [];
+          
+          finalY = drawReturnedItemsSection(
+            pdfDoc,
+            billToPrint,
+            returnGroup,
+            finalY,
+            previousReturnedItems,
+            state.dueAfterThis,
+            state.cashReturnAfterThis,
+            groupPayments
+          );
+          previousReturnedItems = [...previousReturnedItems, ...returnGroup.items];
+        });
         
-        let returnSummaryY = pdfDoc.lastAutoTable.finalY + 10;
-        
-        // Calculate return summary
-        const returnSummary = calculateReturnSummary(billToPrint, returnedItems);
-        const returnSettlement = calculateReturnSettlement(billToPrint, returnSummary);
-        
-        pdfDoc.setFontSize(10);
-        pdfDoc.setTextColor(0, 0, 0);
-        
-        // Sub total Rs.
-        pdfDoc.setFont('helvetica', 'normal');
-        pdfDoc.setFontSize(10);
-        pdfDoc.setTextColor(0, 0, 0);
-        pdfDoc.text('Sub total Rs.', 150, returnSummaryY, { align: 'right' });
-        pdfDoc.text(returnSummary.subtotal.toFixed(2), 190, returnSummaryY, { align: 'right' });
-        returnSummaryY += 7;
-        
-        // Prev. Discount Adjusted - (-x)
-        if (returnSummary.discountAdjustment > 0) {
-          pdfDoc.text('Prev. Discount Adjusted -', 150, returnSummaryY, { align: 'right' });
-          pdfDoc.text(`(-${returnSummary.discountAdjustment.toFixed(2)})`, 190, returnSummaryY, { align: 'right' });
-          returnSummaryY += 7;
+        // Print the ultimate outstanding due or cash return at the very bottom
+        if (finalY > 240) {
+          pdfDoc.addPage();
+          finalY = 20;
         }
         
-        // Round off :
-        pdfDoc.text('Round off :', 150, returnSummaryY, { align: 'right' });
-        pdfDoc.text(returnSummary.roundOff.toFixed(2), 190, returnSummaryY, { align: 'right' });
-        returnSummaryY += 7;
-        
-        // Total :
-        pdfDoc.setFont('helvetica', 'bold');
-        pdfDoc.text('Total :', 150, returnSummaryY, { align: 'right' });
-        pdfDoc.text(returnSummary.cashReturn.toFixed(2), 190, returnSummaryY, { align: 'right' });
-        returnSummaryY += 8;
-        
-        if (returnSettlement.cashReturn > 0) {
-          // Cash Return : (green bold, double-underlined)
-          pdfDoc.setFont('helvetica', 'bold');
-          pdfDoc.setFontSize(11);
-          pdfDoc.setTextColor(0, 150, 0);
-          pdfDoc.text('Cash Return :', 150, returnSummaryY, { align: 'right' });
-          pdfDoc.text(returnSettlement.cashReturn.toFixed(2), 190, returnSummaryY, { align: 'right' });
-          returnSummaryY += 7;
-          pdfDoc.setDrawColor(0, 150, 0);
-          pdfDoc.setLineWidth(0.5);
-          pdfDoc.line(155, returnSummaryY - 5.5, 190, returnSummaryY - 5.5);
-          pdfDoc.line(155, returnSummaryY - 4.5, 190, returnSummaryY - 4.5);
+        finalY += 2;
+        if (runningDue > 0) {
+          drawFinalBalanceBox(pdfDoc, 'DUE AMOUNT', runningDue, finalY);
+        } else if (finalCashReturn > 0) {
+          drawFinalBalanceBox(pdfDoc, 'CASH RETURN', finalCashReturn, finalY);
+        } else {
+          drawFinalBalanceBox(pdfDoc, 'FULLY SETTLED', 0, finalY);
         }
-        
-        finalY = returnSummaryY + 10;
+        finalY += 12;
       }
       
-      // Reset text color to black for any remaining content
       pdfDoc.setTextColor(0, 0, 0);
       
       // Open a lightweight print window we fully control to avoid PDF viewer cross-origin restrictions
@@ -3040,7 +3125,82 @@ function BillGeneration() {
             </div>
 
             <div className="form-section">
-              <h3>Selected Products</h3>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '10px' }}>
+                <h3 style={{ margin: 0 }}>Selected Products</h3>
+                {cart.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setDiscPctMode(v => !v);
+                      setDiscPctSelectedKeys(new Set());
+                      setBulkDiscPct('');
+                      cancelCartItemEdit();
+                    }}
+                    style={{
+                      padding: '6px 14px',
+                      background: discPctMode ? '#e74c3c' : '#667eea',
+                      color: '#fff',
+                      border: 'none',
+                      borderRadius: '6px',
+                      cursor: 'pointer',
+                      fontWeight: 600,
+                      fontSize: '13px',
+                      letterSpacing: '0.02em'
+                    }}
+                  >
+                    {discPctMode ? '✕ Close Disc. %' : '% Disc. Selection'}
+                  </button>
+                )}
+              </div>
+
+              {/* Bulk Disc % control bar */}
+              {discPctMode && cart.length > 0 && (
+                <div style={{
+                  display: 'flex', flexWrap: 'wrap', gap: '10px', alignItems: 'center',
+                  background: '#f0f4ff', border: '1px solid #c5d0f7', borderRadius: '8px',
+                  padding: '10px 14px', marginBottom: '12px'
+                }}>
+                  <span style={{ fontWeight: 600, fontSize: '13px', color: '#3730a3' }}>Apply Disc. % to selected:</span>
+                  <button type="button"
+                    style={{ padding: '4px 10px', fontSize: '12px', background: '#fff', border: '1px solid #667eea', borderRadius: '5px', cursor: 'pointer', color: '#667eea', fontWeight: 600 }}
+                    onClick={() => {
+                      if (discPctSelectedKeys.size === cart.length) {
+                        setDiscPctSelectedKeys(new Set());
+                      } else {
+                        setDiscPctSelectedKeys(new Set(cart.map(getCartItemKey)));
+                      }
+                    }}
+                  >
+                    {discPctSelectedKeys.size === cart.length ? 'Unselect All' : 'Select All'}
+                  </button>
+                  <input
+                    type="number"
+                    min="0" max="100" step="0.01"
+                    value={bulkDiscPct}
+                    onChange={(e) => setBulkDiscPct(e.target.value)}
+                    onWheel={handleNumberInputWheel}
+                    placeholder="% off (e.g. 10)"
+                    style={{ width: '130px', padding: '5px 8px', border: '1px solid #667eea', borderRadius: '5px', fontSize: '13px' }}
+                  />
+                  <button type="button"
+                    onClick={applyBulkDiscPct}
+                    disabled={discPctSelectedKeys.size === 0 || bulkDiscPct === ''}
+                    style={{
+                      padding: '5px 14px', background: discPctSelectedKeys.size === 0 || bulkDiscPct === '' ? '#aaa' : '#22c55e',
+                      color: '#fff', border: 'none', borderRadius: '5px', cursor: discPctSelectedKeys.size === 0 || bulkDiscPct === '' ? 'not-allowed' : 'pointer',
+                      fontWeight: 600, fontSize: '13px'
+                    }}
+                  >
+                    Apply to {discPctSelectedKeys.size} item{discPctSelectedKeys.size !== 1 ? 's' : ''}
+                  </button>
+                  {discPctSelectedKeys.size > 0 && (
+                    <span style={{ fontSize: '12px', color: '#555' }}>
+                      {discPctSelectedKeys.size} / {cart.length} selected
+                    </span>
+                  )}
+                </div>
+              )}
+
               {cart.length === 0 ? (
                 <p className="empty-cart">No products added. Select products from above.</p>
               ) : (
@@ -3048,6 +3208,7 @@ function BillGeneration() {
                   <table>
                     <thead>
                       <tr>
+                        {discPctMode && <th style={{ width: '36px' }}></th>}
                         <th>SL No.</th>
                         <th>Product</th>
                         <th>Brand / Category</th>
@@ -3065,8 +3226,30 @@ function BillGeneration() {
                         const isEditing = editingCartItemKey === itemKey;
                         const mrp = getCartItemMrp(item);
                         const discPct = getCartItemDiscountPct(item);
+                        const isChecked = discPctSelectedKeys.has(itemKey);
                         return (
-                          <tr key={itemKey}>
+                          <tr key={itemKey} style={isChecked ? { background: '#eef2ff' } : {}}>
+                            {/* Disc % selection checkbox */}
+                            {discPctMode && (
+                              <td style={{ textAlign: 'center' }}>
+                                {mrp != null && mrp > 0 ? (
+                                  <input
+                                    type="checkbox"
+                                    checked={isChecked}
+                                    onChange={() => {
+                                      setDiscPctSelectedKeys(prev => {
+                                        const next = new Set(prev);
+                                        next.has(itemKey) ? next.delete(itemKey) : next.add(itemKey);
+                                        return next;
+                                      });
+                                    }}
+                                    style={{ width: 'auto', cursor: 'pointer', accentColor: '#667eea' }}
+                                  />
+                                ) : (
+                                  <span title="No MRP — % off not applicable" style={{ color: '#bbb', fontSize: '16px', cursor: 'not-allowed' }}>–</span>
+                                )}
+                              </td>
+                            )}
                             <td data-label="SL No.">{index + 1}</td>
                             <td data-label="Product">
                               {formatProductWithVariation(item.name, item.variationSize, positionForCartItem(item))}
@@ -3078,87 +3261,91 @@ function BillGeneration() {
                             <td data-label="Qty">
                               {isEditing ? (
                                 <input
-                                  type="number"
-                                  min="1"
+                                  type="number" min="1"
                                   value={editingCartValues.quantity}
                                   onChange={(e) => setEditingCartValues(v => ({ ...v, quantity: e.target.value }))}
                                   onWheel={handleNumberInputWheel}
                                   className="quantity-input-edit"
-                                  style={{ width: '70px', padding: '0.35rem', border: '1px solid #667eea', borderRadius: '5px', textAlign: 'center' }}
+                                  style={{ width: '65px', padding: '0.3rem', border: '1px solid #667eea', borderRadius: '5px', textAlign: 'center' }}
                                 />
-                              ) : (
-                                <span>{item.quantity}</span>
-                              )}
+                              ) : <span>{item.quantity}</span>}
                             </td>
                             {/* MRP */}
                             <td data-label="MRP">
                               {mrp != null ? `₹${mrp.toFixed(2)}` : '-'}
                             </td>
-                            {/* % Off */}
+                            {/* % Off — editable, linked to Price */}
                             <td data-label="% Off">
-                              {discPct != null ? `${discPct.toFixed(2)}%` : '-'}
+                              {isEditing ? (
+                                mrp != null && mrp > 0 ? (
+                                  <input
+                                    type="number" min="0" max="100" step="0.01"
+                                    value={editingCartValues.discPct}
+                                    onChange={(e) => {
+                                      const pct = e.target.value;
+                                      setEditingCartValues(v => {
+                                        const p = parseFloat(pct);
+                                        const m = getCartItemMrp(item);
+                                        let newPrice = v.price;
+                                        if (m != null && m > 0 && !isNaN(p)) {
+                                          newPrice = (m * (1 - p / 100)).toFixed(2);
+                                        }
+                                        return { ...v, discPct: pct, price: newPrice };
+                                      });
+                                    }}
+                                    onWheel={handleNumberInputWheel}
+                                    className="quantity-input-edit"
+                                    style={{ width: '75px', padding: '0.3rem', border: '1px solid #f59e0b', borderRadius: '5px', textAlign: 'center' }}
+                                    placeholder="%"
+                                  />
+                                ) : (
+                                  <span style={{ color: '#aaa', fontSize: '12px' }}>No MRP</span>
+                                )
+                              ) : (
+                                discPct != null ? `${discPct.toFixed(2)}%` : '-'
+                              )}
                             </td>
-                            {/* Price */}
+                            {/* Price — editable, linked to % Off */}
                             <td data-label="Price">
                               {isEditing ? (
                                 <input
-                                  type="number"
-                                  min="0"
-                                  step="0.01"
+                                  type="number" min="0" step="0.01"
                                   value={editingCartValues.price}
-                                  onChange={(e) => setEditingCartValues(v => ({ ...v, price: e.target.value }))}
+                                  onChange={(e) => {
+                                    const price = e.target.value;
+                                    setEditingCartValues(v => {
+                                      const p = parseFloat(price);
+                                      const m = getCartItemMrp(item);
+                                      let newDiscPct = v.discPct;
+                                      if (m != null && m > 0 && !isNaN(p)) {
+                                        newDiscPct = (((m - p) / m) * 100).toFixed(2);
+                                      }
+                                      return { ...v, price, discPct: newDiscPct };
+                                    });
+                                  }}
                                   onWheel={handleNumberInputWheel}
                                   className="quantity-input-edit"
-                                  style={{ width: '90px', padding: '0.35rem', border: '1px solid #667eea', borderRadius: '5px', textAlign: 'center' }}
+                                  style={{ width: '85px', padding: '0.3rem', border: '1px solid #667eea', borderRadius: '5px', textAlign: 'center' }}
                                 />
-                              ) : (
-                                `₹${item.price?.toFixed(2)}`
-                              )}
+                              ) : `₹${item.price?.toFixed(2)}`}
                             </td>
                             {/* Subtotal */}
                             <td data-label="Subtotal">
                               {isEditing
                                 ? `₹${((parseFloat(editingCartValues.price) || 0) * (parseInt(editingCartValues.quantity) || 0)).toFixed(2)}`
-                                : `₹${(item.price * item.quantity).toFixed(2)}`
-                              }
+                                : `₹${(item.price * item.quantity).toFixed(2)}`}
                             </td>
                             {/* Action */}
                             <td data-label="Action">
                               {isEditing ? (
                                 <>
-                                  <button
-                                    className="add-product-btn"
-                                    type="button"
-                                    onClick={() => saveCartItemEdit(item)}
-                                    style={{ marginRight: '0.4rem' }}
-                                  >
-                                    Save
-                                  </button>
-                                  <button
-                                    className="remove-btn"
-                                    type="button"
-                                    onClick={cancelCartItemEdit}
-                                  >
-                                    Cancel
-                                  </button>
+                                  <button className="add-product-btn" type="button" onClick={() => saveCartItemEdit(item)} style={{ marginRight: '0.4rem' }}>Save</button>
+                                  <button className="remove-btn" type="button" onClick={cancelCartItemEdit}>Cancel</button>
                                 </>
                               ) : (
                                 <>
-                                  <button
-                                    className="add-product-btn"
-                                    type="button"
-                                    onClick={() => startCartItemEdit(item)}
-                                    style={{ marginRight: '0.4rem' }}
-                                  >
-                                    Edit
-                                  </button>
-                                  <button
-                                    className="remove-btn"
-                                    type="button"
-                                    onClick={() => removeFromCart(itemKey)}
-                                  >
-                                    Remove
-                                  </button>
+                                  <button className="add-product-btn" type="button" onClick={() => startCartItemEdit(item)} style={{ marginRight: '0.4rem' }}>Edit</button>
+                                  <button className="remove-btn" type="button" onClick={() => removeFromCart(itemKey)}>Remove</button>
                                 </>
                               )}
                             </td>
