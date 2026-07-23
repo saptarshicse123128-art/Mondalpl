@@ -1056,19 +1056,7 @@ function BillGeneration() {
     return Array.from(groups.values()).sort((a, b) => a.timestamp - b.timestamp);
   };
 
-  const calculateReturnEventCashReturn = (bill, previousReturnedItems, currentReturnedItems) => {
-    if (parseAmountValue(bill.due) > 0) return 0;
 
-    const initialDue = getInitialDueForBill(bill);
-    const dueBeforeReturns = Math.max(0, initialDue - getPaidAgainstDue(bill));
-    const previousSummary = previousReturnedItems.length > 0
-      ? calculateReturnSummary(bill, previousReturnedItems)
-      : { cashReturn: 0 };
-    const currentSummary = calculateReturnSummary(bill, [...previousReturnedItems, ...currentReturnedItems]);
-    const previousExcess = Math.max(0, previousSummary.cashReturn - dueBeforeReturns);
-    const currentExcess = Math.max(0, currentSummary.cashReturn - dueBeforeReturns);
-    return Math.max(0, currentExcess - previousExcess);
-  };
 
   const drawFinalBalanceBox = (pdfDoc, label, amount, y) => {
     const boxX = 108;
@@ -1725,7 +1713,6 @@ function BillGeneration() {
       const returnedItems = billToDownload.returnedItems || [];
       const dueHistory = billToDownload.dueHistory || [];
       const currentOutstandingDue = parseFloat(billToDownload.due || 0);
-      const dueBeforePayments = currentOutstandingDue + getPaidAgainstDue(billToDownload);
       
       const paidAmount = billToDownload.paidAmount !== undefined ? parseFloat(billToDownload.paidAmount) : (initialDue > 0 ? (total - initialDue) : total);
       pdfDoc.text('Paid Rs.', 150, summaryY, { align: 'right' });
