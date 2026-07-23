@@ -3050,191 +3050,94 @@ function BillGeneration() {
                       <tr>
                         <th>SL No.</th>
                         <th>Product</th>
-                        <th>Brand</th>
-                        <th>Category</th>
+                        <th>Brand / Category</th>
+                        <th>Qty</th>
+                        <th>MRP</th>
+                        <th>% Off</th>
                         <th>Price</th>
-                        <th>Quantity</th>
                         <th>Subtotal</th>
                         <th>Action</th>
                       </tr>
                     </thead>
                     <tbody>
                       {cart.map((item, index) => {
-                        const isEditingCustom = editingCustomItem && editingCustomItem.id === item.id && item.isCustomProduct;
-                        const isEditingQuantity = editingQuantityItemId === item.id && !item.isCustomProduct;
+                        const itemKey = getCartItemKey(item);
+                        const isEditing = editingCartItemKey === itemKey;
+                        const mrp = getCartItemMrp(item);
+                        const discPct = getCartItemDiscountPct(item);
                         return (
-                        <tr key={item.id}>
+                          <tr key={itemKey}>
                             <td data-label="SL No.">{index + 1}</td>
-                          <td data-label="Product">
-                            {formatProductWithVariation(item.name, item.variationSize, positionForCartItem(item))}
-                          </td>
-                          <td data-label="Brand">{item.category || '-'}</td>
-                          <td data-label="Category">{item.subcategory || '-'}</td>
+                            <td data-label="Product">
+                              {formatProductWithVariation(item.name, item.variationSize, positionForCartItem(item))}
+                            </td>
+                            <td data-label="Brand / Category">
+                              {formatBrandCategory(item)}
+                            </td>
+                            {/* Qty */}
+                            <td data-label="Qty">
+                              {isEditing ? (
+                                <input
+                                  type="number"
+                                  min="1"
+                                  value={editingCartValues.quantity}
+                                  onChange={(e) => setEditingCartValues(v => ({ ...v, quantity: e.target.value }))}
+                                  onWheel={handleNumberInputWheel}
+                                  className="quantity-input-edit"
+                                  style={{ width: '70px', padding: '0.35rem', border: '1px solid #667eea', borderRadius: '5px', textAlign: 'center' }}
+                                />
+                              ) : (
+                                <span>{item.quantity}</span>
+                              )}
+                            </td>
+                            {/* MRP */}
+                            <td data-label="MRP">
+                              {mrp != null ? `₹${mrp.toFixed(2)}` : '-'}
+                            </td>
+                            {/* % Off */}
+                            <td data-label="% Off">
+                              {discPct != null ? `${discPct.toFixed(2)}%` : '-'}
+                            </td>
+                            {/* Price */}
                             <td data-label="Price">
-                              {item.isCustomProduct && isEditingCustom ? (
+                              {isEditing ? (
                                 <input
                                   type="number"
                                   min="0"
                                   step="0.01"
-                                  value={editingCustomItem.price}
-                                  onChange={(e) =>
-                                    setEditingCustomItem({
-                                      ...editingCustomItem,
-                                      price: e.target.value
-                                    })
-                                  }
+                                  value={editingCartValues.price}
+                                  onChange={(e) => setEditingCartValues(v => ({ ...v, price: e.target.value }))}
                                   onWheel={handleNumberInputWheel}
                                   className="quantity-input-edit"
-                                  style={{
-                                    width: '100px',
-                                    padding: '0.5rem',
-                                    border: '1px solid #ddd',
-                                    borderRadius: '5px',
-                                    textAlign: 'center',
-                                    fontSize: '1rem'
-                                  }}
+                                  style={{ width: '90px', padding: '0.35rem', border: '1px solid #667eea', borderRadius: '5px', textAlign: 'center' }}
                                 />
                               ) : (
-                                <>₹{item.price?.toFixed(2)}</>
+                                `₹${item.price?.toFixed(2)}`
                               )}
                             </td>
-                          <td data-label="Quantity">
-                              {item.isCustomProduct && isEditingCustom ? (
-                                <input
-                                  type="number"
-                                  min="1"
-                                  value={editingCustomItem.quantity}
-                                  onChange={(e) =>
-                                    setEditingCustomItem({
-                                      ...editingCustomItem,
-                                      quantity: e.target.value
-                                    })
-                                  }
-                                  onWheel={handleNumberInputWheel}
-                                  className="quantity-input-edit"
-                                  style={{
-                                    width: '80px',
-                                    padding: '0.5rem',
-                                    border: '1px solid #ddd',
-                                    borderRadius: '5px',
-                                    textAlign: 'center',
-                                    fontSize: '1rem'
-                                  }}
-                                />
-                              ) : isEditingQuantity ? (
-                            <input
-                              type="number"
-                              min="1"
-                                  value={editingQuantityValue}
-                              onChange={(e) => {
-                                    const value = e.target.value;
-                                    if (value === '' || parseInt(value) >= 1) {
-                                      setEditingQuantityValue(value);
-                                    }
-                                  }}
-                                  onWheel={handleNumberInputWheel}
-                              className="quantity-input-edit"
-                              style={{
-                                width: '80px',
-                                padding: '0.5rem',
-                                border: '1px solid #ddd',
-                                borderRadius: '5px',
-                                textAlign: 'center',
-                                fontSize: '1rem'
-                              }}
-                            />
-                              ) : (
-                                <span>{item.quantity}</span>
-                              )}
-                          </td>
-                          <td data-label="Subtotal">₹{(item.price * item.quantity).toFixed(2)}</td>
-                          <td data-label="Action">
-                              {item.isCustomProduct ? (
-                                isEditingCustom ? (
-                                  <>
-                                    <button
-                                      className="add-product-btn"
-                                      type="button"
-                                      onClick={() => {
-                                        const newPrice = parseFloat(editingCustomItem.price);
-                                        const newQty = parseInt(editingCustomItem.quantity, 10);
-                                        if (isNaN(newPrice) || newPrice <= 0) {
-                                          alert('Please enter a valid price');
-                                          return;
-                                        }
-                                        if (isNaN(newQty) || newQty <= 0) {
-                                          alert('Quantity must be greater than 0');
-                                          return;
-                                        }
-                                        setCart(cart.map(ci =>
-                                          ci.id === item.id
-                                            ? { ...ci, price: newPrice, quantity: newQty }
-                                            : ci
-                                        ));
-                                        setEditingCustomItem(null);
-                                      }}
-                                      style={{ marginRight: '0.5rem' }}
-                                    >
-                                      Save
-                                    </button>
-                                    <button
-                                      className="remove-btn"
-                                      type="button"
-                                      onClick={() => setEditingCustomItem(null)}
-                                    >
-                                      Cancel
-                                    </button>
-                                  </>
-                                ) : (
-                                  <>
-                                    <button
-                                      className="add-product-btn"
-                                      type="button"
-                                      onClick={() =>
-                                        setEditingCustomItem({
-                                          id: item.id,
-                                          price: item.price.toString(),
-                                          quantity: item.quantity.toString()
-                                        })
-                                      }
-                                      style={{ marginRight: '0.5rem' }}
-                                    >
-                                      Edit
-                                    </button>
-                            <button
-                              className="remove-btn"
-                              onClick={() => removeFromCart(item.id)}
-                            >
-                              Remove
-                            </button>
-                                  </>
-                                )
-                              ) : isEditingQuantity ? (
+                            {/* Subtotal */}
+                            <td data-label="Subtotal">
+                              {isEditing
+                                ? `₹${((parseFloat(editingCartValues.price) || 0) * (parseInt(editingCartValues.quantity) || 0)).toFixed(2)}`
+                                : `₹${(item.price * item.quantity).toFixed(2)}`
+                              }
+                            </td>
+                            {/* Action */}
+                            <td data-label="Action">
+                              {isEditing ? (
                                 <>
                                   <button
                                     className="add-product-btn"
                                     type="button"
-                                    onClick={() => {
-                                      const newQty = parseInt(editingQuantityValue, 10);
-                                      if (isNaN(newQty) || newQty <= 0) {
-                                        alert('Quantity must be greater than 0');
-                                        return;
-                                      }
-                                      updateCartQuantity(item.id, newQty);
-                                      setEditingQuantityItemId(null);
-                                      setEditingQuantityValue('');
-                                    }}
-                                    style={{ marginRight: '0.5rem' }}
+                                    onClick={() => saveCartItemEdit(item)}
+                                    style={{ marginRight: '0.4rem' }}
                                   >
                                     Save
                                   </button>
                                   <button
                                     className="remove-btn"
                                     type="button"
-                                    onClick={() => {
-                                      setEditingQuantityItemId(null);
-                                      setEditingQuantityValue('');
-                                    }}
+                                    onClick={cancelCartItemEdit}
                                   >
                                     Cancel
                                   </button>
@@ -3244,24 +3147,22 @@ function BillGeneration() {
                                   <button
                                     className="add-product-btn"
                                     type="button"
-                                    onClick={() => {
-                                      setEditingQuantityItemId(item.id);
-                                      setEditingQuantityValue(item.quantity.toString());
-                                    }}
-                                    style={{ marginRight: '0.5rem' }}
+                                    onClick={() => startCartItemEdit(item)}
+                                    style={{ marginRight: '0.4rem' }}
                                   >
                                     Edit
                                   </button>
-                                <button
-                                  className="remove-btn"
-                                  onClick={() => removeFromCart(item.id)}
-                                >
-                                  Remove
-                                </button>
+                                  <button
+                                    className="remove-btn"
+                                    type="button"
+                                    onClick={() => removeFromCart(itemKey)}
+                                  >
+                                    Remove
+                                  </button>
                                 </>
                               )}
-                          </td>
-                        </tr>
+                            </td>
+                          </tr>
                         );
                       })}
                     </tbody>
