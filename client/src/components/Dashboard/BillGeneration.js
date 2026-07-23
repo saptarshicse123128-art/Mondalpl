@@ -1,4 +1,4 @@
-﻿import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { collection, addDoc, getDocs, onSnapshot, serverTimestamp, doc, updateDoc, getDoc, deleteDoc, writeBatch } from 'firebase/firestore';
 import { db } from '../../firebase';
@@ -88,6 +88,31 @@ function BillGeneration() {
   const [showSizeDropdown, setShowSizeDropdown] = useState(false);
   const [showDraftsModal, setShowDraftsModal] = useState(false);
   const [draftBills, setDraftBills] = useState([]);
+  // 4. Draft Bills helper operations
+  const saveCurrentAsDraft = useCallback(async () => {
+    const draftData = {
+      fullName: billForm.fullName || '',
+      date: billForm.date || new Date().toISOString().split('T')[0],
+      address: billForm.address || '',
+      phone: billForm.phone || '',
+      discount: billForm.discount || '',
+      paidAmount: billForm.paidAmount || '',
+      isWholesale: isWholesale,
+      items: cart.map(item => ({
+        productId: item.id,
+        productName: item.name,
+        price: item.price,
+        quantity: item.quantity,
+        originalQuantity: item.quantity,
+        subtotal: item.price * item.quantity,
+        variationSize: item.variationSize || null,
+        sellingMrp: item.sellingMrp || null,
+        sellingDiscount: item.sellingDiscount || null
+      })),
+      createdAt: new Date().toISOString()
+    };
+    await addDoc(collection(db, 'draft_bills'), draftData);
+  }, [billForm, cart, isWholesale]);
 
   useEffect(() => {
     const unsubscribeProducts = onSnapshot(collection(db, 'products'), (snapshot) => {
@@ -191,7 +216,7 @@ function BillGeneration() {
     return () => {
       window.removeEventListener('popstate', handlePopState);
     };
-  }, [cart, billForm, isWholesale]);
+  }, [cart, billForm, navigate, saveCurrentAsDraft]);
 
   // 3. Trigger Save Draft from navigation event listener
   useEffect(() => {
@@ -211,33 +236,7 @@ function BillGeneration() {
     return () => {
       window.removeEventListener('triggerSaveDraft', handleTriggerSaveDraft);
     };
-  }, [cart, billForm, isWholesale]);
-
-  // 4. Draft Bills helper operations
-  const saveCurrentAsDraft = async () => {
-    const draftData = {
-      fullName: billForm.fullName || '',
-      date: billForm.date || new Date().toISOString().split('T')[0],
-      address: billForm.address || '',
-      phone: billForm.phone || '',
-      discount: billForm.discount || '',
-      paidAmount: billForm.paidAmount || '',
-      isWholesale: isWholesale,
-      items: cart.map(item => ({
-        productId: item.id,
-        productName: item.name,
-        price: item.price,
-        quantity: item.quantity,
-        originalQuantity: item.quantity,
-        subtotal: item.price * item.quantity,
-        variationSize: item.variationSize || null,
-        sellingMrp: item.sellingMrp || null,
-        sellingDiscount: item.sellingDiscount || null
-      })),
-      createdAt: new Date().toISOString()
-    };
-    await addDoc(collection(db, 'draft_bills'), draftData);
-  };
+  }, [navigate, saveCurrentAsDraft]);
 
   const handleContinueDraft = async (draft) => {
     const hasActiveBill = cart.length > 0 || (billForm.fullName || '').trim() !== '';
