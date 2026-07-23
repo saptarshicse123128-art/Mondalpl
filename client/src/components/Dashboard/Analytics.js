@@ -580,7 +580,15 @@ function Analytics() {
         <div className="summary-grid">
           <div className="summary-item">
             <span className="summary-label">Total Products:</span>
-            <span className="summary-value">{allProducts.length}</span>
+            <span className="summary-value">
+              {allProducts.reduce((total, product) => {
+                const variations = product.variations;
+                if (Array.isArray(variations) && variations.length > 0) {
+                  return total + variations.length;
+                }
+                return total + 1;
+              }, 0)}
+            </span>
           </div>
           <div className="summary-item">
             <span className="summary-label">Inventory Value:</span>

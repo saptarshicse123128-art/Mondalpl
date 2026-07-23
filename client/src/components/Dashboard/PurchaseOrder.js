@@ -117,7 +117,10 @@ const getLegacyPrimaryTrackedLines = (order) => {
 };
 
 /**
- * Order-level restock: any dual-unit or single-unit tracked line with due qty → PARTIAL; else COMPLETED.
+ * Order-level restock:
+ * - PENDING when nothing has been restocked yet
+ * - PARTIAL when some (but not all) tracked qty has been restocked
+ * - COMPLETED when all tracked lines are fully restocked
  * NOT TRACKED only when there are catalog lines but none qualify for either tracking model.
  */
 const getPurchaseOrderOverallRestockStatus = (order) => {
@@ -129,17 +132,27 @@ const getPurchaseOrderOverallRestockStatus = (order) => {
     if (!items.some((line) => line.productId)) return null;
     return 'NOT TRACKED';
   }
-  const anyDualPartial = dualLines.some((line) => getDueSecondary(line) > 1e-6);
-  const anyLegacyPartial = legacyTracked.some((line) => getDuePrimaryLegacy(line) > 0);
-  return anyDualPartial || anyLegacyPartial ? 'PARTIAL' : 'COMPLETED';
+
+  const lineStatuses = tracked.map((line) => inferLineRestockStatusLabel(line));
+  if (lineStatuses.every((s) => s === 'COMPLETED')) return 'COMPLETED';
+  if (lineStatuses.every((s) => s === 'PENDING')) return 'PENDING';
+  return 'PARTIAL';
 };
 
 const inferLineRestockStatusLabel = (it) => {
   if (isDualRestockItem(it)) {
-    return getDueSecondary(it) <= 1e-6 ? 'COMPLETED' : 'PARTIAL';
+    const due = getDueSecondary(it);
+    if (due <= 1e-6) return 'COMPLETED';
+    const added = Number(it.addedQuantitySecondary || 0);
+    if (added > 1e-6) return 'PARTIAL';
+    return 'PENDING';
   }
   if (it?.productId && getLegacyOrderedPrimary(it) > 0) {
-    return getDuePrimaryLegacy(it) <= 0 ? 'COMPLETED' : 'PARTIAL';
+    const due = getDuePrimaryLegacy(it);
+    if (due <= 0) return 'COMPLETED';
+    const added = Math.floor(Number(it.addedPrimaryRestock || 0));
+    if (added > 0) return 'PARTIAL';
+    return 'PENDING';
   }
   return null;
 };
@@ -188,14 +201,20 @@ function PurchaseOrder() {
   const [showAllOrderProducts, setShowAllOrderProducts] = useState(false);
   const [oldOrdersSearch, setOldOrdersSearch] = useState('');
   const [expandedHistoryOrderId, setExpandedHistoryOrderId] = useState(null);
+  const [openMenuOrderId, setOpenMenuOrderId] = useState(null);
+  const [openShareOrderId, setOpenShareOrderId] = useState(null);
+  const [editingOrderId, setEditingOrderId] = useState(null);
+  const [editingOrderMeta, setEditingOrderMeta] = useState(null);
+  const [showExitConfirm, setShowExitConfirm] = useState(false);
   const [isRestockOpen, setIsRestockOpen] = useState(false);
   const [selectedRestockOrderId, setSelectedRestockOrderId] = useState('');
   const [restockLoading, setRestockLoading] = useState(false);
   const [restockQuantities, setRestockQuantities] = useState({});
-  const smallActionButtonStyle = {
-    padding: '0.35rem 0.8rem',
+  const iconActionButtonStyle = {
+    padding: '0.3rem 0.55rem',
     fontSize: '0.8rem',
-    minWidth: '70px'
+    minWidth: 'auto',
+    lineHeight: 1.2
   };
   const initRestockQuantitiesForOrder = (order) => {
     if (!order || !Array.isArray(order.items)) return {};
@@ -412,6 +431,23 @@ function PurchaseOrder() {
     return () => unsubscribe();
   }, []);
 
+  // Close old-order action menus when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event) => {
+      if (openMenuOrderId && !event.target.closest('.po-menu-container')) {
+        setOpenMenuOrderId(null);
+      }
+      if (openShareOrderId && !event.target.closest('.po-share-container')) {
+        setOpenShareOrderId(null);
+      }
+    };
+    if (openMenuOrderId || openShareOrderId) {
+      document.addEventListener('mousedown', handleClickOutside);
+      return () => document.removeEventListener('mousedown', handleClickOutside);
+    }
+    return undefined;
+  }, [openMenuOrderId, openShareOrderId]);
+
   // Search function (same as StockManagement)
   const matchesSearch = (text, query) => {
     if (!text || !query) return false;
@@ -567,6 +603,26 @@ function PurchaseOrder() {
     });
   })();
 
+  const isOrderProductSelected = (product) => {
+    if (!product) return false;
+    if (selectedIds.includes(product.id)) return true;
+    const variations = Array.isArray(product.variations) ? product.variations : [];
+    return variations.some((v) => selectedIds.includes(v.id));
+  };
+
+  const visibleOrderSelectProducts = (
+    showAllOrderProducts
+      ? filteredAllProducts
+      : filteredAllProducts.filter((product) => {
+          const status = product.base?.status || 'ok';
+          return status === 'low' || status === 'out';
+        })
+  );
+  const selectedOrderSelectProducts = visibleOrderSelectProducts.filter(isOrderProductSelected);
+  const otherOrderSelectProducts = visibleOrderSelectProducts.filter(
+    (product) => !isOrderProductSelected(product)
+  );
+
   const toggleSelectProduct = (productId) => {
     const product = allProducts.find((p) => p.id === productId);
     const hasVariations = Boolean(product?.variations && product.variations.length > 0);
@@ -594,6 +650,8 @@ function PurchaseOrder() {
   };
 
   const startCreateOrder = () => {
+    setEditingOrderId(null);
+    setEditingOrderMeta(null);
     setIsCreatingOrder(true);
     setOrderStep('select');
     setSelectedIds([]);
@@ -601,8 +659,120 @@ function PurchaseOrder() {
     setShowAllOrderProducts(false);
   };
 
+  const startEditOrder = (order) => {
+    const items = Array.isArray(order.items) ? order.items : [];
+    const mappedProducts = items.map((it, index) => {
+      const isCustom = !it.productId;
+      const qtyText = it.quantityText != null ? String(it.quantityText) : (it.quantity != null ? String(it.quantity) : '');
+      const dual =
+        Boolean(it.enableDualUnit) &&
+        it.orderedQuantitySecondary != null &&
+        parsePositiveNumber(it.conversionFactor) &&
+        String(it.secondaryUnit || '').trim() !== '';
+
+      return {
+        id: it.productId || `custom_edit_${order.id}_${index}`,
+        name: it.name || '',
+        productBrand: it.productBrand || '',
+        productCategory: it.productCategory || '',
+        catalogueNumber: it.catalogueNumber || '',
+        orderQuantity: dual ? String(it.orderedQuantityPrimary ?? qtyText) : qtyText,
+        orderUnit: it.orderUnit || it.unit || '',
+        isCustom,
+        enableDualUnit: Boolean(it.enableDualUnit),
+        orderQuantitySecondary:
+          it.orderedQuantitySecondary != null ? String(it.orderedQuantitySecondary) : '',
+        orderedQuantityPrimary: it.orderedQuantityPrimary ?? null,
+        secondaryUnit: it.secondaryUnit || '',
+        primaryUnit: it.primaryUnit || '',
+        conversionFactor: it.conversionFactor || null
+      };
+    });
+
+    const ids = mappedProducts.filter((p) => !p.isCustom && p.id).map((p) => p.id);
+
+    let resolvedDate = '';
+    if (order.date && String(order.date).trim()) {
+      const rawDate = String(order.date).trim();
+      if (rawDate.includes('.')) {
+        resolvedDate = rawDate;
+      } else {
+        const parsed = new Date(rawDate);
+        resolvedDate = Number.isNaN(parsed.getTime())
+          ? rawDate
+          : formatDateDDMMYYYY(parsed);
+      }
+    } else if (order.createdAt?.toDate) {
+      resolvedDate = formatDateDDMMYYYY(order.createdAt.toDate());
+    }
+
+    setEditingOrderId(order.id);
+    setEditingOrderMeta({
+      orderNumber: order.orderNumber || null,
+      orderNumberValue:
+        typeof order.orderNumberValue === 'number' ? order.orderNumberValue : null,
+      previousItems: items,
+      originalDate: resolvedDate || null
+    });
+    setOrderName(order.name || '');
+    if (resolvedDate) {
+      setOrderDate(resolvedDate);
+    }
+    setSelectedIds(ids);
+    setSelectedProducts(mappedProducts);
+    setOrderStep('preview');
+    // Allow adding any catalog product while editing
+    setShowAllOrderProducts(true);
+    setOpenMenuOrderId(null);
+    setOpenShareOrderId(null);
+    setIsHistoryOpen(false);
+    setExpandedHistoryOrderId(null);
+    setIsCreatingOrder(true);
+  };
+
+  const shareOrderOnWhatsApp = (order) => {
+    let dateLabel = '-';
+    if (order.date) {
+      dateLabel = order.date.includes('.')
+        ? order.date
+        : formatDateDDMMYYYY(new Date(order.date));
+    } else if (order.createdAt?.toDate) {
+      dateLabel = formatDateDDMMYYYY(order.createdAt.toDate());
+    }
+
+    const orderNumber =
+      order.orderNumber || formatPurchaseOrderNumber(getOrderNumberValueFromOrder(order, 0));
+    const nameLabel = order.name || '';
+    const items = Array.isArray(order.items) ? order.items : [];
+
+    const lines = items
+      .map((it, idx) => {
+        const qty = it.quantityText != null ? it.quantityText : it.quantity;
+        if (qty == null || String(qty).trim() === '') return null;
+        const unit = it.orderUnit || it.unit || '';
+        const qtyLabel = unit ? `${qty} ${unit}` : String(qty);
+        return `${idx + 1}. ${it.name || 'Item'} — ${qtyLabel}`;
+      })
+      .filter(Boolean);
+
+    if (lines.length === 0) {
+      alert('This purchase order has no items with quantity to share.');
+      return;
+    }
+
+    let message = `*Purchase Order*\n${orderNumber}\nDate: ${dateLabel}`;
+    if (nameLabel) message += `\nName: ${nameLabel}`;
+    message += `\n\n*Items:*\n${lines.join('\n')}`;
+
+    const url = `https://wa.me/?text=${encodeURIComponent(message)}`;
+    window.open(url, '_blank', 'noopener,noreferrer');
+  };
+
   const goToPreview = () => {
     const items = [];
+    const existingById = new Map(
+      selectedProducts.filter((p) => !p.isCustom && p.id).map((p) => [p.id, p])
+    );
     const existingCustomItems = selectedProducts.filter((p) => p.isCustom);
 
     allProducts.forEach((product) => {
@@ -611,19 +781,24 @@ function PurchaseOrder() {
       // Base product (aggregated) selection
       // If product has variations, parent-row selection is treated as selecting all child variations.
       if (selectedIds.includes(product.id) && !hasVariations) {
-        items.push({
-          id: product.id,
-          name: product.name,
-          productBrand: product.category || '',
-          productCategory: product.subcategory || '',
-          catalogueNumber: product.catalogueNumber || '',
-          orderQuantity: '1',
-          orderUnit: product.base?.unit || product.unit || '',
-          orderQuantitySecondary: '',
-          orderedQuantityPrimary: null,
-          primaryUnit: product.base?.unit || product.unit || '',
-          enableDualUnit: Boolean(product.enableDualUnit)
-        });
+        const existing = existingById.get(product.id);
+        if (existing) {
+          items.push({ ...existing });
+        } else {
+          items.push({
+            id: product.id,
+            name: product.name,
+            productBrand: product.category || '',
+            productCategory: product.subcategory || '',
+            catalogueNumber: product.catalogueNumber || '',
+            orderQuantity: '1',
+            orderUnit: product.base?.unit || product.unit || '',
+            orderQuantitySecondary: '',
+            orderedQuantityPrimary: null,
+            primaryUnit: product.base?.unit || product.unit || '',
+            enableDualUnit: Boolean(product.enableDualUnit)
+          });
+        }
       }
 
       // Individual variation selection
@@ -633,36 +808,41 @@ function PurchaseOrder() {
         product.variations.forEach((v) => {
           // If parent row is selected, include all child variations in preview/PDF.
           if (parentSelected || selectedIds.includes(v.id)) {
-            items.push({
-              id: v.id,
-              name: v.size
-                ? formatProductWithVariation(
-                    product.name,
-                    v.size,
-                    normalizeSizeNamePosition(product.sizeNamePosition)
-                  )
-                : product.name,
-              productBrand: product.category || '',
-              productCategory: product.subcategory || '',
-              catalogueNumber: v.catalogueNumber || product.catalogueNumber || '',
-              orderQuantity: '1',
-              orderUnit: v.unit || product.base?.unit || product.unit || '',
-              orderQuantitySecondary: productDual ? '1' : '',
-              orderedQuantityPrimary:
-                productDual && parsePositiveNumber(v.conversionFactor)
-                  ? parsePositiveNumber(v.conversionFactor)
-                  : null,
-              primaryUnit: v.primaryUnit || product.base?.unit || product.unit || '',
-              secondaryUnit: v.secondaryUnit || '',
-              conversionFactor: v.conversionFactor || null,
-              enableDualUnit: productDual
-            });
+            const existing = existingById.get(v.id);
+            if (existing) {
+              items.push({ ...existing });
+            } else {
+              items.push({
+                id: v.id,
+                name: v.size
+                  ? formatProductWithVariation(
+                      product.name,
+                      v.size,
+                      normalizeSizeNamePosition(product.sizeNamePosition)
+                    )
+                  : product.name,
+                productBrand: product.category || '',
+                productCategory: product.subcategory || '',
+                catalogueNumber: v.catalogueNumber || product.catalogueNumber || '',
+                orderQuantity: '1',
+                orderUnit: v.unit || product.base?.unit || product.unit || '',
+                orderQuantitySecondary: productDual ? '1' : '',
+                orderedQuantityPrimary:
+                  productDual && parsePositiveNumber(v.conversionFactor)
+                    ? parsePositiveNumber(v.conversionFactor)
+                    : null,
+                primaryUnit: v.primaryUnit || product.base?.unit || product.unit || '',
+                secondaryUnit: v.secondaryUnit || '',
+                conversionFactor: v.conversionFactor || null,
+                enableDualUnit: productDual
+              });
+            }
           }
         });
       }
     });
 
-    if (items.length === 0) {
+    if (items.length === 0 && existingCustomItems.length === 0) {
       alert('Please select at least one product or variation for the purchase order.');
       return;
     }
@@ -751,6 +931,13 @@ function PurchaseOrder() {
     setOrderName('');
     setOrderDate(formatDateDDMMYYYY(new Date()));
     setShowAllOrderProducts(false);
+    setEditingOrderId(null);
+    setEditingOrderMeta(null);
+    setShowExitConfirm(false);
+  };
+
+  const requestCloseOrderModal = () => {
+    setShowExitConfirm(true);
   };
 
   const getNextPurchaseOrderNumber = () => {
@@ -810,18 +997,24 @@ function PurchaseOrder() {
           : false;
       const qtyWithUnit =
         unitRaw && qtyRaw && !qtyAlreadyContainsUnit ? `${qtyRaw} ${unitRaw}` : qtyRaw;
-      const row = [String(idx + 1), item.name || ''];
-
-      if (anyCatalogue) {
-        const catalogueNo = item.catalogueNumber && String(item.catalogueNumber).trim() !== ''
+      const catalogueNo =
+        item.catalogueNumber && String(item.catalogueNumber).trim() !== ''
           ? String(item.catalogueNumber).trim()
           : '';
-        row.push(catalogueNo);
+
+      if (anyCatalogue) {
+        if (catalogueNo) {
+          return [String(idx + 1), item.name || '', catalogueNo, qtyWithUnit];
+        }
+        // No catalogue number: let product name span Products + Catalogue columns (no blank cell)
+        return [
+          String(idx + 1),
+          { content: item.name || '', colSpan: 2, styles: { halign: 'left', valign: 'middle' } },
+          qtyWithUnit
+        ];
       }
 
-      row.push(qtyWithUnit);
-
-      return row;
+      return [String(idx + 1), item.name || '', qtyWithUnit];
     });
 
     doc.autoTable({
@@ -884,16 +1077,33 @@ function PurchaseOrder() {
     }
 
     const displayName = orderName && orderName.trim().length > 0 ? orderName.trim() : '';
-    const displayDate = orderDate || formatDateDDMMYYYY(new Date());
+    const isEditing = Boolean(editingOrderId);
+    const displayDate =
+      (orderDate && String(orderDate).trim()) ||
+      (isEditing && editingOrderMeta?.originalDate) ||
+      formatDateDDMMYYYY(new Date());
 
-    const orderNumberValue = getNextPurchaseOrderNumber();
-    const orderNumber = formatPurchaseOrderNumber(orderNumberValue);
+    const orderNumberValue = isEditing
+      ? (editingOrderMeta?.orderNumberValue != null
+          ? editingOrderMeta.orderNumberValue
+          : getNextPurchaseOrderNumber())
+      : getNextPurchaseOrderNumber();
+    const orderNumber = isEditing
+      ? (editingOrderMeta?.orderNumber || formatPurchaseOrderNumber(orderNumberValue))
+      : formatPurchaseOrderNumber(orderNumberValue);
 
     // Create and download PDF
     const pdfDoc = createOrderPDFDoc(displayDate, itemsToOrder, orderNumber);
     const safeOrderNumber = orderNumber.replace(/\//g, '-');
     const fileName = `${safeOrderNumber}_${String(displayDate).replace(/[.\-/]/g, '')}.pdf`;
     pdfDoc.save(fileName);
+
+    const previousItemsByProductId = new Map();
+    if (isEditing && Array.isArray(editingOrderMeta?.previousItems)) {
+      editingOrderMeta.previousItems.forEach((prev) => {
+        if (prev?.productId) previousItemsByProductId.set(prev.productId, prev);
+      });
+    }
 
     // Save order to Firestore for future reference
     try {
@@ -902,7 +1112,6 @@ function PurchaseOrder() {
         date: displayDate,
         orderNumber,
         orderNumberValue,
-        createdAt: serverTimestamp(),
         items: itemsToOrder.map((item) => {
           const oqSec = parsePositiveNumber(item.orderQuantitySecondary);
           const hasDualLine =
@@ -917,6 +1126,10 @@ function PurchaseOrder() {
             const n = parseInt(raw, 10);
             return !Number.isNaN(n) && n > 0 ? n : null;
           })();
+
+          const prev = !item.isCustom && item.id ? previousItemsByProductId.get(item.id) : null;
+          const prevAddedSec = prev ? Number(prev.addedQuantitySecondary || 0) : 0;
+          const prevAddedPri = prev ? Number(prev.addedPrimaryRestock || 0) : 0;
 
           return {
             productId: item.isCustom ? null : (item.id || null),
@@ -933,29 +1146,47 @@ function PurchaseOrder() {
             primaryUnit: item.primaryUnit || item.orderUnit || item.unit || '',
             conversionFactor: parsePositiveNumber(item.conversionFactor),
             ...(hasDualLine
-              ? {
-                  addedQuantitySecondary: 0,
-                  dueQuantitySecondary: oqSec,
-                  status: oqSec > 0 ? 'PARTIAL' : 'COMPLETED'
-                }
+              ? (() => {
+                  const due = Math.max(0, roundQtySecondary(oqSec - prevAddedSec));
+                  return {
+                    addedQuantitySecondary: prevAddedSec,
+                    dueQuantitySecondary: due,
+                    status:
+                      due <= 0 ? 'COMPLETED' : prevAddedSec > 1e-6 ? 'PARTIAL' : 'PENDING'
+                  };
+                })()
               : legacyOrderedInt != null && !item.isCustom
-                ? {
-                    orderedPrimaryRestock: legacyOrderedInt,
-                    addedPrimaryRestock: 0,
-                    duePrimaryRestock: legacyOrderedInt,
-                    status: 'PARTIAL'
-                  }
+                ? (() => {
+                    const due = Math.max(0, legacyOrderedInt - prevAddedPri);
+                    return {
+                      orderedPrimaryRestock: legacyOrderedInt,
+                      addedPrimaryRestock: prevAddedPri,
+                      duePrimaryRestock: due,
+                      status:
+                        due <= 0 ? 'COMPLETED' : prevAddedPri > 0 ? 'PARTIAL' : 'PENDING'
+                    };
+                  })()
                 : {})
           };
         })
       };
 
-      await addDoc(collection(db, 'purchaseOrders'), orderDoc);
+      if (isEditing) {
+        await updateDoc(doc(db, 'purchaseOrders', editingOrderId), {
+          ...orderDoc,
+          updatedAt: serverTimestamp()
+        });
+      } else {
+        await addDoc(collection(db, 'purchaseOrders'), {
+          ...orderDoc,
+          createdAt: serverTimestamp()
+        });
+      }
     } catch (err) {
-      console.error('Failed to save purchase order:', err);
+      console.error(isEditing ? 'Failed to update purchase order:' : 'Failed to save purchase order:', err);
     }
 
-    alert('Purchase order PDF generated successfully.');
+    alert(isEditing ? 'Purchase order updated successfully.' : 'Purchase order PDF generated successfully.');
     closeOrderModal();
   };
 
@@ -1203,7 +1434,7 @@ function PurchaseOrder() {
             ...it,
             addedQuantitySecondary: newAdded,
             dueQuantitySecondary: newDue,
-            status: newDue <= 1e-6 ? 'COMPLETED' : 'PARTIAL'
+            status: newDue <= 1e-6 ? 'COMPLETED' : newAdded > 1e-6 ? 'PARTIAL' : 'PENDING'
           };
           itemsMutated = true;
         } else if (line.mode === 'legacy') {
@@ -1217,7 +1448,7 @@ function PurchaseOrder() {
             orderedPrimaryRestock: ordered,
             addedPrimaryRestock: newAdded,
             duePrimaryRestock: newDue,
-            status: newDue <= 0 ? 'COMPLETED' : 'PARTIAL'
+            status: newDue <= 0 ? 'COMPLETED' : newAdded > 0 ? 'PARTIAL' : 'PENDING'
           };
           itemsMutated = true;
         }
@@ -1242,7 +1473,218 @@ function PurchaseOrder() {
     }
   };
 
-  const previewOrderNumber = formatPurchaseOrderNumber(getNextPurchaseOrderNumber());
+  const previewOrderNumber = editingOrderId && editingOrderMeta?.orderNumber
+    ? editingOrderMeta.orderNumber
+    : formatPurchaseOrderNumber(
+        editingOrderId && editingOrderMeta?.orderNumberValue != null
+          ? editingOrderMeta.orderNumberValue
+          : getNextPurchaseOrderNumber()
+      );
+
+  const renderOrderSelectProductRows = (productList) =>
+    productList.flatMap((product) => {
+      const hasVariations =
+        Array.isArray(product.variations) && product.variations.length > 0;
+      const isOpen = openOrderVariationProductId === product.id;
+      const status = product.base?.status || 'ok';
+      const basePurchasePriceRaw =
+        product.base?.purchasePrice ??
+        product.variations?.[0]?.purchasePrice ??
+        0;
+      const basePurchasePrice = Number(basePurchasePriceRaw) || 0;
+      const baseNormalPriceRaw =
+        product.base?.price ??
+        product.variations?.[0]?.price ??
+        product.price ??
+        0;
+      const baseNormalPrice = Number(baseNormalPriceRaw) || 0;
+
+      const mainRow = (
+        <tr
+          key={product.id}
+          className={
+            status === 'out'
+              ? 'status-critical'
+              : status === 'low'
+              ? 'status-warning'
+              : ''
+          }
+        >
+          <td style={{ textAlign: 'center' }}>
+            <input
+              type="checkbox"
+              checked={selectedIds.includes(product.id)}
+              onChange={() => toggleSelectProduct(product.id)}
+            />
+          </td>
+          <td className="product-name" style={{ position: 'relative' }}>
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '8px'
+              }}
+            >
+              {hasVariations && (
+                <button
+                  type="button"
+                  onClick={() =>
+                    setOpenOrderVariationProductId(isOpen ? null : product.id)
+                  }
+                  style={{
+                    background: 'none',
+                    border: 'none',
+                    cursor: 'pointer',
+                    padding: '4px',
+                    display: 'flex',
+                    alignItems: 'center',
+                    fontSize: '16px',
+                    color: '#667eea',
+                    transition: 'transform 0.2s'
+                  }}
+                  title={isOpen ? 'Hide variations' : 'Show variations'}
+                >
+                  <span
+                    style={{
+                      transform: isOpen ? 'rotate(90deg)' : 'rotate(0deg)',
+                      transition: 'transform 0.2s'
+                    }}
+                  >
+                    ▶
+                  </span>
+                </button>
+              )}
+              <span>{product.name}</span>
+            </div>
+          </td>
+          <td>
+            {(product.category || '-') + ' / ' + (product.subcategory || 'No category')}
+          </td>
+          <td className="stock-quantity">
+            {hasVariations ? (
+              <span className="badge badge-warning">See variations</span>
+            ) : (
+              `${product.base?.quantity ?? '-'}${product.base?.unit ? ` ${product.base.unit}` : ''}`
+            )}
+          </td>
+          <td>₹{basePurchasePrice.toFixed(2)}</td>
+          <td>₹{baseNormalPrice.toFixed(2)}</td>
+          <td className="status-cell">
+            <span
+              className={`status-badge ${
+                status === 'out' ? 'danger' : status === 'low' ? 'warning' : ''
+              }`}
+            >
+              {status === 'out'
+                ? 'OUT OF STOCK'
+                : status === 'low'
+                ? 'LOW STOCK'
+                : 'OK'}
+            </span>
+          </td>
+        </tr>
+      );
+
+      const variationRow =
+        hasVariations && isOpen ? (
+          <tr key={`${product.id}_order_vars`}>
+            <td colSpan="7">
+              <table
+                style={{
+                  width: '100%',
+                  borderCollapse: 'collapse',
+                  marginTop: '6px',
+                  backgroundColor: '#fafafa'
+                }}
+              >
+                <thead>
+                  <tr>
+                    <th
+                      style={{
+                        padding: '6px',
+                        border: '1px solid #ddd',
+                        width: '40px'
+                      }}
+                    >
+                      Add
+                    </th>
+                    <th style={{ padding: '6px', border: '1px solid #ddd' }}>
+                      Size
+                    </th>
+                    <th style={{ padding: '6px', border: '1px solid #ddd' }}>
+                      Qty (Unit)
+                    </th>
+                    <th style={{ padding: '6px', border: '1px solid #ddd' }}>
+                      Purchase Price
+                    </th>
+                    <th style={{ padding: '6px', border: '1px solid #ddd' }}>
+                      Price
+                    </th>
+                    <th style={{ padding: '6px', border: '1px solid #ddd' }}>
+                      Status
+                    </th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {product.variations.map((v) => {
+                    const vPurchasePrice = Number(v.purchasePrice ?? 0) || 0;
+                    const vNormalPrice = Number(v.price ?? 0) || 0;
+                    const qtyUnit = v.unit || product.base?.unit || '';
+                    return (
+                      <tr key={v.id}>
+                        <td
+                          style={{
+                            padding: '6px',
+                            border: '1px solid #ddd',
+                            textAlign: 'center'
+                          }}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={selectedIds.includes(v.id)}
+                            onChange={() => toggleSelectProduct(v.id)}
+                          />
+                        </td>
+                        <td style={{ padding: '6px', border: '1px solid #ddd' }}>
+                          {v.size || '-'}
+                        </td>
+                        <td style={{ padding: '6px', border: '1px solid #ddd' }}>
+                          {`${v.quantity ?? '-'}${qtyUnit ? ` ${qtyUnit}` : ''}`}
+                        </td>
+                        <td style={{ padding: '6px', border: '1px solid #ddd' }}>
+                          ₹{vPurchasePrice.toFixed(2)}
+                        </td>
+                        <td style={{ padding: '6px', border: '1px solid #ddd' }}>
+                          ₹{vNormalPrice.toFixed(2)}
+                        </td>
+                        <td style={{ padding: '6px', border: '1px solid #ddd' }}>
+                          <span
+                            className={`status-badge ${
+                              v.status === 'out'
+                                ? 'danger'
+                                : v.status === 'low'
+                                ? 'warning'
+                                : ''
+                            }`}
+                          >
+                            {v.status === 'out'
+                              ? 'OUT OF STOCK'
+                              : v.status === 'low'
+                              ? 'LOW STOCK'
+                              : 'OK'}
+                          </span>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </td>
+          </tr>
+        ) : null;
+
+      return variationRow ? [mainRow, variationRow] : [mainRow];
+    });
 
   if (loading) {
     return (
@@ -1514,7 +1956,7 @@ function PurchaseOrder() {
           }}
           onClick={(e) => {
             if (e.target === e.currentTarget) {
-              closeOrderModal();
+              requestCloseOrderModal();
             }
           }}
         >
@@ -1541,11 +1983,13 @@ function PurchaseOrder() {
               }}
             >
               <h3 style={{ margin: 0 }}>
-                {orderStep === 'select' ? 'Select Products for Purchase Order' : 'Preview Purchase Order'}
+                {orderStep === 'select'
+                  ? (editingOrderId ? 'Edit Products for Purchase Order' : 'Select Products for Purchase Order')
+                  : (editingOrderId ? 'Edit Purchase Order' : 'Preview Purchase Order')}
               </h3>
               <button
                 type="button"
-                onClick={closeOrderModal}
+                onClick={requestCloseOrderModal}
                 style={{
                   background: 'none',
                   border: 'none',
@@ -1589,227 +2033,43 @@ function PurchaseOrder() {
                       </tr>
                     </thead>
                     <tbody>
-                      {(showAllOrderProducts
-                        ? filteredAllProducts
-                        : filteredAllProducts.filter((product) => {
-                            const status = product.base?.status || 'ok';
-                            return status === 'low' || status === 'out';
-                          })
-                      ).flatMap((product) => {
-                        const hasVariations =
-                          Array.isArray(product.variations) && product.variations.length > 0;
-                        const isOpen = openOrderVariationProductId === product.id;
-                        const status = product.base?.status || 'ok';
-                        const basePurchasePriceRaw =
-                          product.base?.purchasePrice ??
-                          product.variations?.[0]?.purchasePrice ??
-                          0;
-                        const basePurchasePrice = Number(basePurchasePriceRaw) || 0;
-                        const baseNormalPriceRaw =
-                          product.base?.price ??
-                          product.variations?.[0]?.price ??
-                          product.price ??
-                          0;
-                        const baseNormalPrice = Number(baseNormalPriceRaw) || 0;
-
-                        const mainRow = (
-                          <tr
-                            key={product.id}
-                            className={
-                              status === 'out'
-                                ? 'status-critical'
-                                : status === 'low'
-                                ? 'status-warning'
-                                : ''
-                            }
+                      {selectedOrderSelectProducts.length > 0 && (
+                        <tr>
+                          <td
+                            colSpan="7"
+                            style={{
+                              background: '#eef5ff',
+                              fontWeight: 700,
+                              fontSize: '0.92rem',
+                              padding: '10px 12px',
+                              color: '#1a56db',
+                              borderBottom: '1px solid #d0e0ff'
+                            }}
                           >
-                            <td style={{ textAlign: 'center' }}>
-                              <input
-                                type="checkbox"
-                                checked={selectedIds.includes(product.id)}
-                                onChange={() => toggleSelectProduct(product.id)}
-                              />
-                            </td>
-                            <td className="product-name" style={{ position: 'relative' }}>
-                              <div
-                                style={{
-                                  display: 'flex',
-                                  alignItems: 'center',
-                                  gap: '8px'
-                                }}
-                              >
-                                {hasVariations && (
-                                  <button
-                                    type="button"
-                                    onClick={() =>
-                                      setOpenOrderVariationProductId(
-                                        isOpen ? null : product.id
-                                      )
-                                    }
-                                    style={{
-                                      background: 'none',
-                                      border: 'none',
-                                      cursor: 'pointer',
-                                      padding: '4px',
-                                      display: 'flex',
-                                      alignItems: 'center',
-                                      fontSize: '16px',
-                                      color: '#667eea',
-                                      transition: 'transform 0.2s'
-                                    }}
-                                    title={isOpen ? 'Hide variations' : 'Show variations'}
-                                  >
-                                    <span
-                                      style={{
-                                        transform: isOpen ? 'rotate(90deg)' : 'rotate(0deg)',
-                                        transition: 'transform 0.2s'
-                                      }}
-                                    >
-                                      ▶
-                                    </span>
-                                  </button>
-                                )}
-                                <span>{product.name}</span>
-                              </div>
-                            </td>
-                            <td>
-                              {(product.category || '-') + ' / ' + (product.subcategory || 'No category')}
-                            </td>
-                            <td className="stock-quantity">
-                              {hasVariations ? (
-                                <span className="badge badge-warning">See variations</span>
-                              ) : (
-                                `${product.base?.quantity ?? '-'}${product.base?.unit ? ` ${product.base.unit}` : ''}`
-                              )}
-                            </td>
-                            <td>₹{basePurchasePrice.toFixed(2)}</td>
-                            <td>₹{baseNormalPrice.toFixed(2)}</td>
-                            <td className="status-cell">
-                              <span
-                                className={`status-badge ${
-                                  status === 'out' ? 'danger' : status === 'low' ? 'warning' : ''
-                                }`}
-                              >
-                                {status === 'out'
-                                  ? 'OUT OF STOCK'
-                                  : status === 'low'
-                                  ? 'LOW STOCK'
-                                  : 'OK'}
-                              </span>
+                            Selected Products ({selectedOrderSelectProducts.length})
+                          </td>
+                        </tr>
+                      )}
+                      {renderOrderSelectProductRows(selectedOrderSelectProducts)}
+                      {selectedOrderSelectProducts.length > 0 &&
+                        otherOrderSelectProducts.length > 0 && (
+                          <tr>
+                            <td
+                              colSpan="7"
+                              style={{
+                                background: '#f5f5f7',
+                                fontWeight: 700,
+                                fontSize: '0.92rem',
+                                padding: '10px 12px',
+                                color: '#555',
+                                borderBottom: '1px solid #e0e0e0'
+                              }}
+                            >
+                              Other Products
                             </td>
                           </tr>
-                        );
-
-                        const variationRow =
-                          hasVariations && isOpen ? (
-                            <tr key={`${product.id}_order_vars`}>
-                              <td colSpan="7">
-                                <table
-                                  style={{
-                                    width: '100%',
-                                    borderCollapse: 'collapse',
-                                    marginTop: '6px',
-                                    backgroundColor: '#fafafa'
-                                  }}
-                                >
-                                  <thead>
-                                    <tr>
-                                      <th
-                                        style={{
-                                          padding: '6px',
-                                          border: '1px solid #ddd',
-                                          width: '40px'
-                                        }}
-                                      >
-                                        Add
-                                      </th>
-                                      <th style={{ padding: '6px', border: '1px solid #ddd' }}>
-                                        Size
-                                      </th>
-                                      <th style={{ padding: '6px', border: '1px solid #ddd' }}>
-                                        Qty (Unit)
-                                      </th>
-                                      <th style={{ padding: '6px', border: '1px solid #ddd' }}>
-                                        Purchase Price
-                                      </th>
-                                      <th style={{ padding: '6px', border: '1px solid #ddd' }}>
-                                        Price
-                                      </th>
-                                      <th style={{ padding: '6px', border: '1px solid #ddd' }}>
-                                        Status
-                                      </th>
-                                    </tr>
-                                  </thead>
-                                  <tbody>
-                                    {product.variations.map((v) => {
-                                      const vPurchasePrice = Number(v.purchasePrice ?? 0) || 0;
-                                      const vNormalPrice = Number(v.price ?? 0) || 0;
-                                      const qtyUnit = v.unit || product.base?.unit || '';
-                                      return (
-                                        <tr key={v.id}>
-                                          <td
-                                            style={{
-                                              padding: '6px',
-                                              border: '1px solid #ddd',
-                                              textAlign: 'center'
-                                            }}
-                                          >
-                                            <input
-                                              type="checkbox"
-                                              checked={selectedIds.includes(v.id)}
-                                              onChange={() => toggleSelectProduct(v.id)}
-                                            />
-                                          </td>
-                                          <td
-                                            style={{ padding: '6px', border: '1px solid #ddd' }}
-                                          >
-                                            {v.size || '-'}
-                                          </td>
-                                          <td
-                                            style={{ padding: '6px', border: '1px solid #ddd' }}
-                                          >
-                                            {`${v.quantity ?? '-'}${qtyUnit ? ` ${qtyUnit}` : ''}`}
-                                          </td>
-                                          <td
-                                            style={{ padding: '6px', border: '1px solid #ddd' }}
-                                          >
-                                            ₹{vPurchasePrice.toFixed(2)}
-                                          </td>
-                                          <td
-                                            style={{ padding: '6px', border: '1px solid #ddd' }}
-                                          >
-                                            ₹{vNormalPrice.toFixed(2)}
-                                          </td>
-                                          <td
-                                            style={{ padding: '6px', border: '1px solid #ddd' }}
-                                          >
-                                            <span
-                                              className={`status-badge ${
-                                                v.status === 'out'
-                                                  ? 'danger'
-                                                  : v.status === 'low'
-                                                  ? 'warning'
-                                                  : ''
-                                              }`}
-                                            >
-                                              {v.status === 'out'
-                                                ? 'OUT OF STOCK'
-                                                : v.status === 'low'
-                                                ? 'LOW STOCK'
-                                                : 'OK'}
-                                            </span>
-                                          </td>
-                                        </tr>
-                                      );
-                                    })}
-                                  </tbody>
-                                </table>
-                              </td>
-                            </tr>
-                          ) : null;
-
-                        return variationRow ? [mainRow, variationRow] : [mainRow];
-                      })}
+                        )}
+                      {renderOrderSelectProductRows(otherOrderSelectProducts)}
                     </tbody>
                   </table>
                 </div>
@@ -1817,7 +2077,7 @@ function PurchaseOrder() {
                   <button
                     type="button"
                     className="cancel-due-btn"
-                    onClick={closeOrderModal}
+                    onClick={requestCloseOrderModal}
                   >
                     Cancel
                   </button>
@@ -2031,7 +2291,12 @@ function PurchaseOrder() {
                   <button
                     type="button"
                     className="cancel-due-btn"
-                    onClick={() => setOrderStep('select')}
+                    onClick={() => {
+                      if (editingOrderId) {
+                        setShowAllOrderProducts(true);
+                      }
+                      setOrderStep('select');
+                    }}
                     style={{
                       minHeight: '40px',
                       padding: '0.6rem 14px',
@@ -2045,8 +2310,26 @@ function PurchaseOrder() {
                   </button>
                   <button
                     type="button"
+                    className="save-due-btn"
+                    onClick={() => {
+                      setShowAllOrderProducts(true);
+                      setOrderStep('select');
+                    }}
+                    style={{
+                      minHeight: '40px',
+                      padding: '0.6rem 14px',
+                      boxSizing: 'border-box',
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      justifyContent: 'center'
+                    }}
+                  >
+                    Add Items
+                  </button>
+                  <button
+                    type="button"
                     className="cancel-due-btn"
-                    onClick={closeOrderModal}
+                    onClick={requestCloseOrderModal}
                     style={{
                       minHeight: '40px',
                       padding: '0.6rem 14px',
@@ -2072,11 +2355,88 @@ function PurchaseOrder() {
                       justifyContent: 'center'
                     }}
                   >
-                    Save & Generate PDF
+                    {editingOrderId ? 'Update & Generate PDF' : 'Save & Generate PDF'}
                   </button>
                 </div>
               </div>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* Exit confirmation for Create/Edit Purchase Order */}
+      {showExitConfirm && (
+        <div
+          style={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            backgroundColor: 'rgba(0,0,0,0.45)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 11000,
+            padding: '20px'
+          }}
+          onClick={(e) => {
+            if (e.target === e.currentTarget) {
+              setShowExitConfirm(false);
+            }
+          }}
+        >
+          <div
+            style={{
+              backgroundColor: '#fff',
+              borderRadius: '10px',
+              maxWidth: '400px',
+              width: '100%',
+              padding: '22px 20px',
+              boxShadow: '0 4px 18px rgba(0,0,0,0.3)'
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3 style={{ margin: '0 0 10px 0', fontSize: '1.1rem' }}>Do you want to exit?</h3>
+            <p style={{ margin: '0 0 18px 0', color: '#555', fontSize: '0.95rem' }}>
+              Your current selection will not be saved if you leave.
+            </p>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px' }}>
+              <button
+                type="button"
+                onClick={() => setShowExitConfirm(false)}
+                style={{
+                  minWidth: '90px',
+                  padding: '0.55rem 1.1rem',
+                  borderRadius: '6px',
+                  border: 'none',
+                  cursor: 'pointer',
+                  fontSize: '0.95rem',
+                  fontWeight: 600,
+                  background: '#dc3545',
+                  color: '#fff'
+                }}
+              >
+                No
+              </button>
+              <button
+                type="button"
+                onClick={closeOrderModal}
+                style={{
+                  minWidth: '90px',
+                  padding: '0.55rem 1.1rem',
+                  borderRadius: '6px',
+                  border: 'none',
+                  cursor: 'pointer',
+                  fontSize: '0.95rem',
+                  fontWeight: 600,
+                  background: '#28a745',
+                  color: '#fff'
+                }}
+              >
+                Yes
+              </button>
+            </div>
           </div>
         </div>
       )}
@@ -2101,6 +2461,8 @@ function PurchaseOrder() {
             if (e.target === e.currentTarget) {
               setIsHistoryOpen(false);
               setExpandedHistoryOrderId(null);
+              setOpenMenuOrderId(null);
+              setOpenShareOrderId(null);
             }
           }}
         >
@@ -2141,6 +2503,8 @@ function PurchaseOrder() {
                   onClick={() => {
                     setIsHistoryOpen(false);
                     setExpandedHistoryOrderId(null);
+                    setOpenMenuOrderId(null);
+                    setOpenShareOrderId(null);
                   }}
                   style={{
                     background: 'none',
@@ -2226,6 +2590,13 @@ function PurchaseOrder() {
                               border: '1px solid #ffe0b2'
                             };
                           }
+                          if (label === 'PENDING') {
+                            return {
+                              background: '#e3f2fd',
+                              color: '#1565c0',
+                              border: '1px solid #bbdefb'
+                            };
+                          }
                           return {
                             background: '#eceff1',
                             color: '#546e7a',
@@ -2290,31 +2661,223 @@ function PurchaseOrder() {
                                 )}
                               </td>
                               <td>
-                                <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+                                <div
+                                  style={{
+                                    display: 'flex',
+                                    gap: '6px',
+                                    flexWrap: 'nowrap',
+                                    alignItems: 'center'
+                                  }}
+                                >
                                   <button
                                     type="button"
                                     className="low-stock-more-btn"
-                                    style={smallActionButtonStyle}
-                                    onClick={() => downloadExistingOrderPDF(order)}
-                                  >
-                                    Download PDF
-                                  </button>
-                                  <button
-                                    type="button"
-                                    className="low-stock-more-btn"
-                                    style={smallActionButtonStyle}
+                                    style={iconActionButtonStyle}
                                     onClick={() => viewExistingOrderPDF(order)}
+                                    title="View"
                                   >
                                     View
                                   </button>
-                                  <button
-                                    type="button"
-                                    className="delete-bill-btn"
-                                    style={smallActionButtonStyle}
-                                    onClick={() => deletePurchaseOrder(order.id)}
+                                  <div
+                                    className="po-share-container"
+                                    style={{ position: 'relative', display: 'inline-flex' }}
                                   >
-                                    Delete
-                                  </button>
+                                    <button
+                                      type="button"
+                                      className="low-stock-more-btn"
+                                      style={iconActionButtonStyle}
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        setOpenMenuOrderId(null);
+                                        setOpenShareOrderId(
+                                          openShareOrderId === order.id ? null : order.id
+                                        );
+                                      }}
+                                      title="Share"
+                                    >
+                                      Share
+                                    </button>
+                                    {openShareOrderId === order.id && (
+                                      <div
+                                        style={{
+                                          position: 'absolute',
+                                          top: '100%',
+                                          left: 0,
+                                          backgroundColor: 'white',
+                                          border: '1px solid #ddd',
+                                          borderRadius: '5px',
+                                          boxShadow: '0 2px 8px rgba(0,0,0,0.15)',
+                                          zIndex: 1000,
+                                          minWidth: '140px',
+                                          marginTop: '4px',
+                                          overflow: 'hidden'
+                                        }}
+                                      >
+                                        <button
+                                          type="button"
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            shareOrderOnWhatsApp(order);
+                                            setOpenShareOrderId(null);
+                                          }}
+                                          style={{
+                                            width: '100%',
+                                            padding: '10px 15px',
+                                            border: 'none',
+                                            background: 'none',
+                                            textAlign: 'left',
+                                            cursor: 'pointer',
+                                            fontSize: '14px',
+                                            color: '#128C7E',
+                                            display: 'flex',
+                                            alignItems: 'center',
+                                            gap: '8px'
+                                          }}
+                                          onMouseEnter={(e) => {
+                                            e.currentTarget.style.backgroundColor = '#f5f5f5';
+                                          }}
+                                          onMouseLeave={(e) => {
+                                            e.currentTarget.style.backgroundColor = 'white';
+                                          }}
+                                        >
+                                          WhatsApp
+                                        </button>
+                                      </div>
+                                    )}
+                                  </div>
+                                  <div
+                                    className="po-menu-container"
+                                    style={{ position: 'relative', display: 'inline-flex' }}
+                                  >
+                                    <button
+                                      type="button"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        setOpenShareOrderId(null);
+                                        setOpenMenuOrderId(
+                                          openMenuOrderId === order.id ? null : order.id
+                                        );
+                                      }}
+                                      style={{
+                                        background: 'none',
+                                        border: 'none',
+                                        cursor: 'pointer',
+                                        fontSize: '18px',
+                                        padding: '4px 6px',
+                                        color: '#333',
+                                        display: 'flex',
+                                        flexDirection: 'column',
+                                        alignItems: 'center',
+                                        justifyContent: 'center',
+                                        borderRadius: '4px',
+                                        fontWeight: 'bold',
+                                        lineHeight: '0.45',
+                                        gap: '2px'
+                                      }}
+                                      title="More options"
+                                    >
+                                      <span>•</span>
+                                      <span>•</span>
+                                      <span>•</span>
+                                    </button>
+                                    {openMenuOrderId === order.id && (
+                                      <div
+                                        style={{
+                                          position: 'absolute',
+                                          top: '100%',
+                                          right: 0,
+                                          backgroundColor: 'white',
+                                          border: '1px solid #ddd',
+                                          borderRadius: '5px',
+                                          boxShadow: '0 2px 8px rgba(0,0,0,0.15)',
+                                          zIndex: 1000,
+                                          minWidth: '150px',
+                                          marginTop: '4px',
+                                          overflow: 'hidden'
+                                        }}
+                                      >
+                                        <button
+                                          type="button"
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            startEditOrder(order);
+                                          }}
+                                          style={{
+                                            width: '100%',
+                                            padding: '10px 15px',
+                                            border: 'none',
+                                            background: 'none',
+                                            textAlign: 'left',
+                                            cursor: 'pointer',
+                                            fontSize: '14px',
+                                            color: '#333'
+                                          }}
+                                          onMouseEnter={(e) => {
+                                            e.currentTarget.style.backgroundColor = '#f5f5f5';
+                                          }}
+                                          onMouseLeave={(e) => {
+                                            e.currentTarget.style.backgroundColor = 'white';
+                                          }}
+                                        >
+                                          ✏️ Edit
+                                        </button>
+                                        <button
+                                          type="button"
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            downloadExistingOrderPDF(order);
+                                            setOpenMenuOrderId(null);
+                                          }}
+                                          style={{
+                                            width: '100%',
+                                            padding: '10px 15px',
+                                            border: 'none',
+                                            background: 'none',
+                                            textAlign: 'left',
+                                            cursor: 'pointer',
+                                            fontSize: '14px',
+                                            color: '#333',
+                                            borderTop: '1px solid #eee'
+                                          }}
+                                          onMouseEnter={(e) => {
+                                            e.currentTarget.style.backgroundColor = '#f5f5f5';
+                                          }}
+                                          onMouseLeave={(e) => {
+                                            e.currentTarget.style.backgroundColor = 'white';
+                                          }}
+                                        >
+                                          📄 Download
+                                        </button>
+                                        <button
+                                          type="button"
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            setOpenMenuOrderId(null);
+                                            deletePurchaseOrder(order.id);
+                                          }}
+                                          style={{
+                                            width: '100%',
+                                            padding: '10px 15px',
+                                            border: 'none',
+                                            background: 'none',
+                                            textAlign: 'left',
+                                            cursor: 'pointer',
+                                            fontSize: '14px',
+                                            color: '#e74c3c',
+                                            borderTop: '1px solid #eee'
+                                          }}
+                                          onMouseEnter={(e) => {
+                                            e.currentTarget.style.backgroundColor = '#f5f5f5';
+                                          }}
+                                          onMouseLeave={(e) => {
+                                            e.currentTarget.style.backgroundColor = 'white';
+                                          }}
+                                        >
+                                          🗑️ Delete
+                                        </button>
+                                      </div>
+                                    )}
+                                  </div>
                                 </div>
                               </td>
                             </tr>

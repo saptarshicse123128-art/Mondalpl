@@ -348,15 +348,18 @@ function StockManagement() {
     });
 
     let sellingMrp = formData.sellingMrp;
+    let sellingDiscount = formData.sellingDiscount;
     let sellingPrice = formData.price;
 
-    if (field === 'mrp') {
-      sellingMrp = value;
-      const sellingUpdated = applyMrpFieldChange('mrp', value, {
-        mrp: value,
+    // Keep selling MRP in sync when purchase MRP is typed or auto-calculated
+    if (updated.mrp !== formData.purchaseMrp) {
+      sellingMrp = updated.mrp;
+      const sellingUpdated = applyMrpFieldChange('mrp', updated.mrp, {
+        mrp: updated.mrp,
         discount: formData.sellingDiscount,
         price: formData.price
       });
+      sellingDiscount = sellingUpdated.discount;
       sellingPrice = sellingUpdated.price;
     }
 
@@ -366,6 +369,7 @@ function StockManagement() {
       purchaseDiscount: updated.discount,
       purchasePrice: updated.price,
       sellingMrp,
+      sellingDiscount,
       price: sellingPrice
     });
   };
@@ -378,15 +382,18 @@ function StockManagement() {
     });
 
     let purchaseMrp = formData.purchaseMrp;
+    let purchaseDiscount = formData.purchaseDiscount;
     let purchasePrice = formData.purchasePrice;
 
-    if (field === 'mrp') {
-      purchaseMrp = value;
-      const purchaseUpdated = applyMrpFieldChange('mrp', value, {
-        mrp: value,
+    // Keep purchase MRP in sync when selling MRP is typed or auto-calculated
+    if (updated.mrp !== formData.sellingMrp) {
+      purchaseMrp = updated.mrp;
+      const purchaseUpdated = applyMrpFieldChange('mrp', updated.mrp, {
+        mrp: updated.mrp,
         discount: formData.purchaseDiscount,
         price: formData.purchasePrice
       });
+      purchaseDiscount = purchaseUpdated.discount;
       purchasePrice = purchaseUpdated.price;
     }
 
@@ -396,6 +403,7 @@ function StockManagement() {
       sellingDiscount: updated.discount,
       price: updated.price,
       purchaseMrp,
+      purchaseDiscount,
       purchasePrice
     });
   };
@@ -421,13 +429,15 @@ function StockManagement() {
       [priceKey]: updated.price
     };
 
-    if (field === 'mrp') {
-      patch[otherMrpKey] = value;
-      const otherUpdated = applyMrpFieldChange('mrp', value, {
-        mrp: value,
+    // Sync the other side's MRP when this side's MRP changes (typed or calculated)
+    if (updated.mrp !== (variation[mrpKey] || '')) {
+      patch[otherMrpKey] = updated.mrp;
+      const otherUpdated = applyMrpFieldChange('mrp', updated.mrp, {
+        mrp: updated.mrp,
         discount: variation[otherDiscountKey] || '',
         price: variation[otherPriceKey] || ''
       });
+      patch[otherDiscountKey] = otherUpdated.discount;
       patch[otherPriceKey] = otherUpdated.price;
     }
 
@@ -1775,7 +1785,9 @@ function StockManagement() {
                 <th>Catalogue No.</th>
                 <th>HSN</th>
                 <th>Low Alert Qty</th>
+                <th>Purchase Discount</th>
                 <th>Purchase Price</th>
+                <th>Selling Discount</th>
                 <th>Price</th>
                 <th>Quantity (Unit)</th>
                 <th>Actions</th>
@@ -1835,11 +1847,33 @@ function StockManagement() {
                           <>{product.lowStockQuantity ?? '-'}</>
                         )}
                       </td>
+                      <td data-label="Purchase Discount">
+                        {hasVariations ? (
+                          <span style={{ color: '#999', fontStyle: 'italic' }}>See variations</span>
+                        ) : (
+                          <>
+                            {product.purchaseDiscount != null && product.purchaseDiscount !== ''
+                              ? `${Number(product.purchaseDiscount)}%`
+                              : '-'}
+                          </>
+                        )}
+                      </td>
                       <td data-label="Purchase Price">
                         {hasVariations ? (
                           <span style={{ color: '#999', fontStyle: 'italic' }}>See variations</span>
                         ) : (
                           <>₹{product.purchasePrice?.toFixed(2) || '-'}</>
+                        )}
+                      </td>
+                      <td data-label="Selling Discount">
+                        {hasVariations ? (
+                          <span style={{ color: '#999', fontStyle: 'italic' }}>See variations</span>
+                        ) : (
+                          <>
+                            {product.sellingDiscount != null && product.sellingDiscount !== ''
+                              ? `${Number(product.sellingDiscount)}%`
+                              : '-'}
+                          </>
                         )}
                       </td>
                       <td data-label="Price">
@@ -1878,7 +1912,7 @@ function StockManagement() {
                     </tr>
                     {hasVariations && isVariationOpen && (
                       <tr>
-                        <td colSpan="9" style={{ padding: '0', backgroundColor: '#f5f5f5' }}>
+                        <td colSpan="11" style={{ padding: '0', backgroundColor: '#f5f5f5' }}>
                           <div style={{ padding: '15px', marginLeft: '30px' }}>
                             <h4 style={{ margin: '0 0 10px 0', color: '#333', fontSize: '14px', fontWeight: 'bold' }}>
                               Product Variations:
@@ -1890,7 +1924,9 @@ function StockManagement() {
                                   <th style={{ padding: '8px', textAlign: 'left', border: '1px solid #ddd', fontSize: '13px' }}>Catalogue No.</th>
                                   <th style={{ padding: '8px', textAlign: 'left', border: '1px solid #ddd', fontSize: '13px' }}>HSN</th>
                                   <th style={{ padding: '8px', textAlign: 'right', border: '1px solid #ddd', fontSize: '13px' }}>Low Alert Qty</th>
+                                  <th style={{ padding: '8px', textAlign: 'right', border: '1px solid #ddd', fontSize: '13px' }}>Purchase Discount</th>
                                   <th style={{ padding: '8px', textAlign: 'right', border: '1px solid #ddd', fontSize: '13px' }}>Purchase Price</th>
+                                  <th style={{ padding: '8px', textAlign: 'right', border: '1px solid #ddd', fontSize: '13px' }}>Selling Discount</th>
                                   <th style={{ padding: '8px', textAlign: 'right', border: '1px solid #ddd', fontSize: '13px' }}>Price</th>
                                   <th style={{ padding: '8px', textAlign: 'right', border: '1px solid #ddd', fontSize: '13px' }}>Qty (Unit)</th>
                                 </tr>
@@ -1903,7 +1939,17 @@ function StockManagement() {
                                     <td style={{ padding: '8px', border: '1px solid #ddd', fontSize: '13px' }}>{product.hsnCode || '-'}</td>
                                     <td style={{ padding: '8px', textAlign: 'right', border: '1px solid #ddd', fontSize: '13px' }}>{variation.lowStockQuantity ?? '-'}</td>
                                     <td style={{ padding: '8px', textAlign: 'right', border: '1px solid #ddd', fontSize: '13px' }}>
+                                      {variation.purchaseDiscount != null && variation.purchaseDiscount !== ''
+                                        ? `${Number(variation.purchaseDiscount)}%`
+                                        : '-'}
+                                    </td>
+                                    <td style={{ padding: '8px', textAlign: 'right', border: '1px solid #ddd', fontSize: '13px' }}>
                                       ₹{typeof variation.purchasePrice === 'number' ? variation.purchasePrice.toFixed(2) : '-'}
+                                    </td>
+                                    <td style={{ padding: '8px', textAlign: 'right', border: '1px solid #ddd', fontSize: '13px' }}>
+                                      {variation.sellingDiscount != null && variation.sellingDiscount !== ''
+                                        ? `${Number(variation.sellingDiscount)}%`
+                                        : '-'}
                                     </td>
                                     <td style={{ padding: '8px', textAlign: 'right', border: '1px solid #ddd', fontSize: '13px' }}>
                                       ₹{typeof variation.price === 'number' ? variation.price.toFixed(2) : '0.00'}

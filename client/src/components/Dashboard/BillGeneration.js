@@ -6,6 +6,37 @@ import 'jspdf-autotable';
 import { formatProductWithVariation, normalizeSizeNamePosition } from '../../utils/productDisplay';
 import './BillGeneration.css';
 
+const getCartItemKey = (item) =>
+  item?.variationSize ? `${item.id}_${item.variationSize}` : item?.id;
+
+const formatBrandCategory = (item) => {
+  const brand = String(item?.category || '').trim();
+  const category = String(item?.subcategory || '').trim();
+  if (brand && category) return `${brand} / ${category}`;
+  return brand || category || '-';
+};
+
+const getCartItemMrp = (item) => {
+  const mrp = item?.sellingMrp;
+  if (mrp === '' || mrp == null) return null;
+  const n = Number(mrp);
+  return Number.isFinite(n) ? n : null;
+};
+
+const getCartItemDiscountPct = (item) => {
+  const discount = item?.sellingDiscount;
+  if (discount !== '' && discount != null) {
+    const n = Number(discount);
+    if (Number.isFinite(n)) return n;
+  }
+  const mrp = getCartItemMrp(item);
+  const price = Number(item?.price);
+  if (mrp != null && mrp > 0 && Number.isFinite(price)) {
+    return Number((((mrp - price) / mrp) * 100).toFixed(2));
+  }
+  return null;
+};
+
 function BillGeneration() {
   const [products, setProducts] = useState([]);
   const [cart, setCart] = useState([]);
@@ -34,9 +65,8 @@ function BillGeneration() {
     quantity: 1,
     price: ''
   });
-  const [editingCustomItem, setEditingCustomItem] = useState(null);
-  const [editingQuantityItemId, setEditingQuantityItemId] = useState(null);
-  const [editingQuantityValue, setEditingQuantityValue] = useState('');
+  const [editingCartItemKey, setEditingCartItemKey] = useState(null);
+  const [editingCartValues, setEditingCartValues] = useState({ quantity: '', price: '' });
   const [editingDueBillId, setEditingDueBillId] = useState(null);
   const [editingDueAmount, setEditingDueAmount] = useState('');
   const [currentDueAmount, setCurrentDueAmount] = useState(0);
@@ -46,6 +76,7 @@ function BillGeneration() {
   const [adjustBillSearchQuery, setAdjustBillSearchQuery] = useState('');
   const [showAdjustBillDropdown, setShowAdjustBillDropdown] = useState(false);
   const [adjustments, setAdjustments] = useState([]);
+  const [selectedSuggestedBillIds, setSelectedSuggestedBillIds] = useState([]);
 
   useEffect(() => {
     const unsubscribe = onSnapshot(collection(db, 'products'), (snapshot) => {
@@ -229,6 +260,8 @@ function BillGeneration() {
 
     let availableQuantity = product.quantity;
     let productPrice = product.price;
+    let sellingMrp = product.sellingMrp ?? null;
+    let sellingDiscount = product.sellingDiscount ?? null;
 
     // If product has variations, use selected variation
     if (hasVariations && selectedVariation) {
@@ -239,6 +272,8 @@ function BillGeneration() {
       }
       availableQuantity = variation.quantity || 0;
       productPrice = variation.price || product.price;
+      sellingMrp = variation.sellingMrp ?? product.sellingMrp ?? null;
+      sellingDiscount = variation.sellingDiscount ?? product.sellingDiscount ?? null;
     }
     if (availableQuantity < qty) {
       alert(`Only ${availableQuantity} items available in stock for this size`);
@@ -296,6 +331,8 @@ function BillGeneration() {
         ...product,
         quantity: newCartQuantity,
         price: productPrice,
+        sellingMrp,
+        sellingDiscount,
         variationSize: hasVariations ? selectedVariation : undefined
       };
 
@@ -318,85 +355,68 @@ function BillGeneration() {
     }
   };
 
-  const updateCartQuantity = async (productId, newQuantity) => {
-    // Find cart item - need to find by index since items with same id but different variations can exist
-    // For now, find the first item matching the productId (should work for most cases)
-    // In the future, we might need to pass an index or unique identifier
-    const cartItem = cart.find(item => item.id === productId);
-    
+  const updateCartQuantity = async (cartItemKey, newQuantity) => {
+    const cartItem = cart.find((item) => getCartItemKey(item) === cartItemKey);
+
     if (!cartItem) return;
 
     // If it's a custom product, just update quantity without stock management
     if (cartItem.isCustomProduct) {
       const safeQuantity = parseInt(newQuantity, 10) || 0;
       if (safeQuantity <= 0) {
-        setCart(cart.filter(item => {
-          const itemId = item.variationSize ? `${item.id}_${item.variationSize}` : item.id;
-          const searchId = cartItem.variationSize ? `${cartItem.id}_${cartItem.variationSize}` : cartItem.id;
-          return itemId !== searchId;
-        }));
+        setCart(cart.filter((item) => getCartItemKey(item) !== cartItemKey));
       } else {
-        setCart(cart.map(item => {
-          const itemId = item.variationSize ? `${item.id}_${item.variationSize}` : item.id;
-          const searchId = cartItem.variationSize ? `${cartItem.id}_${cartItem.variationSize}` : cartItem.id;
-          return itemId === searchId ? { ...item, quantity: safeQuantity } : item;
-        }));
+        setCart(
+          cart.map((item) =>
+            getCartItemKey(item) === cartItemKey ? { ...item, quantity: safeQuantity } : item
+          )
+        );
       }
       return;
     }
 
     if (newQuantity <= 0) {
-      // Remove from cart and restore stock
-      await restoreProductStock(productId, cartItem.quantity, cartItem.variationSize);
-      setCart(cart.filter(item => {
-        const itemId = item.variationSize ? `${item.id}_${item.variationSize}` : item.id;
-        const searchId = cartItem.variationSize ? `${cartItem.id}_${cartItem.variationSize}` : cartItem.id;
-        return itemId !== searchId;
-      }));
+      await restoreProductStock(cartItem.id, cartItem.quantity, cartItem.variationSize);
+      setCart(cart.filter((item) => getCartItemKey(item) !== cartItemKey));
     } else {
-      // Calculate the difference in quantity
       const quantityDifference = newQuantity - cartItem.quantity;
-      const product = products.find(p => p.id === productId);
-      
+      const product = products.find((p) => p.id === cartItem.id);
+
       if (!product) return;
 
-      // Check if product has variations
-      const hasVariations = cartItem.variationSize && product.variations && Array.isArray(product.variations);
+      const hasVariations =
+        cartItem.variationSize && product.variations && Array.isArray(product.variations);
       let availableQuantity = product.quantity;
 
       if (hasVariations) {
-        const variation = product.variations.find(v => v.size === cartItem.variationSize);
+        const variation = product.variations.find((v) => v.size === cartItem.variationSize);
         availableQuantity = variation?.quantity || 0;
       }
 
-      // Check if enough stock is available
       if (availableQuantity < quantityDifference) {
         alert(`Only ${availableQuantity} items available in stock${hasVariations ? ' for this size' : ''}`);
         return;
       }
 
       try {
-        // Update product quantity in Firestore
-        const productRef = doc(db, 'products', productId);
-        
+        const productRef = doc(db, 'products', cartItem.id);
+
         if (hasVariations && cartItem.variationSize) {
-          // Update the specific variation's quantity
-          const updatedVariations = product.variations.map(v => {
+          const updatedVariations = product.variations.map((v) => {
             if (v.size === cartItem.variationSize) {
               return { ...v, quantity: (v.quantity || 0) - quantityDifference };
             }
             return v;
           });
-          
+
           const newTotalQuantity = updatedVariations.reduce((sum, v) => sum + (v.quantity || 0), 0);
-          
+
           await updateDoc(productRef, {
             variations: updatedVariations,
             quantity: newTotalQuantity,
             updatedAt: serverTimestamp()
           });
         } else {
-          // Update regular product quantity
           const newStockQuantity = product.quantity - quantityDifference;
           await updateDoc(productRef, {
             quantity: newStockQuantity,
@@ -404,17 +424,65 @@ function BillGeneration() {
           });
         }
 
-        // Update cart
-        setCart(cart.map(item => {
-          const itemId = item.variationSize ? `${item.id}_${item.variationSize}` : item.id;
-          const searchId = cartItem.variationSize ? `${cartItem.id}_${cartItem.variationSize}` : cartItem.id;
-          return itemId === searchId ? { ...item, quantity: newQuantity } : item;
-        }));
+        setCart(
+          cart.map((item) =>
+            getCartItemKey(item) === cartItemKey ? { ...item, quantity: newQuantity } : item
+          )
+        );
       } catch (error) {
         console.error('Error updating product quantity:', error);
         alert('Failed to update product stock. Please try again.');
       }
     }
+  };
+
+  const startCartItemEdit = (item) => {
+    setEditingCartItemKey(getCartItemKey(item));
+    setEditingCartValues({
+      quantity: String(item.quantity),
+      price: String(item.price ?? '')
+    });
+  };
+
+  const cancelCartItemEdit = () => {
+    setEditingCartItemKey(null);
+    setEditingCartValues({ quantity: '', price: '' });
+  };
+
+  const saveCartItemEdit = async (item) => {
+    const cartItemKey = getCartItemKey(item);
+    const newQty = parseInt(editingCartValues.quantity, 10);
+    const newPrice = parseFloat(editingCartValues.price);
+
+    if (Number.isNaN(newQty) || newQty <= 0) {
+      alert('Quantity must be greater than 0');
+      return;
+    }
+    if (Number.isNaN(newPrice) || newPrice <= 0) {
+      alert('Please enter a valid price');
+      return;
+    }
+
+    if (item.isCustomProduct) {
+      setCart(
+        cart.map((ci) =>
+          getCartItemKey(ci) === cartItemKey ? { ...ci, quantity: newQty, price: newPrice } : ci
+        )
+      );
+      cancelCartItemEdit();
+      return;
+    }
+
+    if (newQty !== item.quantity) {
+      await updateCartQuantity(cartItemKey, newQty);
+    }
+
+    setCart((prev) =>
+      prev.map((ci) =>
+        getCartItemKey(ci) === cartItemKey ? { ...ci, quantity: newQty, price: newPrice } : ci
+      )
+    );
+    cancelCartItemEdit();
   };
 
   const restoreProductStock = async (productId, quantityToRestore, variationSize = null) => {
@@ -455,17 +523,15 @@ function BillGeneration() {
     }
   };
 
-  const removeFromCart = async (productId) => {
-    const cartItem = cart.find(item => item.id === productId);
+  const removeFromCart = async (cartItemKey) => {
+    const cartItem = cart.find((item) => getCartItemKey(item) === cartItemKey);
     if (cartItem && !cartItem.isCustomProduct) {
-      // Restore stock when removing from cart (only for stock products)
-      await restoreProductStock(productId, cartItem.quantity, cartItem.variationSize);
+      await restoreProductStock(cartItem.id, cartItem.quantity, cartItem.variationSize);
     }
-    setCart(cart.filter(item => {
-      const itemId = item.variationSize ? `${item.id}_${item.variationSize}` : item.id;
-      const searchId = cartItem?.variationSize ? `${productId}_${cartItem.variationSize}` : productId;
-      return itemId !== searchId;
-    }));
+    setCart(cart.filter((item) => getCartItemKey(item) !== cartItemKey));
+    if (editingCartItemKey === cartItemKey) {
+      cancelCartItemEdit();
+    }
   };
 
   const handleDeleteBill = async (billId) => {
@@ -1080,21 +1146,37 @@ function BillGeneration() {
   const getBillAdjustmentInfo = (bill) => {
     const currentDue = parseAmountValue(bill.due);
     const returnedItems = bill.returnedItems || [];
-    
-    if (returnedItems.length === 0) {
-      return { due: currentDue, cashReturn: 0 };
+
+    let cashReturn = 0;
+    if (
+      !bill.cashReturnSettled &&
+      !bill.cashReturnAdjustedInBill &&
+      returnedItems.length > 0
+    ) {
+      const summary = calculateReturnSummary(bill, returnedItems);
+      const settlement = calculateReturnSettlement(bill, summary);
+      cashReturn = Math.round(settlement.cashReturn);
     }
-    
-    const summary = calculateReturnSummary(bill, returnedItems);
-    const settlement = calculateReturnSettlement(bill, summary);
-    return { due: currentDue, cashReturn: Math.round(settlement.cashReturn) };
+
+    return { due: currentDue, cashReturn };
   };
 
-  const handleAdjustBill = (bill) => {
-    if (adjustments.find(a => a.billId === bill.id)) {
-      alert('This bill is already adjusted in the current bill.');
-      return;
-    }
+  const normalizePhone = (phone) => String(phone || '').replace(/\D/g, '');
+
+  const getSuggestedBillsForPhone = (phone) => {
+    const normalized = normalizePhone(phone);
+    if (normalized.length < 10) return [];
+
+    return bills.filter((b) => {
+      const billPhone = normalizePhone(b.phone || b.customerPhone);
+      if (!billPhone || billPhone !== normalized) return false;
+      if (adjustments.some((a) => a.billId === b.id)) return false;
+      const info = getBillAdjustmentInfo(b);
+      return info.due > 0 || info.cashReturn > 0;
+    });
+  };
+
+  const buildAdjustmentsForBill = (bill) => {
     const info = getBillAdjustmentInfo(bill);
     const newAdjustments = [];
     if (info.due > 0) {
@@ -1113,17 +1195,61 @@ function BillGeneration() {
         amount: info.cashReturn
       });
     }
+    return newAdjustments;
+  };
+
+  const handleAdjustBill = (bill) => {
+    if (adjustments.find((a) => a.billId === bill.id)) {
+      alert('This bill is already adjusted in the current bill.');
+      return;
+    }
+    const newAdjustments = buildAdjustmentsForBill(bill);
     if (newAdjustments.length === 0) {
       alert('This bill has no due or cash return to adjust.');
       return;
     }
     setAdjustments([...adjustments, ...newAdjustments]);
+    setSelectedSuggestedBillIds((prev) => prev.filter((id) => id !== bill.id));
     setAdjustBillSearchQuery('');
     setShowAdjustBillDropdown(false);
   };
 
+  const handleAdjustMultipleBills = (billsToAdjust) => {
+    if (!billsToAdjust || billsToAdjust.length === 0) {
+      alert('Please select at least one bill to adjust.');
+      return;
+    }
+
+    let next = [...adjustments];
+    let addedCount = 0;
+
+    billsToAdjust.forEach((bill) => {
+      if (next.some((a) => a.billId === bill.id)) return;
+      const newAdjustments = buildAdjustmentsForBill(bill);
+      if (newAdjustments.length === 0) return;
+      next = [...next, ...newAdjustments];
+      addedCount += 1;
+    });
+
+    if (addedCount === 0) {
+      alert('No bills with due or cash return were added.');
+      return;
+    }
+
+    setAdjustments(next);
+    setSelectedSuggestedBillIds([]);
+    setAdjustBillSearchQuery('');
+    setShowAdjustBillDropdown(false);
+  };
+
+  const toggleSuggestedBillSelection = (billId) => {
+    setSelectedSuggestedBillIds((prev) =>
+      prev.includes(billId) ? prev.filter((id) => id !== billId) : [...prev, billId]
+    );
+  };
+
   const removeAdjustment = (billId) => {
-    setAdjustments(adjustments.filter(a => a.billId !== billId));
+    setAdjustments(adjustments.filter((a) => a.billId !== billId));
   };
 
   const handleGenerateBill = async () => {
@@ -1244,13 +1370,18 @@ function BillGeneration() {
       for (const adj of adjustments) {
         try {
           const prevBillRef = doc(db, 'bills', adj.billId);
+          const updates = {
+            adjustedInBill: billNumber,
+            updatedAt: serverTimestamp()
+          };
           if (adj.type === 'due') {
-            await updateDoc(prevBillRef, {
-              due: null,
-              adjustedInBill: billNumber,
-              updatedAt: serverTimestamp()
-            });
+            updates.due = null;
           }
+          if (adj.type === 'cashReturn') {
+            updates.cashReturnSettled = true;
+            updates.cashReturnAdjustedInBill = billNumber;
+          }
+          await updateDoc(prevBillRef, updates);
         } catch (err) {
           console.error('Error updating previous bill:', err);
         }
@@ -1265,6 +1396,7 @@ function BillGeneration() {
       // So we just clear the cart and form
       setCart([]);
       setAdjustments([]);
+      setSelectedSuggestedBillIds([]);
       setAdjustBillSearchQuery('');
       setBillForm({
         fullName: '',
@@ -3172,6 +3304,143 @@ function BillGeneration() {
                 {/* Adjust from Previous Bill */}
                 <div className="form-group" style={{ marginTop: '12px', borderTop: '1px dashed #ccc', paddingTop: '12px' }}>
                   <label style={{ fontWeight: '600', color: '#555' }}>Adjust from Previous Bill</label>
+
+                  {(() => {
+                    const suggestedBills = getSuggestedBillsForPhone(billForm.phone);
+                    if (suggestedBills.length === 0) return null;
+
+                    const allSuggestedSelected =
+                      suggestedBills.length > 0 &&
+                      suggestedBills.every((b) => selectedSuggestedBillIds.includes(b.id));
+
+                    return (
+                      <div
+                        style={{
+                          marginBottom: '10px',
+                          border: '1px solid #dbeafe',
+                          background: '#f8fbff',
+                          borderRadius: '8px',
+                          padding: '10px'
+                        }}
+                      >
+                        <div
+                          style={{
+                            display: 'flex',
+                            justifyContent: 'space-between',
+                            alignItems: 'center',
+                            gap: '8px',
+                            marginBottom: '8px',
+                            flexWrap: 'wrap'
+                          }}
+                        >
+                          <span style={{ fontSize: '13px', fontWeight: 700, color: '#1d4ed8' }}>
+                            Suggested bills (same mobile) — {suggestedBills.length}
+                          </span>
+                          <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+                            <button
+                              type="button"
+                              className="cancel-due-btn"
+                              style={{ padding: '4px 10px', fontSize: '12px', minWidth: 'auto' }}
+                              onClick={() => {
+                                if (allSuggestedSelected) {
+                                  setSelectedSuggestedBillIds([]);
+                                } else {
+                                  setSelectedSuggestedBillIds(suggestedBills.map((b) => b.id));
+                                }
+                              }}
+                            >
+                              {allSuggestedSelected ? 'Unselect All' : 'Select All'}
+                            </button>
+                            <button
+                              type="button"
+                              className="save-due-btn"
+                              style={{ padding: '4px 10px', fontSize: '12px', minWidth: 'auto' }}
+                              onClick={() => {
+                                const selected = suggestedBills.filter((b) =>
+                                  selectedSuggestedBillIds.includes(b.id)
+                                );
+                                handleAdjustMultipleBills(
+                                  selected.length > 0 ? selected : suggestedBills
+                                );
+                              }}
+                            >
+                              {selectedSuggestedBillIds.length > 0
+                                ? `Adjust Selected (${selectedSuggestedBillIds.length})`
+                                : 'Adjust All'}
+                            </button>
+                          </div>
+                        </div>
+
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                          {suggestedBills.map((bill) => {
+                            const info = getBillAdjustmentInfo(bill);
+                            const checked = selectedSuggestedBillIds.includes(bill.id);
+                            return (
+                              <div
+                                key={bill.id}
+                                style={{
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  justifyContent: 'space-between',
+                                  gap: '8px',
+                                  padding: '8px 10px',
+                                  background: '#fff',
+                                  border: '1px solid #e5e7eb',
+                                  borderRadius: '6px'
+                                }}
+                              >
+                                <label
+                                  style={{
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    gap: '8px',
+                                    cursor: 'pointer',
+                                    flex: 1,
+                                    margin: 0
+                                  }}
+                                >
+                                  <input
+                                    type="checkbox"
+                                    checked={checked}
+                                    onChange={() => toggleSuggestedBillSelection(bill.id)}
+                                    style={{ width: 'auto', margin: 0 }}
+                                  />
+                                  <span>
+                                    <strong>{bill.billNumber || bill.id.slice(0, 8)}</strong>
+                                    <span style={{ marginLeft: '8px', color: '#888', fontSize: '12px' }}>
+                                      {bill.fullName || bill.customerName || ''}
+                                      {bill.date ? ` · ${bill.date}` : ''}
+                                    </span>
+                                  </span>
+                                </label>
+                                <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexShrink: 0 }}>
+                                  {info.due > 0 && (
+                                    <span style={{ color: '#e74c3c', fontSize: '12px', fontWeight: 600 }}>
+                                      Due: ₹{info.due.toFixed(2)}
+                                    </span>
+                                  )}
+                                  {info.cashReturn > 0 && (
+                                    <span style={{ color: '#27ae60', fontSize: '12px', fontWeight: 600 }}>
+                                      Return: ₹{info.cashReturn.toFixed(2)}
+                                    </span>
+                                  )}
+                                  <button
+                                    type="button"
+                                    className="save-due-btn"
+                                    style={{ padding: '3px 8px', fontSize: '11px', minWidth: 'auto' }}
+                                    onClick={() => handleAdjustBill(bill)}
+                                  >
+                                    Adjust
+                                  </button>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    );
+                  })()}
+
                   <div className="product-search-container" style={{ position: 'relative' }}>
                     <input
                       type="text"
@@ -3182,21 +3451,27 @@ function BillGeneration() {
                       }}
                       onFocus={() => setShowAdjustBillDropdown(true)}
                       onBlur={() => setTimeout(() => setShowAdjustBillDropdown(false), 200)}
-                      placeholder="Search by bill number (e.g. MPS/00001)..."
+                      placeholder="Search by bill no, name, or phone..."
                       style={{ width: '100%', padding: '8px 12px', border: '1px solid #ddd', borderRadius: '6px', fontSize: '14px' }}
                     />
                     {showAdjustBillDropdown && adjustBillSearchQuery.trim() && (
                       <div className="product-dropdown" style={{ maxHeight: '200px', overflowY: 'auto' }}>
                         {(() => {
                           const query = adjustBillSearchQuery.toLowerCase().trim();
-                          const matching = bills.filter(b => {
+                          const queryDigits = normalizePhone(adjustBillSearchQuery);
+                          const matching = bills.filter((b) => {
                             const billNum = (b.billNumber || '').toLowerCase();
                             const name = (b.fullName || b.customerName || '').toLowerCase();
-                            const alreadyAdded = adjustments.some(a => a.billId === b.id);
+                            const phone = normalizePhone(b.phone || b.customerPhone);
+                            const alreadyAdded = adjustments.some((a) => a.billId === b.id);
                             if (alreadyAdded) return false;
                             const info = getBillAdjustmentInfo(b);
                             if (info.due <= 0 && info.cashReturn <= 0) return false;
-                            return billNum.includes(query) || name.includes(query);
+                            return (
+                              billNum.includes(query) ||
+                              name.includes(query) ||
+                              (queryDigits.length >= 3 && phone.includes(queryDigits))
+                            );
                           });
                           if (matching.length === 0) {
                             return (
@@ -3205,7 +3480,7 @@ function BillGeneration() {
                               </div>
                             );
                           }
-                          return matching.slice(0, 10).map(bill => {
+                          return matching.slice(0, 10).map((bill) => {
                             const info = getBillAdjustmentInfo(bill);
                             return (
                               <div

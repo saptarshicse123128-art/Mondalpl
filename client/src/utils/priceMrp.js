@@ -19,15 +19,51 @@ export function calcMrpFromPriceDiscount(price, discountPct) {
   return (p / (1 - d / 100)).toFixed(2);
 }
 
+function hasNumericValue(value) {
+  if (value === '' || value === null || value === undefined) return false;
+  return !Number.isNaN(parseFloat(value));
+}
+
+/**
+ * Keep MRP / discount / price in sync.
+ * When one field changes, use the other filled fields to calculate the blank (or dependent) one:
+ * - MRP + Discount → Price
+ * - MRP + Price → Discount
+ * - Discount + Price → MRP
+ */
 export function applyMrpFieldChange(changedField, value, current) {
   const next = { ...current, [changedField]: value };
 
-  // Only calculate price from manually entered MRP + discount
-  if (changedField === 'mrp' || changedField === 'discount') {
-    const mrp = changedField === 'mrp' ? value : current.mrp;
-    const discount = changedField === 'discount' ? value : current.discount;
-    if (mrp !== '' && discount !== '') {
+  // Clearing a field should not wipe or recalculate the others
+  if (value === '' || value === null || value === undefined) {
+    return next;
+  }
+
+  const mrp = next.mrp;
+  const discount = next.discount;
+  const price = next.price;
+
+  const hasMrp = hasNumericValue(mrp);
+  const hasDiscount = hasNumericValue(discount);
+  const hasPrice = hasNumericValue(price);
+
+  if (changedField === 'mrp') {
+    if (hasDiscount) {
       next.price = calcPriceFromMrpDiscount(mrp, discount);
+    } else if (hasPrice) {
+      next.discount = calcDiscountFromMrpPrice(mrp, price);
+    }
+  } else if (changedField === 'discount') {
+    if (hasMrp) {
+      next.price = calcPriceFromMrpDiscount(mrp, discount);
+    } else if (hasPrice) {
+      next.mrp = calcMrpFromPriceDiscount(price, discount);
+    }
+  } else if (changedField === 'price') {
+    if (hasMrp) {
+      next.discount = calcDiscountFromMrpPrice(mrp, price);
+    } else if (hasDiscount) {
+      next.mrp = calcMrpFromPriceDiscount(price, discount);
     }
   }
 
