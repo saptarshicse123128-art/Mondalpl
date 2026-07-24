@@ -11,6 +11,7 @@ import PurchaseOrder from './PurchaseOrder';
 import GstBillGeneration from './GstBillGeneration';
 import PartyManagement from './PartyManagement';
 import GstInvoiceHistory from './GstInvoiceHistory';
+import QRManagement from './QRManagement';
 import './Dashboard.css';
 
 function Dashboard() {
@@ -36,6 +37,8 @@ function Dashboard() {
       return 'Party Management';
     } else if (path.includes('/gst-history')) {
       return 'GST Invoice History';
+    } else if (path.includes('/qr')) {
+      return 'QR Code Management';
     } else if (path.includes('/categories')) {
       return 'Brands & Categories';
     } else if (path.includes('/users')) {
@@ -88,6 +91,7 @@ function Dashboard() {
             <Route path="gst-bills" element={<GstBillGeneration />} />
             <Route path="gst-parties" element={<PartyManagement />} />
             <Route path="gst-history" element={<GstInvoiceHistory />} />
+            <Route path="qr" element={<QRManagement />} />
             <Route path="users" element={<Users />} />
           </Routes>
         </div>

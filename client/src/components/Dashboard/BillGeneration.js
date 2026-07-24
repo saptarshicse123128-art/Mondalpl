@@ -97,6 +97,9 @@ function BillGeneration() {
   const [sizeSearchQuery, setSizeSearchQuery] = useState('');
   const [showSizeDropdown, setShowSizeDropdown] = useState(false);
   const [showDraftsModal, setShowDraftsModal] = useState(false);
+  const [showAllBillsMenu, setShowAllBillsMenu] = useState(false);
+  const [editingBillId, setEditingBillId] = useState(null);
+  const [editingBillNumber, setEditingBillNumber] = useState('');
   const [draftBills, setDraftBills] = useState([]);
   const [sharingBill, setSharingBill] = useState(null);
   // 4. Draft Bills helper operations
@@ -308,6 +311,53 @@ Thank you for your business. 🙏
     window.open(waUrl, '_blank');
   };
 
+  const handleEditBill = (bill) => {
+    setEditingBillId(bill.id);
+    setEditingBillNumber(bill.billNumber || bill.id.slice(0, 8));
+    setBillForm({
+      fullName: bill.fullName || bill.customerName || '',
+      date: bill.date || new Date().toISOString().split('T')[0],
+      address: bill.address || '',
+      phone: bill.phone || bill.customerPhone || '',
+      discount: bill.originalDiscount !== undefined ? String(bill.originalDiscount) : (bill.discount ? String(bill.discount) : ''),
+      paidAmount: bill.paidAmount !== undefined ? String(bill.paidAmount) : ''
+    });
+    setIsWholesale(bill.isWholesale || false);
+    
+    const mappedCart = (bill.items || []).map(item => ({
+      id: item.productId || `item_${Date.now()}_${Math.random()}`,
+      name: item.productName || item.name || '',
+      price: item.price || 0,
+      quantity: getOriginalItemQuantity(item),
+      variationSize: item.variationSize || undefined,
+      sellingMrp: item.sellingMrp || null,
+      sellingDiscount: item.sellingDiscount || null,
+      unit: item.unit || null,
+      isCustomProduct: !item.productId || item.productId.startsWith('custom_')
+    }));
+    setCart(mappedCart);
+    setShowBills(false);
+  };
+
+  const handleCancelEditBill = () => {
+    if (window.confirm('Cancel editing this bill and clear form?')) {
+      setEditingBillId(null);
+      setEditingBillNumber('');
+      setCart([]);
+      setBillForm({
+        fullName: '',
+        date: new Date().toISOString().split('T')[0],
+        address: '',
+        gst: '',
+        phone: '',
+        discount: '',
+        paidAmount: ''
+      });
+      setIsWholesale(false);
+      setAdjustments([]);
+    }
+  };
+
   const handleContinueDraft = async (draft) => {
     const hasActiveBill = cart.length > 0 || (billForm.fullName || '').trim() !== '';
     if (hasActiveBill) {
@@ -402,21 +452,24 @@ Thank you for your business. 🙏
     return parseFloat(bill.discount || 0);
   };
 
-  // Close menu when clicking outside
+  // Close menus when clicking outside
   useEffect(() => {
     const handleClickOutside = (event) => {
       if (openMenuBillId && !event.target.closest('.bill-menu-container')) {
         setOpenMenuBillId(null);
       }
+      if (showAllBillsMenu && !event.target.closest('.all-bills-menu-container')) {
+        setShowAllBillsMenu(false);
+      }
     };
 
-    if (openMenuBillId) {
+    if (openMenuBillId || showAllBillsMenu) {
       document.addEventListener('mousedown', handleClickOutside);
       return () => {
         document.removeEventListener('mousedown', handleClickOutside);
       };
     }
-  }, [openMenuBillId]);
+  }, [openMenuBillId, showAllBillsMenu]);
 
   useEffect(() => {
     const unsubscribe = onSnapshot(collection(db, 'bills'), (snapshot) => {
@@ -1563,7 +1616,7 @@ Thank you for your business. 🙏
 
     if (returnSummary.discountAdjustment > 0) {
       pdfDoc.text('Discount Deducted -', 150, returnSummaryY, { align: 'right' });
-      pdfDoc.text(`(-${returnSummary.discountAdjustment.toFixed(2)})`, 190, returnSummaryY, { align: 'right' });
+      pdfDoc.text(`-${returnSummary.discountAdjustment.toFixed(2)}`, 190, returnSummaryY, { align: 'right' });
       returnSummaryY += 7;
     }
 
@@ -1792,16 +1845,11 @@ Thank you for your business. 🙏
       const subtotal = calculateSubtotal();
       const discount = calculateDiscount();
       const finalTotal = calculateFinalTotal();
-      const nextBillNumber = await getNextBillNumber();
-      const billNumber = generateBillNumber(nextBillNumber);
-
-      // Calculate due amount (remaining balance = adjustedTotal - paid)
       const paidWasEntered = hasPaidAmountEntry();
       const paidAmt = calculatePaidAmount();
       const adjTotal = calculateAdjustedTotal();
       const dueAmt = paidWasEntered ? Math.max(0, adjTotal - paidAmt) : 0;
       
-      // Initialize due history if there's a due amount
       let dueHistory = [];
       let initialDueAmount = 0;
       if (dueAmt > 0) {
@@ -1810,6 +1858,18 @@ Thank you for your business. 🙏
           amount: dueAmt,
           date: new Date().toISOString().split('T')[0]
         }];
+      }
+
+      let docRef;
+      let billNumber = '';
+      let nextBillNumber = null;
+
+      if (editingBillId) {
+        docRef = doc(db, 'bills', editingBillId);
+        billNumber = editingBillNumber;
+      } else {
+        nextBillNumber = await getNextBillNumber();
+        billNumber = generateBillNumber(nextBillNumber);
       }
 
       const billData = {
@@ -1825,7 +1885,6 @@ Thank you for your business. 🙏
         adjustments: adjustments.length > 0 ? adjustments.map(a => ({ billId: a.billId, billNumber: a.billNumber, type: a.type, amount: a.amount })) : null,
         adjustedTotal: adjustments.length > 0 ? adjTotal : null,
         billNumber: billNumber,
-        billNumberValue: nextBillNumber,
         items: cart.map(item => ({
           productId: item.id,
           productName: item.name,
@@ -1843,11 +1902,21 @@ Thank you for your business. 🙏
         total: finalTotal,
         originalDiscount: discount,
         originalTotal: finalTotal,
-        isWholesale: isWholesale,
-        createdAt: serverTimestamp()
+        isWholesale: isWholesale
       };
 
-      const docRef = await addDoc(collection(db, 'bills'), billData);
+      if (editingBillId) {
+        billData.updatedAt = serverTimestamp();
+        await updateDoc(docRef, billData);
+        alert(`Bill ${billNumber} updated successfully!`);
+      } else {
+        billData.billNumberValue = nextBillNumber;
+        billData.createdAt = serverTimestamp();
+        const newRef = await addDoc(collection(db, 'bills'), billData);
+        docRef = newRef;
+        alert(`Bill ${billNumber} generated successfully!`);
+      }
+      
       const billWithId = { id: docRef.id, ...billData };
 
       // Update previous bills that were adjusted (clear their due/cash return)
@@ -3051,18 +3120,6 @@ Thank you for your business. 🙏
           </button>
           <button
             type="button"
-            className="reset-bills-btn"
-            onClick={handleResetAllBills}
-            title="Delete all bills"
-            style={{
-              padding: '0.5rem 1rem',
-              fontSize: '0.9rem'
-            }}
-          >
-            🔄 Reset All Bills
-          </button>
-          <button
-            type="button"
             className="toggle-bills-btn"
             onClick={() => setShowDraftsModal(true)}
             style={{
@@ -3106,9 +3163,9 @@ Thank you for your business. 🙏
 
       {showBills ? (
         <div className="bills-list">
-          <div className="bills-list-header">
+          <div className="bills-list-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
             <h3>All Bills</h3>
-            <div className="bills-controls">
+            <div className="bills-controls" style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
               <input
                 type="text"
                 placeholder="Search by bill no, customer name, or phone..."
@@ -3116,6 +3173,72 @@ Thank you for your business. 🙏
                 onChange={(e) => setBillSearchQuery(e.target.value)}
                 className="bill-search-input"
               />
+              <div className="all-bills-menu-container" style={{ position: 'relative' }}>
+                <button
+                  type="button"
+                  onClick={() => setShowAllBillsMenu(!showAllBillsMenu)}
+                  style={{
+                    background: '#f1f5f9',
+                    border: '1px solid #cbd5e1',
+                    borderRadius: '6px',
+                    cursor: 'pointer',
+                    fontSize: '18px',
+                    padding: '6px 12px',
+                    color: '#334155',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    fontWeight: 'bold',
+                    lineHeight: '1'
+                  }}
+                  title="More actions"
+                >
+                  •••
+                </button>
+                {showAllBillsMenu && (
+                  <div
+                    style={{
+                      position: 'absolute',
+                      top: '100%',
+                      right: 0,
+                      backgroundColor: 'white',
+                      border: '1px solid #e2e8f0',
+                      borderRadius: '8px',
+                      boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
+                      zIndex: 1000,
+                      minWidth: '180px',
+                      marginTop: '6px',
+                      overflow: 'hidden'
+                    }}
+                  >
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowAllBillsMenu(false);
+                        handleResetAllBills();
+                      }}
+                      style={{
+                        width: '100%',
+                        padding: '10px 14px',
+                        border: 'none',
+                        background: 'none',
+                        textAlign: 'left',
+                        cursor: 'pointer',
+                        fontSize: '13px',
+                        fontWeight: 600,
+                        color: '#dc2626',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '8px'
+                      }}
+                      onMouseEnter={(e) => e.target.style.backgroundColor = '#fef2f2'}
+                      onMouseLeave={(e) => e.target.style.backgroundColor = 'white'}
+                    >
+                      🔄 Reset All Bills
+                    </button>
+                  </div>
+                )}
+              </div>
             </div>
           </div>
           {bills.length === 0 ? (
@@ -3238,7 +3361,7 @@ Thank you for your business. 🙏
                                     onClick={(e) => {
                                       e.stopPropagation();
                                       setOpenMenuBillId(null);
-                                      handleContinueDraft(bill);
+                                      handleEditBill(bill);
                                     }}
                                     style={{
                                       width: '100%',
@@ -3457,6 +3580,24 @@ Thank you for your business. 🙏
         </div>
       ) : (
         <>
+          {editingBillId && (
+            <div style={{ width: '100%', marginBottom: '15px', background: '#fff3cd', border: '1px solid #ffeba8', borderRadius: '6px', padding: '12px 16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <div>
+                <strong style={{ color: '#856404', fontSize: '15px' }}>✏️ Editing Bill: {editingBillNumber}</strong>
+                <p style={{ margin: '4px 0 0 0', fontSize: '13px', color: '#66512c' }}>
+                  You can edit all attributes from top to bottom (Customer details, add/edit/delete items, custom products, discount, paid amount).
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={handleCancelEditBill}
+                style={{ padding: '6px 12px', background: '#dc3545', color: '#fff', border: 'none', borderRadius: '4px', cursor: 'pointer', fontWeight: 600, fontSize: '13px' }}
+              >
+                Cancel Edit
+              </button>
+            </div>
+          )}
+
           <div className="bill-form">
             <div className="form-section">
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.5rem' }}>

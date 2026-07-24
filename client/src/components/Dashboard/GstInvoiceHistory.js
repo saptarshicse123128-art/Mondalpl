@@ -57,22 +57,31 @@ function GstInvoiceHistory() {
       return str.trim() ? 'Rupees ' + str.trim() + ' Only' : 'Rupees Zero Only';
     };
 
-    pdfDoc.setFontSize(16);
+    // "TAX INVOICE" header outside/above the border box in the center
+    pdfDoc.setFontSize(11);
     pdfDoc.setFont('helvetica', 'bold');
     pdfDoc.setTextColor(0, 0, 0);
-    pdfDoc.text('NEW MONDAL PLUMBING AND SANITATION', 20, 20);
+    pdfDoc.text('TAX INVOICE', 105, 9, { align: 'center' });
+
+    // Headers & Branding (10mm margin, 190mm width)
+    pdfDoc.setFontSize(15);
+    pdfDoc.setFont('helvetica', 'bold');
+    pdfDoc.setTextColor(0, 0, 0);
+    pdfDoc.text('NEW MONDAL PLUMBING AND SANITATION', 13, 20);
     
     pdfDoc.setFontSize(8.5);
     pdfDoc.setFont('helvetica', 'normal');
     pdfDoc.setTextColor(80, 80, 80);
-    pdfDoc.text('1029/1, 89 Road, Chintamani Para, Diamond Harbour, West Bengal - 743331', 20, 25);
-    pdfDoc.text('Mobile: 9434504491 | Email: mondalplumbingandsanitation@gmail.com', 20, 29);
-    pdfDoc.text('GSTIN: 19ERZPM6976H1ZH | PAN: ERZPM6976H', 20, 33);
+    pdfDoc.text('1029/1, 89 Road, Chintamani Para, Diamond Harbour, West Bengal - 743331', 13, 25);
+    pdfDoc.text('Mobile: 9434504491 | Email: mondalplumbingandsanitation@gmail.com', 13, 29);
+    pdfDoc.text('GSTIN: 19ERZPM6976H1ZH | PAN: ERZPM6976H', 13, 33);
 
+    // Single continuous outer rectangle framing top heading and billing details seamlessly
     pdfDoc.setDrawColor(180, 180, 180);
     pdfDoc.setLineWidth(0.3);
-    pdfDoc.rect(20, 39, 170, 32);
-    pdfDoc.line(20, 45, 190, 45);
+    pdfDoc.rect(10, 13, 190, 58); // Combined Top Box (13 to 71)
+    pdfDoc.line(10, 37, 200, 37); // Divider between Header and Billing Section
+    pdfDoc.line(10, 43, 200, 43); // Divider under Billing Details title row
 
     const hasDiffShipping = invoice.partyShippingAddress && invoice.partyShippingAddress !== invoice.partyAddress;
 
@@ -81,68 +90,70 @@ function GstInvoiceHistory() {
     pdfDoc.setTextColor(0, 0, 0);
 
     if (hasDiffShipping) {
-      pdfDoc.text('Billing Details', 22, 43);
-      pdfDoc.text('Shipping Details', 77, 43);
-      pdfDoc.text('Invoice Details', 134, 43);
+      pdfDoc.text('Billing Details', 12, 41);
+      pdfDoc.text('Shipping Details', 75, 41);
+      pdfDoc.text('Invoice Details', 140, 41);
 
-      pdfDoc.line(75, 39, 75, 71);
-      pdfDoc.line(132, 39, 132, 71);
+      pdfDoc.line(71, 37, 71, 71);
+      pdfDoc.line(136, 37, 136, 71);
 
       pdfDoc.setFont('helvetica', 'normal');
       pdfDoc.setFontSize(8);
-      pdfDoc.text(invoice.partyName || 'N/A', 22, 49);
-      const splitBillAddr = pdfDoc.splitTextToSize(invoice.partyAddress || 'N/A', 50);
-      pdfDoc.text(splitBillAddr, 22, 53);
-      pdfDoc.text('Phone: ' + (invoice.partyPhone || 'N/A'), 22, 63);
-      pdfDoc.text('GSTIN: ' + (invoice.partyGstin || 'URD (Unregistered)'), 22, 67);
+      pdfDoc.text(invoice.partyName || 'N/A', 12, 49);
+      const splitBillAddr = pdfDoc.splitTextToSize(invoice.partyAddress || 'N/A', 57);
+      pdfDoc.text(splitBillAddr, 12, 53);
+      pdfDoc.text('Phone: ' + (invoice.partyPhone || 'N/A'), 12, 63);
+      pdfDoc.text('GSTIN: ' + (invoice.partyGstin || 'URD (Unregistered)'), 12, 67);
 
-      pdfDoc.text(invoice.partyShippingName || invoice.partyName || 'N/A', 77, 49);
-      const splitShipAddr = pdfDoc.splitTextToSize(invoice.partyShippingAddress || 'N/A', 50);
-      pdfDoc.text(splitShipAddr, 77, 53);
-      pdfDoc.text('Phone: ' + (invoice.partyShippingPhone || 'N/A'), 77, 63);
-      pdfDoc.text('GSTIN: ' + (invoice.partyShippingGstin || 'URD (Unregistered)'), 77, 67);
+      pdfDoc.text(invoice.partyShippingName || invoice.partyName || 'N/A', 75, 49);
+      const splitShipAddr = pdfDoc.splitTextToSize(invoice.partyShippingAddress || 'N/A', 57);
+      pdfDoc.text(splitShipAddr, 75, 53);
+      pdfDoc.text('Phone: ' + (invoice.partyShippingPhone || 'N/A'), 75, 63);
+      pdfDoc.text('GSTIN: ' + (invoice.partyShippingGstin || 'URD (Unregistered)'), 75, 67);
 
-      pdfDoc.text('Invoice No. - ' + invoice.invoiceNumber, 134, 49);
-      pdfDoc.text('Invoice Date - ' + formatDDMMYYYY(invoice.date), 134, 54);
+      pdfDoc.text('Invoice No. - ' + invoice.invoiceNumber, 140, 49);
+      pdfDoc.text('Invoice Date - ' + formatDDMMYYYY(invoice.date), 140, 54);
       const dueDateVal = (() => {
         const d = new Date(invoice.date);
         if (isNaN(d.getTime())) return formatDDMMYYYY(invoice.date);
         d.setDate(d.getDate() + 15);
         return formatDDMMYYYY(d);
       })();
-      pdfDoc.text('Due Date - ' + dueDateVal, 134, 59);
+      pdfDoc.text('Due Date - ' + dueDateVal, 140, 59);
       const posVal = (invoice.partyShippingStateCode || invoice.partyStateCode || '19') + ' - ' + (invoice.partyShippingStateName || invoice.partyStateName || 'West Bengal');
-      pdfDoc.text('Place of Supply - ' + posVal, 134, 64);
+      pdfDoc.text('Place of Supply - ' + posVal, 140, 64);
     } else {
-      pdfDoc.text('Billing Details', 22, 43);
-      pdfDoc.text('Invoice Details', 127, 43);
+      pdfDoc.text('Billing & Shipping Details', 12, 41);
+      pdfDoc.text('Invoice Details', 135, 41);
 
-      pdfDoc.line(125, 39, 125, 71);
+      pdfDoc.line(130, 37, 130, 71);
 
       pdfDoc.setFont('helvetica', 'normal');
       pdfDoc.setFontSize(8);
-      pdfDoc.text(invoice.partyName || 'N/A', 22, 49);
-      const splitBillAddr = pdfDoc.splitTextToSize(invoice.partyAddress || 'N/A', 100);
-      pdfDoc.text(splitBillAddr, 22, 53);
-      pdfDoc.text('Phone: ' + (invoice.partyPhone || 'N/A'), 22, 63);
-      pdfDoc.text('GSTIN: ' + (invoice.partyGstin || 'URD (Unregistered)'), 22, 67);
+      pdfDoc.text(invoice.partyName || 'N/A', 12, 49);
+      const splitBillAddr = pdfDoc.splitTextToSize(invoice.partyAddress || 'N/A', 115);
+      pdfDoc.text(splitBillAddr, 12, 53);
+      pdfDoc.text('Phone: ' + (invoice.partyPhone || 'N/A'), 12, 63);
+      pdfDoc.text('GSTIN: ' + (invoice.partyGstin || 'URD (Unregistered)'), 12, 67);
 
-      pdfDoc.text('Invoice No. - ' + invoice.invoiceNumber, 127, 49);
-      pdfDoc.text('Invoice Date - ' + formatDDMMYYYY(invoice.date), 127, 54);
+      pdfDoc.text('Invoice No. - ' + invoice.invoiceNumber, 135, 49);
+      pdfDoc.text('Invoice Date - ' + formatDDMMYYYY(invoice.date), 135, 54);
       const dueDateVal = (() => {
         const d = new Date(invoice.date);
         if (isNaN(d.getTime())) return formatDDMMYYYY(invoice.date);
         d.setDate(d.getDate() + 15);
         return formatDDMMYYYY(d);
       })();
-      pdfDoc.text('Due Date - ' + dueDateVal, 127, 59);
+      pdfDoc.text('Due Date - ' + dueDateVal, 135, 59);
       const posVal = (invoice.partyStateCode || '19') + ' - ' + (invoice.partyStateName || 'West Bengal');
-      pdfDoc.text('Place of Supply - ' + posVal, 127, 64);
+      pdfDoc.text('Place of Supply - ' + posVal, 135, 64);
     }
 
     const tableData = (invoice.items || []).map((item, index) => {
       const qty = item.quantity || 1;
-      const hsn = item.hsnCode || '7307';
+      const unitVal = item.unit || item.stockUnit || '';
+      const qtyFormatted = unitVal ? `${qty} ${unitVal}` : String(qty);
+      const hsn = item.hsnCode || item.hsn || '';
       const mrpVal = item.mrp !== undefined ? item.mrp : (item.finalPrice || item.price || 0);
       const discPercent = item.discountPercent !== undefined ? item.discountPercent : 0;
       const discAmt = item.discountAmount !== undefined ? item.discountAmount : 0;
@@ -156,7 +167,7 @@ function GstInvoiceHistory() {
         String(index + 1),
         item.name + (item.variationSize ? ` (${item.variationSize})` : ''),
         hsn,
-        String(qty),
+        qtyFormatted,
         mrpVal.toFixed(2),
         taxPrice.toFixed(2),
         `${gstRate}%`,
@@ -173,7 +184,7 @@ function GstInvoiceHistory() {
         { content: 'SL No', rowSpan: 2, styles: { valign: 'middle', halign: 'center' } },
         { content: 'Item Name', rowSpan: 2, styles: { valign: 'middle' } },
         { content: 'HSN', rowSpan: 2, styles: { valign: 'middle', halign: 'center' } },
-        { content: 'Qty (unit)', rowSpan: 2, styles: { valign: 'middle', halign: 'center' } },
+        { content: 'Qty', rowSpan: 2, styles: { valign: 'middle', halign: 'center' } },
         { content: 'MRP', rowSpan: 2, styles: { valign: 'middle', halign: 'center' } },
         { content: 'Taxable Price/Unit', rowSpan: 2, styles: { valign: 'middle', halign: 'center' } },
         { content: 'GST', colSpan: 2, styles: { halign: 'center' } },
@@ -191,26 +202,30 @@ function GstInvoiceHistory() {
 
     const totalQty = (invoice.items || []).reduce((sum, item) => sum + (item.quantity || 0), 0);
     const totalTaxable = (invoice.items || []).reduce((sum, item) => {
+      const qty = item.quantity || 1;
       const taxPrice = item.taxablePrice !== undefined ? item.taxablePrice : (item.price || 0);
-      return sum + taxPrice;
+      return sum + (taxPrice * qty);
     }, 0);
     const totalGstAmt = (invoice.items || []).reduce((sum, item) => {
+      const qty = item.quantity || 1;
       const taxPrice = item.taxablePrice !== undefined ? item.taxablePrice : (item.price || 0);
       const gstRate = item.gstRate !== undefined ? item.gstRate : 18;
       const gstAmt = item.gstAmount !== undefined ? item.gstAmount : (taxPrice * (gstRate / 100));
-      return sum + gstAmt;
+      return sum + (gstAmt * qty);
     }, 0);
     const totalFinalPrice = (invoice.items || []).reduce((sum, item) => {
+      const qty = item.quantity || 1;
       const taxPrice = item.taxablePrice !== undefined ? item.taxablePrice : (item.price || 0);
       const gstRate = item.gstRate !== undefined ? item.gstRate : 18;
       const finalPrice = item.finalPrice !== undefined ? item.finalPrice : (taxPrice * (1 + gstRate / 100));
-      return sum + finalPrice;
+      return sum + (finalPrice * qty);
     }, 0);
-    const totalDiscountAmt = invoice.items.reduce((sum, item) => {
+    const totalDiscountAmt = (invoice.items || []).reduce((sum, item) => {
+      const qty = item.quantity || 1;
       const discAmt = item.discountAmount !== undefined ? item.discountAmount : 0;
-      return sum + discAmt;
+      return sum + (discAmt * qty);
     }, 0);
-    const totalAmount = invoice.items.reduce((sum, item) => {
+    const totalAmount = (invoice.items || []).reduce((sum, item) => {
       const qty = item.quantity || 1;
       const taxPrice = item.taxablePrice !== undefined ? item.taxablePrice : (item.price || 0);
       const gstRate = item.gstRate !== undefined ? item.gstRate : 18;
@@ -233,28 +248,32 @@ function GstInvoiceHistory() {
     ]];
 
     pdfDoc.autoTable({
-      startY: 75,
+      startY: 71,
       head: tableHeaders,
       body: tableData,
       foot: tableFooter,
       theme: 'grid',
       headStyles: {
-        fillColor: [44, 62, 80],
-        textColor: [255, 255, 255],
+        fillColor: [240, 243, 245],
+        textColor: [44, 62, 80],
         fontSize: 7.5,
         fontStyle: 'bold'
       },
       footStyles: {
-        fillColor: [245, 245, 245],
+        fillColor: [255, 255, 255],
         textColor: [0, 0, 0],
         fontSize: 7,
-        fontStyle: 'bold'
+        fontStyle: 'bold',
+        lineColor: [180, 180, 180],
+        lineWidth: 0.15
       },
       styles: {
         fontSize: 7,
-        font: 'helvetica'
+        font: 'helvetica',
+        lineColor: [180, 180, 180],
+        lineWidth: 0.15
       },
-      margin: { left: 20, right: 20 }
+      margin: { left: 10, right: 10 }
     });
 
     let finalY = pdfDoc.lastAutoTable.finalY + 10;
@@ -267,7 +286,8 @@ function GstInvoiceHistory() {
 
     // ── Generate Left Table (Tax Summary) data ──
     const taxGroups = {};
-    invoice.items.forEach(item => {
+    (invoice.items || []).forEach(item => {
+      const qty = item.quantity || 1;
       const rate = item.gstRate !== undefined ? item.gstRate : 18;
       const unitTaxPrice = item.taxablePrice !== undefined ? item.taxablePrice : (item.price || 0);
       const unitGst = item.gstAmount !== undefined ? item.gstAmount : (unitTaxPrice * (rate / 100));
@@ -275,8 +295,8 @@ function GstInvoiceHistory() {
       if (!taxGroups[rate]) {
         taxGroups[rate] = { rate, taxable: 0, tax: 0 };
       }
-      taxGroups[rate].taxable += unitTaxPrice;
-      taxGroups[rate].tax += unitGst;
+      taxGroups[rate].taxable += (unitTaxPrice * qty);
+      taxGroups[rate].tax += (unitGst * qty);
     });
 
     const distinctRates = Object.keys(taxGroups).map(Number).sort((a, b) => b - a);
@@ -337,18 +357,32 @@ function GstInvoiceHistory() {
       taxSummaryTax += g.tax;
     });
 
+    const discVal = parseFloat(invoice.discount) || 0;
+    const adjVal = invoice.totalAdjustments !== undefined 
+      ? parseFloat(invoice.totalAdjustments) 
+      : (Array.isArray(invoice.adjustments) ? invoice.adjustments.reduce((sum, a) => sum + (parseFloat(a.amount) || 0), 0) : 0);
+    const roundOffVal = invoice.roundOff !== undefined ? parseFloat(invoice.roundOff) : 0;
+    const hasModifications = discVal > 0 || adjVal > 0 || (roundOffVal !== 0 && Math.abs(roundOffVal) >= 0.01);
+
     const rightRows = [];
     rightRows.push(['Taxable Amt. -', taxSummaryTaxable.toFixed(2)]);
     rightRows.push(['Total Tax -', taxSummaryTax.toFixed(2)]);
-    rightRows.push(['Total Amt. -', (taxSummaryTaxable + taxSummaryTax).toFixed(2)]);
 
-    if (invoice.discount && parseFloat(invoice.discount) > 0) {
-      rightRows.push(['Extra Disc. -', parseFloat(invoice.discount).toFixed(2)]);
-    }
-
-    const prevAdj = 0; // default to 0 since it is not saved/inputted
-    if (prevAdj > 0) {
-      rightRows.push(['Prev. bill Adj. -', prevAdj.toFixed(2)]);
+    if (hasModifications) {
+      rightRows.push(['Subtotal -', totalAmount.toFixed(2)]);
+      if (discVal > 0) {
+        rightRows.push(['Extra Disc. -', `-${discVal.toFixed(2)}`]);
+      }
+      if (adjVal > 0) {
+        const adjBillNos = Array.isArray(invoice.adjustments) && invoice.adjustments.length > 0 
+          ? invoice.adjustments.map(a => a.billNumber || a.invoiceNumber).filter(Boolean).join(', ') 
+          : '';
+        const adjLabel = adjBillNos ? `Prev. Bill Adj. (${adjBillNos}) -` : 'Prev. Bill Adj. -';
+        rightRows.push([adjLabel, `+${adjVal.toFixed(2)}`]);
+      }
+      if (roundOffVal !== 0 && Math.abs(roundOffVal) >= 0.01) {
+        rightRows.push(['Round Off -', roundOffVal > 0 ? `+${roundOffVal.toFixed(2)}` : roundOffVal.toFixed(2)]);
+      }
     }
 
     rightRows.push([
@@ -359,16 +393,20 @@ function GstInvoiceHistory() {
     rightRows.push(['Paid Amount -', (invoice.paidAmount || 0).toFixed(2)]);
 
     const dueVal = invoice.due !== undefined ? invoice.due : Math.max(0, invoice.grandTotal - (invoice.paidAmount || 0));
-    rightRows.push([
-      { content: 'Due Balance -', styles: { fontStyle: dueVal > 0 ? 'bold' : 'normal', textColor: dueVal > 0 ? [231, 76, 60] : [0, 0, 0] } },
-      { content: dueVal.toFixed(2), styles: { fontStyle: dueVal > 0 ? 'bold' : 'normal', textColor: dueVal > 0 ? [231, 76, 60] : [0, 0, 0] } }
-    ]);
+    if (dueVal > 0) {
+      rightRows.push([
+        { content: 'Due Balance -', styles: { fontStyle: 'bold', textColor: [231, 76, 60] } },
+        { content: dueVal.toFixed(2), styles: { fontStyle: 'bold', textColor: [231, 76, 60] } }
+      ]);
+    }
 
-    // ── Render Left Table ──
+    const sectionStartY = finalY;
+
+    // ── Render Left Table (Tax Summary) ──
     pdfDoc.autoTable({
-      startY: finalY,
-      margin: { left: 20 },
-      tableWidth: 110,
+      startY: sectionStartY,
+      margin: { left: 10 },
+      tableWidth: 105,
       head: leftHeaders,
       body: leftRows,
       theme: 'grid',
@@ -394,13 +432,43 @@ function GstInvoiceHistory() {
     });
     const leftFinalY = pdfDoc.lastAutoTable.finalY;
 
-    // ── Render Right Table ──
+    // ── Render Left Table 2 (Invoice Amt in words) directly connected under Tax Summary ──
+    const wordsRows = [
+      [{ content: 'Invoice Amt in words:', styles: { fontStyle: 'bold', fontSize: 7.5 } }],
+      [{ content: convertNumberToWords(invoice.grandTotal), styles: { fontStyle: 'italic', fontSize: 7.5 } }]
+    ];
+
     pdfDoc.autoTable({
-      startY: finalY,
-      margin: { left: 135 },
-      tableWidth: 55,
+      startY: leftFinalY,
+      margin: { left: 10 },
+      tableWidth: 105,
+      body: wordsRows,
+      theme: 'plain',
+      styles: {
+        fontSize: 7.5,
+        font: 'helvetica',
+        lineColor: [180, 180, 180],
+        lineWidth: 0.15,
+        halign: 'left',
+        valign: 'middle'
+      },
+      didParseCell: function(data) {
+        if (data.row.index === 0) {
+          data.cell.styles.lineWidth = { top: 0.15, bottom: 0, left: 0.15, right: 0.15 };
+        } else if (data.row.index === 1) {
+          data.cell.styles.lineWidth = { top: 0, bottom: 0, left: 0.15, right: 0.15 };
+        }
+      }
+    });
+    const wordsFinalY = pdfDoc.lastAutoTable.finalY;
+
+    // ── Render Right Table (Totals Summary) connected on right side (without middle vertical line) ──
+    pdfDoc.autoTable({
+      startY: sectionStartY,
+      margin: { left: 115 },
+      tableWidth: 85,
       body: rightRows,
-      theme: 'grid',
+      theme: 'plain',
       styles: {
         fontSize: 7.5,
         font: 'helvetica',
@@ -410,36 +478,25 @@ function GstInvoiceHistory() {
         valign: 'middle'
       },
       columnStyles: {
-        0: { cellWidth: 32 },
-        1: { halign: 'right', cellWidth: 23 }
+        0: { cellWidth: 50 },
+        1: { halign: 'right', cellWidth: 35 }
+      },
+      didParseCell: function(data) {
+        if (data.column.index === 0) {
+          data.cell.styles.lineWidth = { top: 0.15, bottom: 0.15, left: 0.15, right: 0 };
+        } else if (data.column.index === 1) {
+          data.cell.styles.lineWidth = { top: 0.15, bottom: 0.15, left: 0, right: 0.15 };
+        }
       }
     });
     const rightFinalY = pdfDoc.lastAutoTable.finalY;
 
-    // ── Render Left Table 2 (Invoice Amt in words) ──
-    const wordsRows = [
-      [{ content: 'Invoice Amt in words:', styles: { fontStyle: 'bold', fontSize: 7.5 } }],
-      [{ content: convertNumberToWords(invoice.grandTotal), styles: { fontStyle: 'italic', fontSize: 7.5 } }]
-    ];
-
-    pdfDoc.autoTable({
-      startY: leftFinalY + 4,
-      margin: { left: 20 },
-      tableWidth: 110,
-      body: wordsRows,
-      theme: 'grid',
-      styles: {
-        fontSize: 7.5,
-        font: 'helvetica',
-        lineColor: [180, 180, 180],
-        lineWidth: 0.15,
-        halign: 'left',
-        valign: 'middle'
-      }
-    });
-    const wordsFinalY = pdfDoc.lastAutoTable.finalY;
-
     finalY = Math.max(rightFinalY, wordsFinalY);
+
+    // Draw bold outer framing border enclosing all 3 connected middle tables
+    pdfDoc.setDrawColor(180, 180, 180);
+    pdfDoc.setLineWidth(0.3);
+    pdfDoc.rect(10, sectionStartY, 190, finalY - sectionStartY);
 
     // ── Bottom Section: Bank Details (70%) + Authorized Signatory (30%) ──
     const loadImageAsDataURL = (url) =>
@@ -457,26 +514,31 @@ function GstInvoiceHistory() {
       });
 
     const drawBottomSection = (qrDataUrl, sigDataUrl) => {
-      finalY += 12;
+      finalY += 4;
 
-      if (finalY + 40 > 280) {
+      if (finalY + 44 > 280) {
         pdfDoc.addPage();
         finalY = 20;
       }
 
-      const boxLeft = 20;
+      const boxLeft = 10;
       const boxTop = finalY;
-      const boxWidth = 170;
+      const boxWidth = 190;
       const boxHeight = 42;
       const bankWidth = boxWidth * 0.7;
       const signWidth = boxWidth * 0.3;
       const dividerX = boxLeft + bankWidth;
 
-      pdfDoc.setDrawColor(160, 160, 160);
+      // Outer frame boundaries: rect at (10, 13, 190, 58) starts at y=13
+      pdfDoc.setDrawColor(180, 180, 180);
       pdfDoc.setLineWidth(0.3);
       pdfDoc.rect(boxLeft, boxTop, boxWidth, boxHeight);
       pdfDoc.line(boxLeft, boxTop + 10, boxLeft + boxWidth, boxTop + 10);
       pdfDoc.line(dividerX, boxTop, dividerX, boxTop + boxHeight);
+
+      // Connect continuous vertical side outer frame lines (x=10 & x=200) from top header (y=13) down to bottom bank box (boxTop + boxHeight)
+      pdfDoc.line(10, 13, 10, boxTop + boxHeight);
+      pdfDoc.line(200, 13, 200, boxTop + boxHeight);
 
       pdfDoc.setFont('helvetica', 'bold');
       pdfDoc.setFontSize(8);

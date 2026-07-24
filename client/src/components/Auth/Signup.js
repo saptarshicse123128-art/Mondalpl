@@ -6,7 +6,7 @@ import './Auth.css';
 // Allowed email addresses
 const ALLOWED_EMAILS = [
   'sunitamondal1809@gmail.com',
-  'mondalplumbingsanitation@gmail.com',
+  'mondalplumbingandsanitation@gmail.com',
   'ghoshsaptarshiofficial@gmail.com'
 ];
 

@@ -117,6 +117,14 @@ function Sidebar({ onLogout, isOpen, onClose }) {
         </div>
 
         <NavLink
+          to="/dashboard/qr"
+          className={({ isActive }) => (isActive ? 'nav-item active' : 'nav-item')}
+          onClick={(e) => handleNavClick(e, '/dashboard/qr')}
+        >
+          📱 QR Code
+        </NavLink>
+
+        <NavLink
           to="/dashboard/categories"
           className={({ isActive }) => (isActive ? 'nav-item active' : 'nav-item')}
           onClick={(e) => handleNavClick(e, '/dashboard/categories')}
