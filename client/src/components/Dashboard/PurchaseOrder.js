@@ -2714,73 +2714,20 @@ function PurchaseOrder() {
                                   >
                                     View
                                   </button>
-                                  <div
-                                    className="po-share-container"
-                                    style={{ position: 'relative', display: 'inline-flex' }}
+                                  <button
+                                    type="button"
+                                    className="low-stock-more-btn"
+                                    style={{
+                                      ...iconActionButtonStyle,
+                                      backgroundColor: '#e83e8c',
+                                      borderColor: '#d63384',
+                                      color: '#fff'
+                                    }}
+                                    onClick={() => downloadExistingOrderPDF(order)}
+                                    title="Print"
                                   >
-                                    <button
-                                      type="button"
-                                      className="low-stock-more-btn"
-                                      style={iconActionButtonStyle}
-                                      onClick={(e) => {
-                                        e.stopPropagation();
-                                        setOpenMenuOrderId(null);
-                                        setOpenShareOrderId(
-                                          openShareOrderId === order.id ? null : order.id
-                                        );
-                                      }}
-                                      title="Share"
-                                    >
-                                      Share
-                                    </button>
-                                    {openShareOrderId === order.id && (
-                                      <div
-                                        style={{
-                                          position: 'absolute',
-                                          top: '100%',
-                                          left: 0,
-                                          backgroundColor: 'white',
-                                          border: '1px solid #ddd',
-                                          borderRadius: '5px',
-                                          boxShadow: '0 2px 8px rgba(0,0,0,0.15)',
-                                          zIndex: 1000,
-                                          minWidth: '140px',
-                                          marginTop: '4px',
-                                          overflow: 'hidden'
-                                        }}
-                                      >
-                                        <button
-                                          type="button"
-                                          onClick={(e) => {
-                                            e.stopPropagation();
-                                            shareOrderOnWhatsApp(order);
-                                            setOpenShareOrderId(null);
-                                          }}
-                                          style={{
-                                            width: '100%',
-                                            padding: '10px 15px',
-                                            border: 'none',
-                                            background: 'none',
-                                            textAlign: 'left',
-                                            cursor: 'pointer',
-                                            fontSize: '14px',
-                                            color: '#128C7E',
-                                            display: 'flex',
-                                            alignItems: 'center',
-                                            gap: '8px'
-                                          }}
-                                          onMouseEnter={(e) => {
-                                            e.currentTarget.style.backgroundColor = '#f5f5f5';
-                                          }}
-                                          onMouseLeave={(e) => {
-                                            e.currentTarget.style.backgroundColor = 'white';
-                                          }}
-                                        >
-                                          WhatsApp
-                                        </button>
-                                      </div>
-                                    )}
-                                  </div>
+                                    Print
+                                  </button>
                                   <div
                                     className="po-menu-container"
                                     style={{ position: 'relative', display: 'inline-flex' }}
@@ -2789,7 +2736,6 @@ function PurchaseOrder() {
                                       type="button"
                                       onClick={(e) => {
                                         e.stopPropagation();
-                                        setOpenShareOrderId(null);
                                         setOpenMenuOrderId(
                                           openMenuOrderId === order.id ? null : order.id
                                         );
@@ -2861,35 +2807,8 @@ function PurchaseOrder() {
                                           type="button"
                                           onClick={(e) => {
                                             e.stopPropagation();
-                                            downloadExistingOrderPDF(order);
-                                            setOpenMenuOrderId(null);
-                                          }}
-                                          style={{
-                                            width: '100%',
-                                            padding: '10px 15px',
-                                            border: 'none',
-                                            background: 'none',
-                                            textAlign: 'left',
-                                            cursor: 'pointer',
-                                            fontSize: '14px',
-                                            color: '#333',
-                                            borderTop: '1px solid #eee'
-                                          }}
-                                          onMouseEnter={(e) => {
-                                            e.currentTarget.style.backgroundColor = '#f5f5f5';
-                                          }}
-                                          onMouseLeave={(e) => {
-                                            e.currentTarget.style.backgroundColor = 'white';
-                                          }}
-                                        >
-                                          📄 Download
-                                        </button>
-                                        <button
-                                          type="button"
-                                          onClick={(e) => {
-                                            e.stopPropagation();
-                                            setOpenMenuOrderId(null);
                                             deletePurchaseOrder(order.id);
+                                            setOpenMenuOrderId(null);
                                           }}
                                           style={{
                                             width: '100%',

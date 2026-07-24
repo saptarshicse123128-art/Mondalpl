@@ -438,9 +438,26 @@ function PartyManagement() {
                         )}
                       </td>
                       <td>
-                        <span className="chip" style={{ background: p.gstin ? '#e6f7ff' : '#f5f5f5', color: p.gstin ? '#1890ff' : '#888' }}>
-                          {p.gstin || 'N/A'}
-                        </span>
+                        {p.differentShipping ? (
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                            <div>
+                              <span style={{ fontSize: '0.75em', color: '#666', fontWeight: 'bold', display: 'block' }}>Billing GSTIN:</span>
+                              <span className="chip" style={{ background: p.gstin ? '#e6f7ff' : '#f5f5f5', color: p.gstin ? '#1890ff' : '#888' }}>
+                                {p.gstin || 'N/A'}
+                              </span>
+                            </div>
+                            <div>
+                              <span style={{ fontSize: '0.75em', color: '#666', fontWeight: 'bold', display: 'block' }}>Shipping GSTIN:</span>
+                              <span className="chip" style={{ background: p.shippingGstin ? '#f6ffed' : '#f5f5f5', color: p.shippingGstin ? '#52c41a' : '#888' }}>
+                                {p.shippingGstin || 'N/A'}
+                              </span>
+                            </div>
+                          </div>
+                        ) : (
+                          <span className="chip" style={{ background: p.gstin ? '#e6f7ff' : '#f5f5f5', color: p.gstin ? '#1890ff' : '#888' }}>
+                            {p.gstin || 'N/A'}
+                          </span>
+                        )}
                       </td>
                       <td>{p.stateName || 'N/A'} ({p.stateCode})</td>
                       <td>

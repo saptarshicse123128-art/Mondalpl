@@ -41,6 +41,15 @@ const getCartItemDiscountPct = (item) => {
 function BillGeneration() {
   const navigate = useNavigate();
   const hasPushedStateRef = useRef(false);
+  const paidStampRef = useRef(null);
+
+  // Preload paid stamp image for PDF use
+  useEffect(() => {
+    const img = new Image();
+    img.onload = () => { paidStampRef.current = img; };
+    img.onerror = () => { paidStampRef.current = null; };
+    img.src = '/paid-stamp.jpg';
+  }, []);
   const [products, setProducts] = useState([]);
   const [cart, setCart] = useState([]);
   const [billForm, setBillForm] = useState({
@@ -62,6 +71,7 @@ function BillGeneration() {
   const [generatedBill, setGeneratedBill] = useState(null);
   const [billSearchQuery, setBillSearchQuery] = useState('');
   const [showDueOnly, setShowDueOnly] = useState(false);
+  const [showWholesaleOnly, setShowWholesaleOnly] = useState(false);
   const [customProductMode, setCustomProductMode] = useState(false);
   const [customProduct, setCustomProduct] = useState({
     name: '',
@@ -88,6 +98,7 @@ function BillGeneration() {
   const [showSizeDropdown, setShowSizeDropdown] = useState(false);
   const [showDraftsModal, setShowDraftsModal] = useState(false);
   const [draftBills, setDraftBills] = useState([]);
+  const [sharingBill, setSharingBill] = useState(null);
   // 4. Draft Bills helper operations
   const saveCurrentAsDraft = useCallback(async () => {
     const draftData = {
@@ -237,6 +248,69 @@ function BillGeneration() {
       window.removeEventListener('triggerSaveDraft', handleTriggerSaveDraft);
     };
   }, [navigate, saveCurrentAsDraft]);
+
+  const sendNormalDueReminder = async (bill) => {
+    const { finalDue } = getUltimateBillDue(bill);
+    const customerName = bill.fullName || bill.customerName || 'Customer';
+    const billNo = bill.billNumber || bill.id.slice(0, 8);
+    const billDate = bill.date || '';
+    const subtotal = getOriginalBillSubtotal(bill);
+    const discount = getOriginalBillDiscount(bill);
+    const totalAmount = (subtotal - discount).toFixed(2);
+    const paidAmount = (parseFloat(bill.paidAmount) || 0).toFixed(2);
+    const dueAmountStr = finalDue.toFixed(2);
+    const businessName = 'NEW MONDAL PLUMBING AND SANITATION';
+
+    const text = `Hello ${customerName},
+This is a reminder regarding your pending payment.
+Invoice No: ${billNo}
+Invoice Date: ${billDate}
+Due Amount: ₹${dueAmountStr}
+Kindly clear the outstanding amount at your earliest convenience.
+Pay at : 9434504491@ybl
+Thank you for your business. 🙏
+*${businessName}*`;
+
+    const rawPhone = (bill.phone || '').replace(/[^0-9]/g, '');
+    let cleanPhone = '';
+    if (rawPhone.length === 10) {
+      cleanPhone = `91${rawPhone}`;
+    } else if (rawPhone.length === 12 && rawPhone.startsWith('91')) {
+      cleanPhone = rawPhone;
+    }
+
+    if (!cleanPhone) {
+      alert(`No phone number found for customer: ${customerName}`);
+      return;
+    }
+
+    try {
+      let qrBlob;
+      try {
+        const response = await fetch('/qr_code.png');
+        if (response.ok) {
+          qrBlob = await response.blob();
+        }
+      } catch (e) {
+        console.warn('Fetch /qr_code.png failed:', e);
+      }
+
+      if (qrBlob && navigator.share) {
+        const qrFile = new File([qrBlob], 'payment_qr_code.png', { type: 'image/png' });
+        const shareData = { title: `Due Payment Reminder - ${billNo}`, text: text };
+        if (navigator.canShare && navigator.canShare({ files: [qrFile] })) {
+          shareData.files = [qrFile];
+        }
+        await navigator.share(shareData);
+        return;
+      }
+    } catch (err) {
+      console.warn('Web Share failed or cancelled:', err);
+    }
+
+    const waUrl = `https://api.whatsapp.com/send?phone=${cleanPhone}&text=${encodeURIComponent(text)}`;
+    window.open(waUrl, '_blank');
+  };
 
   const handleContinueDraft = async (draft) => {
     const hasActiveBill = cart.length > 0 || (billForm.fullName || '').trim() !== '';
@@ -792,7 +866,7 @@ function BillGeneration() {
   };
 
   const handleEditDueAmount = (bill) => {
-    const currentDueNumeric = parseAmountValue(bill.due);
+    const { finalDue: currentDueNumeric } = getUltimateBillDue(bill);
     setEditingDueBillId(bill.id);
     setCurrentDueAmount(currentDueNumeric);
     setEditingDueAmount(''); // This will be the "amount paid"
@@ -866,6 +940,23 @@ function BillGeneration() {
     setEditingDueBillId(null);
     setEditingDueAmount('');
     setCurrentDueAmount(0);
+  };
+
+  const handleCashFundSettled = async (bill) => {
+    if (!window.confirm(`Mark Cash Return of ₹${(bill.calculatedCashReturn || 0).toFixed(2)} as settled/refunded to customer?`)) {
+      return;
+    }
+    try {
+      const billRef = doc(db, 'bills', bill.id);
+      await updateDoc(billRef, {
+        cashFundSettled: true,
+        cashFundSettledAt: serverTimestamp()
+      });
+      alert('Cash return marked as settled/refunded successfully.');
+    } catch (error) {
+      console.error('Error settling cash fund:', error);
+      alert('Failed to settle cash return. Please try again.');
+    }
   };
 
   const handleReturnBill = (bill) => {
@@ -1073,20 +1164,29 @@ function BillGeneration() {
 
     try {
       const billsSnapshot = await getDocs(collection(db, 'bills'));
-      const batch = writeBatch(db);
-      let count = 0;
+      const docs = billsSnapshot.docs;
+      
+      if (docs.length === 0) {
+        alert('No bills to delete.');
+        return;
+      }
 
-      billsSnapshot.forEach((doc) => {
-        batch.delete(doc.ref);
-        count++;
-      });
+      // Firestore batches are limited to 500 operations
+      const batchSize = 450;
+      for (let i = 0; i < docs.length; i += batchSize) {
+        const batch = writeBatch(db);
+        const chunk = docs.slice(i, i + batchSize);
+        chunk.forEach(docSnap => {
+          batch.delete(docSnap.ref);
+        });
+        await batch.commit();
+      }
 
-      await batch.commit();
-      alert(`Successfully deleted ${count} bill(s). New bills will start from MPS/00001.`);
+      alert(`Successfully deleted ${docs.length} bill(s). New bills will start from MPS/00001.`);
       setBillSearchQuery('');
     } catch (error) {
       console.error('Error deleting all bills:', error);
-      alert('Failed to delete all bills. Please try again.');
+      alert('Failed to delete all bills: ' + (error.message || 'Please try again.'));
     }
   };
 
@@ -1162,25 +1262,35 @@ function BillGeneration() {
     return Number.isNaN(parsed.getTime()) ? null : parsed;
   };
 
-  const formatPdfHistoryDate = (value) => {
+  const formatDisplayDate = (value) => {
+    if (!value) return 'N/A';
     if (typeof value === 'string') {
       const isoMatch = value.match(/^(\d{4})-(\d{2})-(\d{2})$/);
       if (isoMatch) {
-        return `${isoMatch[2]}-${isoMatch[3]}-${isoMatch[1]}`;
+        return `${isoMatch[3]}.${isoMatch[2]}.${isoMatch[1]}`;
+      }
+      const slashMatch = value.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+      if (slashMatch) {
+        const dd = slashMatch[1].padStart(2, '0');
+        const mm = slashMatch[2].padStart(2, '0');
+        return `${dd}.${mm}.${slashMatch[3]}`;
       }
     }
 
     const date = toDateObject(value);
-    if (!date) return 'N/A';
-    const mm = String(date.getMonth() + 1).padStart(2, '0');
+    if (!date) return typeof value === 'string' ? value : 'N/A';
     const dd = String(date.getDate()).padStart(2, '0');
+    const mm = String(date.getMonth() + 1).padStart(2, '0');
     const yyyy = date.getFullYear();
-    return `${mm}-${dd}-${yyyy}`;
+    return `${dd}.${mm}.${yyyy}`;
+  };
+
+  const formatPdfHistoryDate = (value) => {
+    return formatDisplayDate(value);
   };
 
   const formatReturnSectionDate = (value) => {
-    const date = toDateObject(value);
-    return date ? date.toLocaleDateString('en-GB') : 'N/A';
+    return formatDisplayDate(value);
   };
 
   const getPaidAgainstDue = (bill) => {
@@ -1210,6 +1320,88 @@ function BillGeneration() {
     }
 
     return initialDue === 0 ? currentDue : initialDue;
+  };
+
+  const getUltimateBillDue = (bill) => {
+    const initialDue = getInitialDueForBill(bill);
+    const returnedItems = bill.returnedItems || [];
+    
+    // If no returns, compute running due directly using initial due & due history
+    if (returnedItems.length === 0) {
+      let directDue = parseAmountValue(bill.due);
+      if (directDue <= 0) directDue = parseAmountValue(bill.dueAmount);
+
+      if (initialDue > 0) {
+        const totalPaid = (bill.dueHistory || [])
+          .filter(e => e.amountPaid !== undefined)
+          .reduce((sum, e) => sum + parseAmountValue(e.amountPaid || 0), 0);
+        directDue = Math.max(0, initialDue - totalPaid);
+      }
+      return { finalDue: directDue, finalCashReturn: 0 };
+    }
+
+    // When returns exist, calculate exact progressive running due & cash return
+    let runningDue = initialDue;
+    let runningCashReturn = 0;
+    const paymentQueue = (bill.dueHistory || [])
+      .filter(entry => entry.amountPaid !== undefined)
+      .map(entry => {
+        const date = toDateObject(entry.date || entry.timestamp);
+        const prevDue = entry.previousDue !== undefined 
+          ? parseFloat(entry.previousDue) 
+          : parseFloat(entry.amountPaid || 0) + parseFloat(entry.newDue || 0);
+        return {
+          type: 'payment',
+          timestamp: date ? date.getTime() : 0,
+          amountPaid: parseFloat(entry.amountPaid || 0),
+          previousDue: prevDue
+        };
+      });
+
+    const returnGroups = groupReturnedItemsByEvent(returnedItems);
+    const returnQueue = returnGroups.map((group) => {
+      const eventSummary = calculateReturnSummary(bill, group.items);
+      return {
+        type: 'return',
+        timestamp: group.timestamp,
+        returnAmount: eventSummary.cashReturn
+      };
+    });
+
+    while (paymentQueue.length > 0 || returnQueue.length > 0) {
+      if (paymentQueue.length > 0) {
+        if (Math.abs(paymentQueue[0].previousDue - runningDue) < 0.1 || returnQueue.length === 0) {
+          const payment = paymentQueue.shift();
+          const dueBefore = runningDue;
+          runningDue = Math.max(0, runningDue - payment.amountPaid);
+          if (payment.amountPaid > dueBefore) {
+            runningCashReturn += payment.amountPaid - dueBefore;
+          }
+          continue;
+        }
+      }
+
+      if (returnQueue.length > 0) {
+        const returnEvent = returnQueue.shift();
+        const returnAmount = returnEvent.returnAmount;
+        const amountReducingDue = Math.min(returnAmount, runningDue);
+        runningDue = runningDue - amountReducingDue;
+        const cashReturnForThis = returnAmount - amountReducingDue;
+        if (cashReturnForThis > 0) {
+          runningCashReturn += cashReturnForThis;
+        }
+      }
+    }
+
+    if (bill.cashFundSettled) {
+      runningCashReturn = 0;
+    }
+
+    // Strictly mutually exclusive: either runningDue > 0 or runningCashReturn > 0
+    if (runningDue > 0) {
+      return { finalDue: runningDue, finalCashReturn: 0 };
+    }
+    return { finalDue: 0, finalCashReturn: runningCashReturn };
   };
 
   const calculateReturnSettlement = (bill, returnSummary) => {
@@ -1274,7 +1466,7 @@ function BillGeneration() {
     pdfDoc.text(amount.toFixed(2), boxX + boxWidth - 4, y, { align: 'right' });
   };
 
-  const drawReturnedItemsSection = (pdfDoc, bill, returnGroup, startY, previousReturnedItems, dueAfterThis, cashReturnAfterThis, groupPayments) => {
+  const drawReturnedItemsSection = (pdfDoc, bill, returnGroup, startY, previousReturnedItems, dueAfterThis, cashReturnAfterThis, groupPayments, isWholesaleBill = false) => {
     let finalY = startY + 5;
     const returnedItems = returnGroup.items;
 
@@ -1299,18 +1491,50 @@ function BillGeneration() {
       const quantity = item.quantity || 0;
       const price = item.price || 0;
       const amount = item.subtotal || (quantity * price);
+
+      const matchedProduct = (products || []).find(p => p.id === item.productId || p.id === item.id);
+      const unitVal = item.unit || item.stockUnit || matchedProduct?.unit || matchedProduct?.stockUnit || '';
+      const qtyFormatted = unitVal ? `${quantity} ${unitVal}` : String(quantity);
+
+      if (isWholesaleBill) {
+        // Try to get MRP/Discount from the returned item, or from original bill item
+        const origItem = (bill.items || []).find(
+          bi => bi.productId === item.productId && (bi.variationSize || null) === (item.variationSize || null)
+        );
+        const mrpVal = item.sellingMrp != null ? item.sellingMrp : (origItem?.sellingMrp ?? null);
+        const discVal = item.sellingDiscount != null ? item.sellingDiscount : (origItem?.sellingDiscount ?? null);
+        const mrpStr = mrpVal != null && mrpVal !== '' ? parseFloat(mrpVal).toFixed(2) : '-';
+        const discStr = discVal != null && discVal !== '' ? parseFloat(discVal).toFixed(1) + '%' : '-';
+        return [
+          String(index + 1),
+          productName,
+          qtyFormatted,
+          mrpStr,
+          discStr,
+          price.toFixed(2),
+          amount.toFixed(2)
+        ];
+      }
+
       return [
         String(index + 1),
         productName,
-        String(quantity),
-        'Rs. ' + price.toFixed(2),
-        'Rs. ' + amount.toFixed(2)
+        qtyFormatted,
+        price.toFixed(2),
+        amount.toFixed(2)
       ];
     });
 
+    const returnHead = isWholesaleBill
+      ? [['SL', 'Item Name', 'Qty', 'MRP', 'Discount', 'Price', 'Amount']]
+      : [['SL', 'Item Name', 'Qty', 'Price', 'Amount']];
+    const returnColumnStyles = isWholesaleBill
+      ? { 0: { cellWidth: 12 }, 1: { cellWidth: 50 }, 2: { cellWidth: 15 }, 3: { cellWidth: 22 }, 4: { cellWidth: 20 }, 5: { cellWidth: 22 }, 6: { cellWidth: 19 } }
+      : { 0: { cellWidth: 20 }, 1: { cellWidth: 70 }, 2: { cellWidth: 20 }, 3: { cellWidth: 30 }, 4: { cellWidth: 30 } };
+
     pdfDoc.autoTable({
       startY: finalY,
-      head: [['SL No.', 'Product', 'Qty.', 'Price', 'Amount']],
+      head: returnHead,
       body: returnedTableData,
       theme: 'striped',
       headStyles: {
@@ -1328,13 +1552,7 @@ function BillGeneration() {
         fillColor: [245, 245, 245]
       },
       margin: { left: 20, right: 20 },
-      columnStyles: {
-        0: { cellWidth: 20 },
-        1: { cellWidth: 70 },
-        2: { cellWidth: 20 },
-        3: { cellWidth: 30 },
-        4: { cellWidth: 30 }
-      }
+      columnStyles: returnColumnStyles
     });
 
     let returnSummaryY = pdfDoc.lastAutoTable.finalY + 10;
@@ -1348,7 +1566,7 @@ function BillGeneration() {
     returnSummaryY += 7;
 
     if (returnSummary.discountAdjustment > 0) {
-      pdfDoc.text('Prev. Discount Adjusted -', 150, returnSummaryY, { align: 'right' });
+      pdfDoc.text('Discount Deducted -', 150, returnSummaryY, { align: 'right' });
       pdfDoc.text(`(-${returnSummary.discountAdjustment.toFixed(2)})`, 190, returnSummaryY, { align: 'right' });
       returnSummaryY += 7;
     }
@@ -1368,24 +1586,14 @@ function BillGeneration() {
     pdfDoc.setFontSize(9.5);
     pdfDoc.setTextColor(60, 60, 60);
 
-    if (dueAfterThis > 0) {
-      pdfDoc.text('Current Due till return:', 150, returnSummaryY, { align: 'right' });
-      pdfDoc.text(`Rs. ${dueAfterThis.toFixed(2)}`, 190, returnSummaryY, { align: 'right' });
-      returnSummaryY += 6;
-    }
-
-    if (cashReturnAfterThis > 0) {
-      pdfDoc.text('Cash Return till return:', 150, returnSummaryY, { align: 'right' });
-      pdfDoc.text(`Rs. ${cashReturnAfterThis.toFixed(2)}`, 190, returnSummaryY, { align: 'right' });
-      returnSummaryY += 7;
-    }
-
     const totalGroupPayments = (groupPayments || []).reduce((sum, p) => sum + p.amountPaid, 0);
     if (totalGroupPayments > 0) {
       pdfDoc.setFont('helvetica', 'bold');
-      pdfDoc.text('Payments Received:', 150, returnSummaryY, { align: 'right' });
+      pdfDoc.setFontSize(9.5);
+      pdfDoc.setTextColor(40, 40, 40);
+      pdfDoc.text('Paid Rs.', 150, returnSummaryY, { align: 'right' });
       pdfDoc.setFont('helvetica', 'normal');
-      pdfDoc.text(`Rs. ${totalGroupPayments.toFixed(2)}`, 190, returnSummaryY, { align: 'right' });
+      pdfDoc.text(totalGroupPayments.toFixed(2), 190, returnSummaryY, { align: 'right' });
       returnSummaryY += 6;
 
       pdfDoc.setFontSize(8.5);
@@ -1396,6 +1604,24 @@ function BillGeneration() {
         pdfDoc.text(`- Paid on ${entryDate}: Rs. ${amountPaid.toFixed(2)}`, 190, returnSummaryY, { align: 'right' });
         returnSummaryY += 5;
       });
+    }
+
+    if (dueAfterThis > 0 || (totalGroupPayments > 0 && cashReturnAfterThis <= 0)) {
+      pdfDoc.setFont('helvetica', 'normal');
+      pdfDoc.setFontSize(9.5);
+      pdfDoc.setTextColor(60, 60, 60);
+      pdfDoc.text('Due:', 150, returnSummaryY, { align: 'right' });
+      pdfDoc.text(`Rs. ${dueAfterThis.toFixed(2)}`, 190, returnSummaryY, { align: 'right' });
+      returnSummaryY += 6;
+    }
+
+    if (cashReturnAfterThis > 0) {
+      pdfDoc.setFont('helvetica', 'normal');
+      pdfDoc.setFontSize(9.5);
+      pdfDoc.setTextColor(60, 60, 60);
+      pdfDoc.text('Refund:', 150, returnSummaryY, { align: 'right' });
+      pdfDoc.text(`Rs. ${cashReturnAfterThis.toFixed(2)}`, 190, returnSummaryY, { align: 'right' });
+      returnSummaryY += 7;
     }
 
     return returnSummaryY + 10;
@@ -1611,7 +1837,10 @@ function BillGeneration() {
           quantity: item.quantity,
           originalQuantity: item.quantity,
           subtotal: item.price * item.quantity,
-          variationSize: item.variationSize || null
+          variationSize: item.variationSize || null,
+          unit: item.unit || item.stockUnit || null,
+          sellingMrp: item.sellingMrp != null ? item.sellingMrp : null,
+          sellingDiscount: item.sellingDiscount != null ? item.sellingDiscount : null
         })),
         subtotal: subtotal,
         originalSubtotal: subtotal,
@@ -1646,13 +1875,10 @@ function BillGeneration() {
         }
       }
       
-      // Automatically open print dialog for the newly generated bill
-      setTimeout(() => {
-        printPDF(billWithId);
-      }, 500);
+      // Automatically download PDF file to local device without opening window
+      downloadPDF(billWithId);
       
-      // Note: Stock is already updated when products were added to cart
-      // So we just clear the cart and form
+      // Clear cart and form
       setCart([]);
       setIsWholesale(false);
       setSizeSearchQuery('');
@@ -1668,21 +1894,21 @@ function BillGeneration() {
         discount: '',
         paidAmount: ''
       });
-      setGeneratedBill(null); // Clear generatedBill since we directly trigger print
+      setGeneratedBill(null);
       
-      alert('Bill generated successfully! Print dialog will open automatically.');
+      alert('Bill generated successfully! PDF downloaded to your device.');
     } catch (error) {
       console.error('Error generating bill:', error);
       alert('Failed to generate bill');
     }
   };
 
-  const downloadPDF = (bill = null) => {
+  const downloadPDF = (bill = null, returnPdfDoc = false) => {
     try {
       const billToDownload = bill || generatedBill;
       if (!billToDownload) {
-        alert('Please generate a bill first');
-        return;
+        if (!returnPdfDoc) alert('Please generate a bill first');
+        return null;
       }
 
       const pdfDoc = new jsPDF();
@@ -1692,8 +1918,8 @@ function BillGeneration() {
       
       // Company Information
       const companyName = 'MONDAL PLUMBING & SANITATION';
-      const companyAddress = '89, COLLEGE ROAD, DIAMOND HARBOUR';
-      const companyEmail = 'mondalplumbingsanitation@gmail.com';
+      const companyAddress = '89 Road, Chintamani Para, Diamond Harbour';
+      const companyEmail = 'mondalplumbingandsanitation@gmail.com';
       const companyPhone = '9434504491';
       
       // CASH MEMO at top right
@@ -1701,72 +1927,80 @@ function BillGeneration() {
       pdfDoc.setFont('helvetica', 'bold');
       pdfDoc.setTextColor(100, 100, 100); // Grey color
       const cashMemoY = 20;
-      pdfDoc.text('CASH MEMO', 190, cashMemoY, { align: 'right' });
+      pdfDoc.text('C A S H   M E M O', 190, cashMemoY, { align: 'right' });
       
       // Horizontal line from left that passes through the middle of CASH MEMO text
       // Font size 24: text baseline is at y=20, text extends upward ~18-20pt
       // Moving line lower to pass through middle of text
       const lineY = cashMemoY - 2.5; // Line passes through middle of text (decreased height slightly more)
-      pdfDoc.setDrawColor(200, 200, 200);
-      pdfDoc.line(20, lineY, 135, lineY); // Decreased length from right
+      pdfDoc.setDrawColor(160, 160, 160);
+      pdfDoc.setLineWidth(0.8);
+      pdfDoc.line(20, lineY, 115, lineY); // Starts from left margin (20), ends earlier near CASH MEMO text (115)
       
       // Company Name - Right aligned
-      pdfDoc.setFontSize(16);
+      pdfDoc.setFontSize(17.5);
       pdfDoc.setFont('helvetica', 'bold');
       pdfDoc.setTextColor(100, 100, 100);
-      pdfDoc.text(companyName, 190, 35, { align: 'right' });
+      const companySpacedName = 'M O N D A L   P L U M B I N G   &   S A N I T A T I O N';
+      pdfDoc.text(companySpacedName, 190, 35, { align: 'right' });
       
       // Company Details - Right aligned
-      pdfDoc.setFontSize(10);
+      pdfDoc.setFontSize(13);
       pdfDoc.setFont('helvetica', 'normal');
       pdfDoc.setTextColor(120, 120, 120);
       pdfDoc.text(companyAddress, 190, 42, { align: 'right' });
+      pdfDoc.setFontSize(10);
       pdfDoc.text('Email - ' + companyEmail, 190, 48, { align: 'right' });
       pdfDoc.text('Phone - ' + companyPhone, 190, 54, { align: 'right' });
       
-      // Horizontal line (moved down to increase height from top, shortened from both sides)
-      pdfDoc.setDrawColor(200, 200, 200);
-      pdfDoc.line(45, 68, 190, 68);
+      // Horizontal line (moved down to increase height from top, shortened from left side near BILL TO)
+      pdfDoc.setDrawColor(160, 160, 160);
+      pdfDoc.setLineWidth(0.8);
+      pdfDoc.line(70, 68, 190, 68);
+      pdfDoc.setLineWidth(0.2); // Reset line width
       
       // Reset text color to black
       pdfDoc.setTextColor(0, 0, 0);
       
       // BILL TO section on left
       let startY = 70;
-      pdfDoc.setFontSize(16);
+      pdfDoc.setFontSize(24);
       pdfDoc.setFont('helvetica', 'bold');
       pdfDoc.setTextColor(100, 100, 100);
-      pdfDoc.text('BILL TO', 20, startY);
+      pdfDoc.text('B I L L   T O', 20, startY);
       
-      // Customer details
+      // Customer details (Name at startY + 10, Phone at startY + 17, then Address)
       pdfDoc.setFontSize(10);
-      pdfDoc.setFont('helvetica', 'normal');
+      pdfDoc.setFont('helvetica', 'bold');
       pdfDoc.setTextColor(0, 0, 0);
       const customerName = String(billToDownload.fullName || billToDownload.customerName || 'N/A');
       pdfDoc.text(customerName, 20, startY + 10);
       
-      let currentY = startY + 17;
+      // Always show phone number field at startY + 17 (aligned with DATE)
+      const phoneNumber = billToDownload.phone || billToDownload.customerPhone || '';
+      pdfDoc.text('Phone - ' + phoneNumber, 20, startY + 17);
+      pdfDoc.setFont('helvetica', 'normal');
+      
+      let currentY = startY + 24;
       if (billToDownload.address) {
+        pdfDoc.setFontSize(10);
+        pdfDoc.setFont('helvetica', 'normal');
         const addressText = String(billToDownload.address);
         const addressLines = pdfDoc.splitTextToSize(addressText, 80);
         pdfDoc.text(addressLines, 20, currentY);
         currentY += (addressLines.length * 5);
       }
       
-      // Always show phone number field
-      const phoneNumber = billToDownload.phone || billToDownload.customerPhone || '';
-      pdfDoc.text('Phone - ' + phoneNumber, 20, currentY);
-      currentY += 7;
-      
       // BILL NO and DATE on right (lowered)
       const billNumber = billToDownload.billNumber || billToDownload.id?.slice(0, 8).toUpperCase() || 'MPS/0001';
-      const billDate = billToDownload.date || (billToDownload.createdAt?.toDate ? billToDownload.createdAt.toDate().toLocaleDateString('en-GB') : new Date().toLocaleDateString('en-GB'));
+      const rawBillDate = billToDownload.date || (billToDownload.createdAt?.toDate ? billToDownload.createdAt.toDate() : new Date());
+      const billDate = formatDisplayDate(rawBillDate);
       
       pdfDoc.setFontSize(10);
       pdfDoc.setFont('helvetica', 'normal');
       pdfDoc.setTextColor(120, 120, 120);
-      pdfDoc.text('BILL NO. : ' + billNumber, 190, startY + 5, { align: 'right' });
-      pdfDoc.text('DATE : ' + billDate, 190, startY + 12, { align: 'right' });
+      pdfDoc.text('BILL NO. : ' + billNumber, 190, startY + 10, { align: 'right' });
+      pdfDoc.text('DATE : ' + billDate, 190, startY + 17, { align: 'right' });
       
       // Items Table
       if (!billToDownload.items || billToDownload.items.length === 0) {
@@ -1775,6 +2009,7 @@ function BillGeneration() {
       }
       
       // Prepare table data with SL No.
+      const isWholesalePdf = billToDownload.isWholesale === true;
       const tableData = billToDownload.items.map((item, index) => {
         const price = parseFloat(item.price || 0);
         const quantity = getOriginalItemQuantity(item);
@@ -1785,40 +2020,58 @@ function BillGeneration() {
           item.variationSize,
           positionForSavedBillItem(item)
         );
+
+        const matchedProduct = products.find(p => p.id === item.productId || p.id === item.id);
+        const unitVal = item.unit || item.stockUnit || matchedProduct?.unit || matchedProduct?.stockUnit || '';
+        const qtyFormatted = unitVal ? `${quantity} ${unitVal}` : String(quantity);
+
+        if (isWholesalePdf) {
+          const mrpVal = item.sellingMrp != null && item.sellingMrp !== '' ? parseFloat(item.sellingMrp) : null;
+          const discVal = item.sellingDiscount != null && item.sellingDiscount !== '' ? parseFloat(item.sellingDiscount) : null;
+          const mrpStr = mrpVal != null && !isNaN(mrpVal) ? mrpVal.toFixed(2) : '-';
+          let discStr = '-';
+          if (discVal != null && !isNaN(discVal)) {
+            discStr = discVal.toFixed(1) + '%';
+          } else if (mrpVal != null && mrpVal > 0) {
+            const computed = ((mrpVal - price) / mrpVal) * 100;
+            if (computed >= 0) discStr = computed.toFixed(1) + '%';
+          }
+          return [
+            String(index + 1),
+            productName,
+            qtyFormatted,
+            mrpStr,
+            discStr,
+            price.toFixed(2),
+            amount.toFixed(2)
+          ];
+        }
         
         return [
           String(index + 1), // SL No.
           productName, // Product (with variation size if applicable)
-          String(quantity), // Qty.
-          'Rs. ' + price.toFixed(2), // Price
-          'Rs. ' + amount.toFixed(2) // Amount
+          qtyFormatted, // Qty.
+          price.toFixed(2), // Price
+          amount.toFixed(2) // Amount
         ];
       });
       
       // Calculate table start Y (after customer info) - decreased height from top
       const tableStartY = Math.max(currentY, startY + 1);
-      
-      // Check if bill is fully paid (no due and no initial due) - show "PAID IN FULL" stamp on left
-      const due = parseFloat(billToDownload.due || 0);
-      const initialDueForStamp = parseFloat(billToDownload.initialDueAmount || 0);
-      if (due === 0 && initialDueForStamp === 0) {
-        // Draw "PAID IN FULL" stamp on the left side
-        const stampX = 20;
-        const stampY = tableStartY + 30; // Position stamp below customer info, above/beside table
-        pdfDoc.setDrawColor(100, 100, 100);
-        pdfDoc.setLineWidth(2);
-        pdfDoc.roundedRect(stampX, stampY - 8, 50, 12, 2, 2); // Rounded rectangle
-        pdfDoc.setFont('helvetica', 'bold');
-        pdfDoc.setFontSize(10);
-        pdfDoc.setTextColor(80, 80, 80);
-        pdfDoc.text('PAID IN FULL', stampX + 25, stampY, { align: 'center' });
-        pdfDoc.setLineWidth(0.5); // Reset line width
-        pdfDoc.setDrawColor(0, 0, 0); // Reset draw color
-      }
+
+      const { finalDue: stampDue, finalCashReturn: stampCashReturn } = getUltimateBillDue(billToDownload);
+      const isBillFullyPaidStamp = (stampDue === 0 && stampCashReturn === 0 && paidStampRef.current);
+
+      const downloadTableHead = isWholesalePdf
+        ? [['SL', 'Item Name', 'Qty', 'MRP', 'Discount', 'Price', 'Amount']]
+        : [['SL', 'Item Name', 'Qty', 'Price', 'Amount']];
+      const downloadColumnStyles = isWholesalePdf
+        ? { 0: { cellWidth: 12 }, 1: { cellWidth: 55 }, 2: { cellWidth: 15 }, 3: { cellWidth: 23 }, 4: { cellWidth: 20 }, 5: { cellWidth: 22 }, 6: { cellWidth: 23 } }
+        : { 0: { cellWidth: 20 }, 1: { cellWidth: 70 }, 2: { cellWidth: 20 }, 3: { cellWidth: 30 }, 4: { cellWidth: 30 } };
       
       pdfDoc.autoTable({
         startY: tableStartY,
-        head: [['SL No.', 'Product', 'Qty.', 'Price', 'Amount']],
+        head: downloadTableHead,
         body: tableData,
         theme: 'striped',
         headStyles: { 
@@ -1836,13 +2089,7 @@ function BillGeneration() {
           fillColor: [245, 245, 245] // Light grey for alternating rows
         },
         margin: { left: 20, right: 20 },
-        columnStyles: {
-          0: { cellWidth: 20 }, // SL No.
-          1: { cellWidth: 70 }, // Product
-          2: { cellWidth: 20 }, // Qty.
-          3: { cellWidth: 30 }, // Price
-          4: { cellWidth: 30 }  // Amount
-        }
+        columnStyles: downloadColumnStyles
       });
       
       // Calculate final Y position after table
@@ -1942,8 +2189,9 @@ function BillGeneration() {
       }
       
       // 8. Due Amount (current outstanding — bold red, always last)
-      if (initialDue > 0 && returnedItems.length === 0) {
-        drawFinalBalanceBox(pdfDoc, 'DUE AMOUNT', currentOutstandingDue, summaryY);
+      const { finalDue: actualDueAmount } = getUltimateBillDue(billToDownload);
+      if (actualDueAmount > 0 && returnedItems.length === 0) {
+        drawFinalBalanceBox(pdfDoc, 'DUE AMOUNT', actualDueAmount, summaryY);
         summaryY += 11;
       }
       
@@ -1994,7 +2242,20 @@ function BillGeneration() {
             // or if there are no more returns to process, apply the payment.
             if (Math.abs(nextPayment.previousDue - runningDue) < 0.1 || returnQueue.length === 0) {
               const payment = paymentQueue.shift();
+              const dueBeforePayment = runningDue;
               runningDue = Math.max(0, runningDue - payment.amountPaid);
+              if (payment.amountPaid > dueBeforePayment) {
+                runningCashReturn += payment.amountPaid - dueBeforePayment;
+              }
+              if (allEvents.length > 0) {
+                const lastReturnEvent = [...allEvents].reverse().find(event => event.type === 'return');
+                if (lastReturnEvent) {
+                  returnGroupStates[lastReturnEvent.groupIndex] = {
+                    dueAfterThis: runningDue,
+                    cashReturnAfterThis: runningCashReturn
+                  };
+                }
+              }
               allEvents.push(payment);
               continue;
             }
@@ -2057,7 +2318,8 @@ function BillGeneration() {
             previousReturnedItems,
             state.dueAfterThis,
             state.cashReturnAfterThis,
-            groupPayments
+            groupPayments,
+            billToDownload.isWholesale === true
           );
           previousReturnedItems = [...previousReturnedItems, ...returnGroup.items];
         });
@@ -2071,30 +2333,51 @@ function BillGeneration() {
         finalY += 2;
         if (runningDue > 0) {
           drawFinalBalanceBox(pdfDoc, 'DUE AMOUNT', runningDue, finalY);
-        } else if (finalCashReturn > 0) {
+          finalY += 12;
+        } else if (finalCashReturn > 0 && !billToDownload.cashFundSettled) {
           drawFinalBalanceBox(pdfDoc, 'CASH RETURN', finalCashReturn, finalY);
-        } else {
-          drawFinalBalanceBox(pdfDoc, 'FULLY SETTLED', 0, finalY);
+          finalY += 12;
         }
-        finalY += 12;
+      }
+
+      // Draw Paid Stamp at bottom right under summary calculations
+      if (isBillFullyPaidStamp) {
+        const stampW = 35;
+        const stampH = 35;
+        let stampY = finalY + 4;
+        let stampX = 155; // Prefer right side under summary calculations (190 - 35 = 155)
+
+        // Check if page overflow occurs vertically
+        if (stampY + stampH > 280) {
+          pdfDoc.addPage();
+          stampY = 20;
+          stampX = 155;
+        }
+
+        pdfDoc.addImage(paidStampRef.current, 'JPEG', stampX, stampY, stampW, stampH);
+        finalY = stampY + stampH + 5;
       }
       
       // Reset text color to black for any remaining content
       pdfDoc.setTextColor(0, 0, 0);
       
-      // Save PDF
+      // Save PDF or return document
       const fileName = `CashMemo_${billNumber}_${customerName.replace(/\s+/g, '_')}_${billDate.replace(/\//g, '-')}.pdf`;
+      if (returnPdfDoc) {
+        return { pdfDoc, fileName };
+      }
       pdfDoc.save(fileName);
       
       // Show success message
       alert('PDF downloaded successfully! Check your Downloads folder.');
     } catch (error) {
       console.error('Error generating PDF:', error);
-      alert('Error generating PDF. Please try again.');
+      if (!returnPdfDoc) alert('Error generating PDF. Please try again.');
+      return null;
     }
   };
 
-  const printPDF = (bill = null) => {
+  const printPDF = (bill = null, shouldPrint = true) => {
     try {
       const billToPrint = bill || generatedBill;
       if (!billToPrint) {
@@ -2109,8 +2392,8 @@ function BillGeneration() {
       
       // Company Information
       const companyName = 'MONDAL PLUMBING & SANITATION';
-      const companyAddress = '89, COLLEGE ROAD, DIAMOND HARBOUR';
-      const companyEmail = 'mondalplumbingsanitation@gmail.com';
+      const companyAddress = '89 Road, Chintamani Para, Diamond Harbour';
+      const companyEmail = 'mondalplumbingandsanitation@gmail.com';
       const companyPhone = '9434504491';
       
       // CASH MEMO at top right
@@ -2118,72 +2401,80 @@ function BillGeneration() {
       pdfDoc.setFont('helvetica', 'bold');
       pdfDoc.setTextColor(100, 100, 100); // Grey color
       const cashMemoY = 20;
-      pdfDoc.text('CASH MEMO', 190, cashMemoY, { align: 'right' });
+      pdfDoc.text('C A S H   M E M O', 190, cashMemoY, { align: 'right' });
       
       // Horizontal line from left that passes through the middle of CASH MEMO text
       // Font size 24: text baseline is at y=20, text extends upward ~18-20pt
       // Moving line lower to pass through middle of text
       const lineY = cashMemoY - 2.5; // Line passes through middle of text (decreased height slightly more)
-      pdfDoc.setDrawColor(200, 200, 200);
-      pdfDoc.line(20, lineY, 135, lineY); // Decreased length from right
+      pdfDoc.setDrawColor(160, 160, 160);
+      pdfDoc.setLineWidth(0.8);
+      pdfDoc.line(20, lineY, 115, lineY); // Starts from left margin (20), ends earlier near CASH MEMO text (115)
       
       // Company Name - Right aligned
-      pdfDoc.setFontSize(16);
+      pdfDoc.setFontSize(17.5);
       pdfDoc.setFont('helvetica', 'bold');
       pdfDoc.setTextColor(100, 100, 100);
-      pdfDoc.text(companyName, 190, 35, { align: 'right' });
+      const companySpacedName = 'M O N D A L   P L U M B I N G   &   S A N I T A T I O N';
+      pdfDoc.text(companySpacedName, 190, 35, { align: 'right' });
       
       // Company Details - Right aligned
-      pdfDoc.setFontSize(10);
+      pdfDoc.setFontSize(13);
       pdfDoc.setFont('helvetica', 'normal');
       pdfDoc.setTextColor(120, 120, 120);
       pdfDoc.text(companyAddress, 190, 42, { align: 'right' });
+      pdfDoc.setFontSize(10);
       pdfDoc.text('Email - ' + companyEmail, 190, 48, { align: 'right' });
       pdfDoc.text('Phone - ' + companyPhone, 190, 54, { align: 'right' });
       
-      // Horizontal line (moved down to increase height from top, shortened from both sides)
-      pdfDoc.setDrawColor(200, 200, 200);
-      pdfDoc.line(45, 68, 190, 68);
+      // Horizontal line (moved down to increase height from top, shortened from left side near BILL TO)
+      pdfDoc.setDrawColor(160, 160, 160);
+      pdfDoc.setLineWidth(0.8);
+      pdfDoc.line(70, 68, 190, 68);
+      pdfDoc.setLineWidth(0.2); // Reset line width
       
       // Reset text color to black
       pdfDoc.setTextColor(0, 0, 0);
       
       // BILL TO section on left
       let startY = 70;
-      pdfDoc.setFontSize(16);
+      pdfDoc.setFontSize(24);
       pdfDoc.setFont('helvetica', 'bold');
       pdfDoc.setTextColor(100, 100, 100);
-      pdfDoc.text('BILL TO', 20, startY);
+      pdfDoc.text('B I L L   T O', 20, startY);
       
-      // Customer details
+      // Customer details (Name at startY + 10, Phone at startY + 17, then Address)
       pdfDoc.setFontSize(10);
-      pdfDoc.setFont('helvetica', 'normal');
+      pdfDoc.setFont('helvetica', 'bold');
       pdfDoc.setTextColor(0, 0, 0);
       const customerName = String(billToPrint.fullName || billToPrint.customerName || 'N/A');
       pdfDoc.text(customerName, 20, startY + 10);
       
-      let currentY = startY + 17;
+      // Always show phone number field at startY + 17 (aligned with DATE)
+      const phoneNumber = billToPrint.phone || billToPrint.customerPhone || '';
+      pdfDoc.text('Phone - ' + phoneNumber, 20, startY + 17);
+      pdfDoc.setFont('helvetica', 'normal');
+      
+      let currentY = startY + 24;
       if (billToPrint.address) {
+        pdfDoc.setFontSize(10);
+        pdfDoc.setFont('helvetica', 'normal');
         const addressText = String(billToPrint.address);
         const addressLines = pdfDoc.splitTextToSize(addressText, 80);
         pdfDoc.text(addressLines, 20, currentY);
         currentY += (addressLines.length * 5);
       }
       
-      // Always show phone number field
-      const phoneNumber = billToPrint.phone || billToPrint.customerPhone || '';
-      pdfDoc.text('Phone - ' + phoneNumber, 20, currentY);
-      currentY += 7;
-      
       // BILL NO and DATE on right (lowered)
       const billNumber = billToPrint.billNumber || billToPrint.id?.slice(0, 8).toUpperCase() || 'MPS/0001';
-      const billDate = billToPrint.date || (billToPrint.createdAt?.toDate ? billToPrint.createdAt.toDate().toLocaleDateString('en-GB') : new Date().toLocaleDateString('en-GB'));
+      const rawBillDate = billToPrint.date || (billToPrint.createdAt?.toDate ? billToPrint.createdAt.toDate() : new Date());
+      const billDate = formatDisplayDate(rawBillDate);
       
       pdfDoc.setFontSize(10);
       pdfDoc.setFont('helvetica', 'normal');
       pdfDoc.setTextColor(120, 120, 120);
-      pdfDoc.text('BILL NO. : ' + billNumber, 190, startY + 5, { align: 'right' });
-      pdfDoc.text('DATE : ' + billDate, 190, startY + 12, { align: 'right' });
+      pdfDoc.text('BILL NO. : ' + billNumber, 190, startY + 10, { align: 'right' });
+      pdfDoc.text('DATE : ' + billDate, 190, startY + 17, { align: 'right' });
       
       // Items Table
       if (!billToPrint.items || billToPrint.items.length === 0) {
@@ -2192,6 +2483,7 @@ function BillGeneration() {
       }
       
       // Prepare table data with SL No.
+      const isWholesalePdf = billToPrint.isWholesale === true;
       const tableData = billToPrint.items.map((item, index) => {
         const price = parseFloat(item.price || 0);
         const quantity = getOriginalItemQuantity(item);
@@ -2202,40 +2494,58 @@ function BillGeneration() {
           item.variationSize,
           positionForSavedBillItem(item)
         );
+
+        const matchedProduct = products.find(p => p.id === item.productId || p.id === item.id);
+        const unitVal = item.unit || item.stockUnit || matchedProduct?.unit || matchedProduct?.stockUnit || '';
+        const qtyFormatted = unitVal ? `${quantity} ${unitVal}` : String(quantity);
+
+        if (isWholesalePdf) {
+          const mrpVal = item.sellingMrp != null && item.sellingMrp !== '' ? parseFloat(item.sellingMrp) : null;
+          const discVal = item.sellingDiscount != null && item.sellingDiscount !== '' ? parseFloat(item.sellingDiscount) : null;
+          const mrpStr = mrpVal != null && !isNaN(mrpVal) ? mrpVal.toFixed(2) : '-';
+          let discStr = '-';
+          if (discVal != null && !isNaN(discVal)) {
+            discStr = discVal.toFixed(1) + '%';
+          } else if (mrpVal != null && mrpVal > 0) {
+            const computed = ((mrpVal - price) / mrpVal) * 100;
+            if (computed >= 0) discStr = computed.toFixed(1) + '%';
+          }
+          return [
+            String(index + 1),
+            productName,
+            qtyFormatted,
+            mrpStr,
+            discStr,
+            price.toFixed(2),
+            amount.toFixed(2)
+          ];
+        }
         
         return [
           String(index + 1), // SL No.
           productName, // Product (with variation size if applicable)
-          String(quantity), // Qty.
-          'Rs. ' + price.toFixed(2), // Price
-          'Rs. ' + amount.toFixed(2) // Amount
+          qtyFormatted, // Qty.
+          price.toFixed(2), // Price
+          amount.toFixed(2) // Amount
         ];
       });
       
       // Calculate table start Y (after customer info) - decreased height from top
       const tableStartY = Math.max(currentY, startY + 1);
-      
-      // Check if bill is fully paid (no due and no initial due) - show "PAID IN FULL" stamp on left
-      const due = parseFloat(billToPrint.due || 0);
-      const initialDueForStamp = parseFloat(billToPrint.initialDueAmount || 0);
-      if (due === 0 && initialDueForStamp === 0) {
-        // Draw "PAID IN FULL" stamp on the left side
-        const stampX = 20;
-        const stampY = tableStartY + 30; // Position stamp below customer info, above/beside table
-        pdfDoc.setDrawColor(100, 100, 100);
-        pdfDoc.setLineWidth(2);
-        pdfDoc.roundedRect(stampX, stampY - 8, 50, 12, 2, 2); // Rounded rectangle
-        pdfDoc.setFont('helvetica', 'bold');
-        pdfDoc.setFontSize(10);
-        pdfDoc.setTextColor(80, 80, 80);
-        pdfDoc.text('PAID IN FULL', stampX + 25, stampY, { align: 'center' });
-        pdfDoc.setLineWidth(0.5); // Reset line width
-        pdfDoc.setDrawColor(0, 0, 0); // Reset draw color
-      }
+
+      const { finalDue: stampDue, finalCashReturn: stampCashReturn } = getUltimateBillDue(billToPrint);
+      const isBillFullyPaidStamp = (stampDue === 0 && stampCashReturn === 0 && paidStampRef.current);
+
+      const printTableHead = isWholesalePdf
+        ? [['SL', 'Item Name', 'Qty', 'MRP', 'Discount', 'Price', 'Amount']]
+        : [['SL', 'Item Name', 'Qty', 'Price', 'Amount']];
+      const printColumnStyles = isWholesalePdf
+        ? { 0: { cellWidth: 12 }, 1: { cellWidth: 55 }, 2: { cellWidth: 15 }, 3: { cellWidth: 23 }, 4: { cellWidth: 20 }, 5: { cellWidth: 22 }, 6: { cellWidth: 23 } }
+        : { 0: { cellWidth: 20 }, 1: { cellWidth: 70 }, 2: { cellWidth: 20 }, 3: { cellWidth: 30 }, 4: { cellWidth: 30 } };
       
       pdfDoc.autoTable({
         startY: tableStartY,
-        head: [['SL No.', 'Product', 'Qty.', 'Price', 'Amount']],
+        head: printTableHead,
         body: tableData,
         theme: 'striped',
         headStyles: { 
@@ -2253,13 +2563,7 @@ function BillGeneration() {
           fillColor: [245, 245, 245] // Light grey for alternating rows
         },
         margin: { left: 20, right: 20 },
-        columnStyles: {
-          0: { cellWidth: 20 }, // SL No.
-          1: { cellWidth: 70 }, // Product
-          2: { cellWidth: 20 }, // Qty.
-          3: { cellWidth: 30 }, // Price
-          4: { cellWidth: 30 }  // Amount
-        }
+        columnStyles: printColumnStyles
       });
       
       // Calculate final Y position after table
@@ -2363,8 +2667,9 @@ function BillGeneration() {
       }
       
       // 8. Due Amount (current outstanding — bold red, always last)
-      if (initialDue > 0 && returnedItems.length === 0) {
-        drawFinalBalanceBox(pdfDoc, 'DUE AMOUNT', currentOutstandingDue, summaryY);
+      const { finalDue: actualDueAmount } = getUltimateBillDue(billToPrint);
+      if (actualDueAmount > 0 && returnedItems.length === 0) {
+        drawFinalBalanceBox(pdfDoc, 'DUE AMOUNT', actualDueAmount, summaryY);
         summaryY += 11;
       }
       
@@ -2416,7 +2721,20 @@ function BillGeneration() {
             // or if there are no more returns to process, apply the payment.
             if (Math.abs(nextPayment.previousDue - runningDue) < 0.1 || returnQueue.length === 0) {
               const payment = paymentQueue.shift();
+              const dueBeforePayment = runningDue;
               runningDue = Math.max(0, runningDue - payment.amountPaid);
+              if (payment.amountPaid > dueBeforePayment) {
+                runningCashReturn += payment.amountPaid - dueBeforePayment;
+              }
+              if (allEvents.length > 0) {
+                const lastReturnEvent = [...allEvents].reverse().find(event => event.type === 'return');
+                if (lastReturnEvent) {
+                  returnGroupStates[lastReturnEvent.groupIndex] = {
+                    dueAfterThis: runningDue,
+                    cashReturnAfterThis: runningCashReturn
+                  };
+                }
+              }
               allEvents.push(payment);
               continue;
             }
@@ -2479,7 +2797,8 @@ function BillGeneration() {
             previousReturnedItems,
             state.dueAfterThis,
             state.cashReturnAfterThis,
-            groupPayments
+            groupPayments,
+            billToPrint.isWholesale === true
           );
           previousReturnedItems = [...previousReturnedItems, ...returnGroup.items];
         });
@@ -2493,32 +2812,61 @@ function BillGeneration() {
         finalY += 2;
         if (runningDue > 0) {
           drawFinalBalanceBox(pdfDoc, 'DUE AMOUNT', runningDue, finalY);
-        } else if (finalCashReturn > 0) {
+          finalY += 12;
+        } else if (finalCashReturn > 0 && !billToPrint.cashFundSettled) {
           drawFinalBalanceBox(pdfDoc, 'CASH RETURN', finalCashReturn, finalY);
-        } else {
-          drawFinalBalanceBox(pdfDoc, 'FULLY SETTLED', 0, finalY);
+          finalY += 12;
         }
-        finalY += 12;
+      }
+
+      // Draw Paid Stamp at bottom right under summary calculations
+      if (isBillFullyPaidStamp) {
+        const stampW = 35;
+        const stampH = 35;
+        let stampY = finalY + 4;
+        let stampX = 155; // Prefer right side under summary calculations (190 - 35 = 155)
+
+        // Check if page overflow occurs vertically
+        if (stampY + stampH > 280) {
+          pdfDoc.addPage();
+          stampY = 20;
+          stampX = 155;
+        }
+
+        pdfDoc.addImage(paidStampRef.current, 'JPEG', stampX, stampY, stampW, stampH);
+        finalY = stampY + stampH + 5;
       }
       
       pdfDoc.setTextColor(0, 0, 0);
       
-      // Open a lightweight print window we fully control to avoid PDF viewer cross-origin restrictions
+      // Open a lightweight PDF window we fully control to avoid PDF viewer cross-origin restrictions
       const pdfBlob = pdfDoc.output('blob');
       const pdfUrl = URL.createObjectURL(pdfBlob);
-      const printWindow = window.open('', '_blank', 'width=900,height=650');
 
-      if (!printWindow) {
-        alert('Popup blocked. Please allow popups to print the bill.');
+      if (!shouldPrint) {
+        const opened = window.open(pdfUrl, '_blank', 'noopener,noreferrer');
+        if (!opened) {
+          alert('Popup blocked. Please allow popups to view the bill.');
+          URL.revokeObjectURL(pdfUrl);
+          return;
+        }
+        setTimeout(() => URL.revokeObjectURL(pdfUrl), 30000);
         return;
       }
 
-      // Minimal HTML to render the PDF and trigger print, then auto-close
+      const printWindow = window.open('', '_blank', 'width=900,height=650');
+
+      if (!printWindow) {
+        alert(`Popup blocked. Please allow popups to ${shouldPrint ? 'print' : 'view'} the bill.`);
+        return;
+      }
+
+      // Minimal HTML to render the PDF and optionally trigger print.
       printWindow.document.write(`
         <!DOCTYPE html>
         <html>
           <head>
-            <title>Print Bill</title>
+            <title>${shouldPrint ? 'Print' : 'View'} Bill</title>
             <style>
               html, body {
                 margin: 0;
@@ -2534,7 +2882,7 @@ function BillGeneration() {
           </head>
           <body>
             <embed src="${pdfUrl}" type="application/pdf" />
-            <script>
+            ${shouldPrint ? `<script>
               const invokePrint = () => {
                 try {
                   window.focus();
@@ -2545,14 +2893,14 @@ function BillGeneration() {
               };
               // Give the PDF a moment to load before printing
               setTimeout(invokePrint, 400);
-            </script>
+            </script>` : ''}
           </body>
         </html>
       `);
       printWindow.document.close();
     } catch (error) {
-      console.error('Error printing PDF:', error);
-      alert('Error printing PDF. Please try again.');
+      console.error(`Error ${shouldPrint ? 'printing' : 'viewing'} PDF:`, error);
+      alert(`Error ${shouldPrint ? 'printing' : 'viewing'} PDF. Please try again.`);
     }
   };
 
@@ -2702,18 +3050,25 @@ function BillGeneration() {
   return (
     <div className="bill-generation">
       <div className="bill-header">
-        <div className="bill-header-left">
-          <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', fontWeight: 600, color: '#2c3e50', fontSize: '1rem' }}>
-            <input
-              type="checkbox"
-              checked={isWholesale}
-              onChange={(e) => setIsWholesale(e.target.checked)}
-              style={{ width: '18px', height: '18px', cursor: 'pointer', margin: 0 }}
-            />
-            <span>Regular Wholesale Bill</span>
-          </label>
-        </div>
-        <div className="bill-header-middle">
+        <div className="bill-header-left" style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
+          <button
+            className="toggle-bills-btn"
+            onClick={() => setShowBills(!showBills)}
+          >
+            {showBills ? 'Hide Bills' : 'View All Bills'}
+          </button>
+          <button
+            type="button"
+            className="reset-bills-btn"
+            onClick={handleResetAllBills}
+            title="Delete all bills"
+            style={{
+              padding: '0.5rem 1rem',
+              fontSize: '0.9rem'
+            }}
+          >
+            🔄 Reset All Bills
+          </button>
           <button
             type="button"
             className="toggle-bills-btn"
@@ -2723,31 +3078,36 @@ function BillGeneration() {
               border: '1px solid #cbd5e1',
               color: '#334155',
               fontWeight: 600,
-              padding: '0.75rem 1.25rem',
+              padding: '0.5rem 1rem',
               display: 'flex',
               alignItems: 'center',
-              gap: '6px'
+              gap: '6px',
+              fontSize: '0.9rem'
             }}
           >
             📂 Draft Bills ({draftBills.length})
           </button>
         </div>
         <div className="bill-header-right">
-          <button
-          className="toggle-bills-btn"
-          onClick={() => setShowBills(!showBills)}
-        >
-          {showBills ? 'Hide Bills' : 'View All Bills'}
-        </button>
           {showBills && (
-            <label className="bill-due-toggle">
-              <input
-                type="checkbox"
-                checked={showDueOnly}
-                onChange={(e) => setShowDueOnly(e.target.checked)}
-              />
-              <span>Show due bills only</span>
-            </label>
+            <div style={{ display: 'flex', gap: '12px', alignItems: 'center', flexWrap: 'wrap' }}>
+              <label className="bill-due-toggle">
+                <input
+                  type="checkbox"
+                  checked={showDueOnly}
+                  onChange={(e) => setShowDueOnly(e.target.checked)}
+                />
+                <span>Due bills only</span>
+              </label>
+              <label className="bill-due-toggle">
+                <input
+                  type="checkbox"
+                  checked={showWholesaleOnly}
+                  onChange={(e) => setShowWholesaleOnly(e.target.checked)}
+                />
+                <span>Wholesale bills only</span>
+              </label>
+            </div>
           )}
         </div>
       </div>
@@ -2764,13 +3124,6 @@ function BillGeneration() {
                 onChange={(e) => setBillSearchQuery(e.target.value)}
                 className="bill-search-input"
               />
-              <button
-                className="reset-bills-btn"
-                onClick={handleResetAllBills}
-                title="Delete all bills"
-              >
-                🔄 Reset All Bills
-              </button>
             </div>
           </div>
           {bills.length === 0 ? (
@@ -2795,6 +3148,9 @@ function BillGeneration() {
 
                   if (!matchesSearch) return false;
 
+                  // Filter by wholesale if toggle is on
+                  if (showWholesaleOnly && !bill.isWholesale) return false;
+
                   // If not filtering by due, we're done
                   if (!showDueOnly) return true;
 
@@ -2813,8 +3169,25 @@ function BillGeneration() {
                   <div className="bills-grid">
                     {filteredBills.map((bill) => (
                       <div key={bill.id} className="bill-card">
-                        <div className="bill-card-header">
-                          <h4>Bill #{bill.billNumber || bill.id.slice(0, 8)}</h4>
+                        <div className="bill-card-header" style={{ position: 'relative' }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                            <h4>Bill #{bill.billNumber || bill.id.slice(0, 8)}</h4>
+                            {bill.isWholesale && (
+                              <span style={{
+                                display: 'inline-block',
+                                padding: '2px 8px',
+                                background: 'linear-gradient(135deg, #6c63ff, #4f46e5)',
+                                color: '#fff',
+                                borderRadius: '20px',
+                                fontSize: '10px',
+                                fontWeight: '700',
+                                letterSpacing: '0.5px',
+                                textTransform: 'uppercase',
+                                boxShadow: '0 1px 4px rgba(99,91,255,0.35)',
+                                whiteSpace: 'nowrap'
+                              }}>Wholesale</span>
+                            )}
+                          </div>
                           <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
                           <span className="bill-date">
                             {bill.createdAt?.toDate().toLocaleDateString()}
@@ -2872,8 +3245,8 @@ function BillGeneration() {
                                     type="button"
                                     onClick={(e) => {
                                       e.stopPropagation();
-                                      downloadPDF(bill);
                                       setOpenMenuBillId(null);
+                                      handleContinueDraft(bill);
                                     }}
                                     style={{
                                       width: '100%',
@@ -2891,7 +3264,33 @@ function BillGeneration() {
                                     onMouseEnter={(e) => e.target.style.backgroundColor = '#f5f5f5'}
                                     onMouseLeave={(e) => e.target.style.backgroundColor = 'white'}
                                   >
-                                    📄 Download PDF
+                                    ✏️ Edit
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      setOpenMenuBillId(null);
+                                      sendNormalDueReminder(bill);
+                                    }}
+                                    style={{
+                                      width: '100%',
+                                      padding: '10px 15px',
+                                      border: 'none',
+                                      background: 'none',
+                                      textAlign: 'left',
+                                      cursor: 'pointer',
+                                      fontSize: '14px',
+                                      color: '#e67e22',
+                                      display: 'flex',
+                                      alignItems: 'center',
+                                      gap: '8px',
+                                      borderTop: '1px solid #eee'
+                                    }}
+                                    onMouseEnter={(e) => e.target.style.backgroundColor = '#fff8f0'}
+                                    onMouseLeave={(e) => e.target.style.backgroundColor = 'white'}
+                                  >
+                                    🔔 Due Reminder
                                   </button>
                                   <button
                                     type="button"
@@ -2933,25 +3332,31 @@ function BillGeneration() {
                       <p><strong>Date:</strong> {bill.date}</p>
                     )}
                     <p><strong>Items:</strong> {bill.items?.length || 0}</p>
-                    <p className="bill-total"><strong>Total:</strong> ₹{bill.total?.toFixed(2)}</p>
+                    <p className="bill-total"><strong>Total:</strong> ₹{(getOriginalBillSubtotal(bill) - getOriginalBillDiscount(bill)).toFixed(2)}</p>
                     {(() => {
-                      const rawDue = bill.due;
-                      let dueNumeric = 0;
-                      if (rawDue != null && rawDue !== '') {
-                        if (typeof rawDue === 'number') {
-                          dueNumeric = rawDue;
-                        } else {
-                          const cleaned = String(rawDue).replace(/[^0-9.-]/g, '');
-                          const num = parseFloat(cleaned);
-                          if (!isNaN(num)) dueNumeric = num;
-                        }
+                      const { finalDue, finalCashReturn } = getUltimateBillDue(bill);
+                      bill.calculatedCashReturn = finalCashReturn;
+
+                      if (finalDue > 0) {
+                        return (
+                          <div className="bill-due-indicator">
+                            <span className="due-badge">Due: ₹{finalDue.toFixed(2)}</span>
+                          </div>
+                        );
                       }
-                      const hasDue = dueNumeric > 0;
-                      return hasDue ? (
-                        <div className="bill-due-indicator">
-                          <span className="due-badge">Due: ₹{dueNumeric.toFixed(2)}</span>
-                        </div>
-                      ) : null;
+
+                      if (finalCashReturn > 0) {
+                        return (
+                          <div className="bill-due-indicator">
+                            <span className="due-badge" style={{
+                              background: 'linear-gradient(135deg, #e74c3c, #c0392b)',
+                              boxShadow: '0 1px 4px rgba(231,76,60,0.35)'
+                            }}>Cash Return: ₹{finalCashReturn.toFixed(2)}</span>
+                          </div>
+                        );
+                      }
+
+                      return null;
                     })()}
                     {editingDueBillId === bill.id ? (
                       <div className="edit-due-form">
@@ -3005,32 +3410,48 @@ function BillGeneration() {
                       </button>
                       <button
                         className="print-bill-btn"
-                        onClick={() => printPDF(bill)}
-                        title="Print Bill"
+                        onClick={() => printPDF(bill, false)}
+                        title="View Bill"
+                      >
+                        👁️ View
+                      </button>
+                      <button
+                        className="print-bill-btn"
+                        onClick={() => downloadPDF(bill)}
+                        title="Print / Download PDF"
+                        style={{
+                          backgroundColor: '#e83e8c',
+                          borderColor: '#d63384',
+                          color: '#fff'
+                        }}
                       >
                         🖨️ Print
                       </button>
                       {(() => {
-                        const rawDue = bill.due;
-                        let dueNumeric = 0;
-                        if (rawDue != null && rawDue !== '') {
-                          if (typeof rawDue === 'number') {
-                            dueNumeric = rawDue;
-                          } else {
-                            const cleaned = String(rawDue).replace(/[^0-9.-]/g, '');
-                            const num = parseFloat(cleaned);
-                            if (!isNaN(num)) dueNumeric = num;
-                          }
+                        const { finalDue, finalCashReturn } = getUltimateBillDue(bill);
+                        if (finalDue > 0) {
+                          return (
+                            <button
+                              className="edit-due-btn"
+                              onClick={() => handleEditDueAmount(bill)}
+                              title="Due Repayment"
+                            >
+                              ✏️ Due Repayment
+                            </button>
+                          );
                         }
-                        return dueNumeric > 0 ? (
-                          <button
-                            className="edit-due-btn"
-                            onClick={() => handleEditDueAmount(bill)}
-                            title="Edit Due Amount"
-                          >
-                            ✏️ Edit Due
-                          </button>
-                        ) : null;
+                        if (finalCashReturn > 0) {
+                          return (
+                            <button
+                              className="edit-due-btn"
+                              onClick={() => handleCashFundSettled(bill)}
+                              title="Cash Refund"
+                            >
+                              💵 Cash Refund
+                            </button>
+                          );
+                        }
+                        return null;
                       })()}
                     </div>
                   </div>
@@ -3046,7 +3467,18 @@ function BillGeneration() {
         <>
           <div className="bill-form">
             <div className="form-section">
-              <h3>Customer Information</h3>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.5rem' }}>
+                <h3 style={{ margin: 0 }}>Customer Information</h3>
+                <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', fontWeight: 600, color: '#2c3e50', fontSize: '0.95rem' }}>
+                  <input
+                    type="checkbox"
+                    checked={isWholesale}
+                    onChange={(e) => setIsWholesale(e.target.checked)}
+                    style={{ width: '16px', height: '16px', cursor: 'pointer', margin: 0, accentColor: '#4f46e5' }}
+                  />
+                  <span>Regular Wholesale Bill</span>
+                </label>
+              </div>
               <div className="form-grid">
                 <div className="form-group">
                   <label>Full Name *</label>
@@ -3245,13 +3677,10 @@ function BillGeneration() {
                           {(() => {
                             const trimmedQuery = (productSearchQuery || '').trim();
                             const matching = products.filter(p =>
-                              p.quantity > 0 &&
-                              (
-                                !trimmedQuery ||
-                                matchesProductSearch(p.name, trimmedQuery) ||
-                                (p.category && matchesProductSearch(p.category, trimmedQuery)) ||
-                                (p.subcategory && matchesProductSearch(p.subcategory, trimmedQuery))
-                              )
+                              !trimmedQuery ||
+                              matchesProductSearch(p.name, trimmedQuery) ||
+                              (p.category && matchesProductSearch(p.category, trimmedQuery)) ||
+                              (p.subcategory && matchesProductSearch(p.subcategory, trimmedQuery))
                             );
                             
                             if (matching.length === 0) {
@@ -4085,22 +4514,6 @@ function BillGeneration() {
                         </span>
                       </div>
                     )}
-                    <div style={{ 
-                      display: 'flex', 
-                      justifyContent: 'space-between', 
-                      fontSize: '18px', 
-                      color: '#27ae60', 
-                      fontWeight: 'bold',
-                      borderTop: '1px solid #ddd',
-                      paddingTop: '8px',
-                      marginTop: '4px'
-                    }}>
-                      <span>Cash return:</span>
-                      <span style={{ 
-                        borderBottom: '3px double #27ae60',
-                        paddingBottom: '2px'
-                      }}>₹{returnSummary.cashReturn.toFixed(2)}</span>
-                    </div>
                   </div>
                 </div>
               );
@@ -4130,13 +4543,29 @@ function BillGeneration() {
           >
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '15px' }}>
               <h3 style={{ margin: 0, color: '#334155' }}>Draft Bills</h3>
-              <button
-                type="button"
-                onClick={() => setShowDraftsModal(false)}
-                style={{ background: 'none', border: 'none', fontSize: '24px', cursor: 'pointer', color: '#999' }}
-              >
-                ×
-              </button>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                {draftBills.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (window.confirm('Are you sure you want to delete ALL saved drafts? This cannot be undone.')) {
+                        setDraftBills([]);
+                        localStorage.removeItem('mondal_draft_bills');
+                      }
+                    }}
+                    style={{ padding: '4px 10px', background: '#dc3545', color: '#fff', border: 'none', borderRadius: '4px', cursor: 'pointer', fontSize: '12px', fontWeight: 600 }}
+                  >
+                    Clear All Drafts
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => setShowDraftsModal(false)}
+                  style={{ background: 'none', border: 'none', fontSize: '24px', cursor: 'pointer', color: '#999' }}
+                >
+                  ×
+                </button>
+              </div>
             </div>
             {draftBills.length === 0 ? (
               <p style={{ textAlign: 'center', color: '#888', padding: '20px' }}>No draft bills saved.</p>
@@ -4145,7 +4574,7 @@ function BillGeneration() {
                 {draftBills.map((draft) => {
                   const draftItems = Array.isArray(draft.items) ? draft.items : [];
                   const subtotal = draftItems.reduce((sum, item) => sum + (item.price * item.quantity), 0);
-                  const dateStr = draft.createdAt ? new Date(draft.createdAt).toLocaleString() : '-';
+                  const dateStr = draft.createdAt ? formatDisplayDate(draft.createdAt) : '-';
                   return (
                     <div
                       key={draft.id}
@@ -4185,6 +4614,182 @@ function BillGeneration() {
                 })}
               </div>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* Share Bill Options Modal */}
+      {sharingBill && (
+        <div
+          className="modal-overlay"
+          onClick={() => setSharingBill(null)}
+          style={{
+            position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
+            backgroundColor: 'rgba(0, 0, 0, 0.5)', display: 'flex',
+            alignItems: 'center', justifyContent: 'center', zIndex: 1100
+          }}
+        >
+          <div
+            className="modal-content"
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              backgroundColor: 'white', borderRadius: '12px', padding: '24px',
+              maxWidth: '440px', width: '90%', boxShadow: '0 4px 20px rgba(0,0,0,0.2)'
+            }}
+          >
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+              <h3 style={{ margin: 0, color: '#2c3e50', fontSize: '1.25rem' }}>📤 Share Bill #{sharingBill.billNumber || sharingBill.id.slice(0, 8)}</h3>
+              <button
+                type="button"
+                onClick={() => setSharingBill(null)}
+                style={{ background: 'none', border: 'none', fontSize: '20px', cursor: 'pointer', color: '#999' }}
+              >
+                ✕
+              </button>
+            </div>
+
+            <p style={{ fontSize: '0.9rem', color: '#666', marginBottom: '18px' }}>
+              Customer: <strong>{sharingBill.fullName || sharingBill.customerName || 'N/A'}</strong> ({sharingBill.phone || 'No phone'})<br />
+              Amount: <strong>₹{(getOriginalBillSubtotal(sharingBill) - getOriginalBillDiscount(sharingBill)).toFixed(2)}</strong>
+            </p>
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+              {/* Share PDF File via System Apps / Epson Printer */}
+              <button
+                type="button"
+                onClick={async () => {
+                  const result = downloadPDF(sharingBill, true);
+                  if (!result || !result.pdfDoc) {
+                    alert('Could not generate PDF document for sharing.');
+                    return;
+                  }
+                  const { pdfDoc, fileName } = result;
+                  const pdfBlob = pdfDoc.output('blob');
+                  const file = new File([pdfBlob], fileName, { type: 'application/pdf' });
+
+                  if (navigator.canShare && navigator.canShare({ files: [file] })) {
+                    try {
+                      await navigator.share({
+                        files: [file],
+                        title: `Bill #${sharingBill.billNumber || sharingBill.id.slice(0, 8)}`,
+                        text: `Bill PDF for ${sharingBill.fullName || sharingBill.customerName || 'Customer'}`
+                      });
+                      setSharingBill(null);
+                      return;
+                    } catch (err) {
+                      console.log('File sharing cancelled or failed', err);
+                    }
+                  }
+
+                  // Fallback if file sharing not supported: Print directly via printer dialog / open PDF
+                  printPDF(sharingBill, true);
+                  setSharingBill(null);
+                }}
+                style={{
+                  padding: '12px 16px', borderRadius: '8px', border: 'none',
+                  backgroundColor: '#4f46e5', color: 'white', fontWeight: 600,
+                  display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer',
+                  fontSize: '0.95rem'
+                }}
+              >
+                📄 Share / Print PDF File (Epson Printer & Apps)
+              </button>
+
+              {/* WhatsApp Share */}
+              <button
+                type="button"
+                onClick={() => {
+                  const customerName = sharingBill.fullName || sharingBill.customerName || 'Valued Customer';
+                  const billNo = sharingBill.billNumber || sharingBill.id.slice(0, 8);
+                  const totalAmt = (getOriginalBillSubtotal(sharingBill) - getOriginalBillDiscount(sharingBill)).toFixed(2);
+                  const phone = (sharingBill.phone || '').replace(/[^0-9]/g, '');
+                  const message = encodeURIComponent(`Hello ${customerName},\n\nThank you for shopping with us!\nBill No: #${billNo}\nTotal Amount: ₹${totalAmt}\n\nHave a great day!`);
+                  const waUrl = phone ? `https://wa.me/91${phone}?text=${message}` : `https://wa.me/?text=${message}`;
+                  window.open(waUrl, '_blank');
+                  setSharingBill(null);
+                }}
+                style={{
+                  padding: '12px 16px', borderRadius: '8px', border: 'none',
+                  backgroundColor: '#25D366', color: 'white', fontWeight: 600,
+                  display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer',
+                  fontSize: '0.95rem'
+                }}
+              >
+                💬 Share via WhatsApp
+              </button>
+
+              {/* Native Share (Device Share Sheet - System / Apps / PDF) */}
+              {navigator.share && (
+                <button
+                  type="button"
+                  onClick={async () => {
+                    const billNo = sharingBill.billNumber || sharingBill.id.slice(0, 8);
+                    const totalAmt = (getOriginalBillSubtotal(sharingBill) - getOriginalBillDiscount(sharingBill)).toFixed(2);
+                    try {
+                      await navigator.share({
+                        title: `Bill #${billNo}`,
+                        text: `Bill #${billNo} for ${sharingBill.fullName || sharingBill.customerName || 'Customer'} - Total: ₹${totalAmt}`
+                      });
+                    } catch (err) {
+                      console.log('Device share cancelled or failed', err);
+                    }
+                    setSharingBill(null);
+                  }}
+                  style={{
+                    padding: '12px 16px', borderRadius: '8px', border: 'none',
+                    backgroundColor: '#4f46e5', color: 'white', fontWeight: 600,
+                    display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer',
+                    fontSize: '0.95rem'
+                  }}
+                >
+                  📱 System / App Share Sheet
+                </button>
+              )}
+
+              {/* Email Share */}
+              <button
+                type="button"
+                onClick={() => {
+                  const customerName = sharingBill.fullName || sharingBill.customerName || 'Valued Customer';
+                  const billNo = sharingBill.billNumber || sharingBill.id.slice(0, 8);
+                  const totalAmt = (getOriginalBillSubtotal(sharingBill) - getOriginalBillDiscount(sharingBill)).toFixed(2);
+                  const subject = encodeURIComponent(`Bill Receipt #${billNo}`);
+                  const body = encodeURIComponent(`Dear ${customerName},\n\nPlease find your bill summary below:\n\nBill No: #${billNo}\nDate: ${sharingBill.date || ''}\nTotal Items: ${sharingBill.items?.length || 0}\nTotal Amount: ₹${totalAmt}\n\nThank you for your business!`);
+                  window.open(`mailto:?subject=${subject}&body=${body}`, '_blank');
+                  setSharingBill(null);
+                }}
+                style={{
+                  padding: '12px 16px', borderRadius: '8px', border: '1px solid #cbd5e1',
+                  backgroundColor: '#f8fafc', color: '#1e293b', fontWeight: 600,
+                  display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer',
+                  fontSize: '0.95rem'
+                }}
+              >
+                ✉️ Share via Email
+              </button>
+
+              {/* Copy Summary Text */}
+              <button
+                type="button"
+                onClick={() => {
+                  const customerName = sharingBill.fullName || sharingBill.customerName || 'Valued Customer';
+                  const billNo = sharingBill.billNumber || sharingBill.id.slice(0, 8);
+                  const totalAmt = (getOriginalBillSubtotal(sharingBill) - getOriginalBillDiscount(sharingBill)).toFixed(2);
+                  const summaryText = `Bill #${billNo}\nCustomer: ${customerName}\nItems: ${sharingBill.items?.length || 0}\nTotal Amount: ₹${totalAmt}`;
+                  navigator.clipboard.writeText(summaryText);
+                  alert('Bill summary copied to clipboard!');
+                  setSharingBill(null);
+                }}
+                style={{
+                  padding: '12px 16px', borderRadius: '8px', border: '1px solid #cbd5e1',
+                  backgroundColor: '#f8fafc', color: '#1e293b', fontWeight: 600,
+                  display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer',
+                  fontSize: '0.95rem'
+                }}
+              >
+                📋 Copy Bill Summary Text
+              </button>
+            </div>
           </div>
         </div>
       )}

@@ -22,17 +22,19 @@ function Sidebar({ onLogout, isOpen, onClose }) {
       return;
     }
 
-    if (location.pathname === '/dashboard/bills' && localStorage.getItem('billGenerationUnsaved') === 'true') {
+    if ((location.pathname === '/dashboard/bills' && localStorage.getItem('billGenerationUnsaved') === 'true') ||
+        (location.pathname === '/dashboard/gst-bills' && localStorage.getItem('gstBillGenerationUnsaved') === 'true')) {
       e.preventDefault(); // Stop navigation
+      const isGst = location.pathname === '/dashboard/gst-bills';
       const confirmLeave = window.confirm("Are you sure you want to leave? Your unsaved billing data will be lost.");
       if (confirmLeave) {
         const saveDraft = window.confirm("Do you want to save this bill as a draft?");
         if (saveDraft) {
-          // Dispatch custom event to let BillGeneration save the draft, then redirect
-          window.dispatchEvent(new CustomEvent('triggerSaveDraft', { detail: { nextPath: to } }));
+          // Dispatch custom event to let BillGeneration / GstBillGeneration save the draft, then redirect
+          window.dispatchEvent(new CustomEvent(isGst ? 'triggerSaveGstDraft' : 'triggerSaveDraft', { detail: { nextPath: to } }));
         } else {
           // Clear unsaved flag and navigate
-          localStorage.removeItem('billGenerationUnsaved');
+          localStorage.removeItem(isGst ? 'gstBillGenerationUnsaved' : 'billGenerationUnsaved');
           if (onClose) onClose();
           navigate(to);
         }

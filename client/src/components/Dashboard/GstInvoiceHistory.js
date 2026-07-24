@@ -1,16 +1,24 @@
 import React, { useState, useEffect } from 'react';
-import { collection, onSnapshot, query, orderBy } from 'firebase/firestore';
+import { useNavigate } from 'react-router-dom';
+import { collection, onSnapshot, query, orderBy, deleteDoc, doc } from 'firebase/firestore';
 import { db } from '../../firebase';
 import jsPDF from 'jspdf';
 import 'jspdf-autotable';
+import { formatDDMMYYYY } from '../../utils/dateUtils';
+import './Analytics.css'; // For low-stock-more-btn styling
 
 const SELLER_STATE_CODE = '19'; // West Bengal
 function GstInvoiceHistory() {
+  const navigate = useNavigate();
   const [invoices, setInvoices] = useState([]);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
+  const [showDueOnly, setShowDueOnly] = useState(false);
+
+  const [openShareInvoiceId, setOpenShareInvoiceId] = useState(null);
+  const [openMenuInvoiceId, setOpenMenuInvoiceId] = useState(null);
 
   useEffect(() => {
     const q = query(collection(db, 'gst_invoices'), orderBy('createdAt', 'desc'));
@@ -29,7 +37,7 @@ function GstInvoiceHistory() {
     return () => unsubscribe();
   }, []);
 
-  const handlePrint = (invoice) => {
+  const buildGSTPDF = (invoice, isDownload = false) => {
     const pdfDoc = new jsPDF();
     pdfDoc.setFont('helvetica');
     const isInterstate = (invoice.partyShippingStateCode || invoice.partyStateCode) !== SELLER_STATE_CODE;
@@ -50,7 +58,6 @@ function GstInvoiceHistory() {
       return str.trim() ? 'Rupees ' + str.trim() + ' Only' : 'Rupees Zero Only';
     };
 
-    // Headers & Branding
     pdfDoc.setFontSize(16);
     pdfDoc.setFont('helvetica', 'bold');
     pdfDoc.setTextColor(0, 0, 0);
@@ -63,13 +70,11 @@ function GstInvoiceHistory() {
     pdfDoc.text('Mobile: 9434504491 | Email: mondalplumbingandsanitation@gmail.com', 20, 29);
     pdfDoc.text('GSTIN: 19ERZPM6976H1ZH | PAN: ERZPM6976H', 20, 33);
 
-    // Draw main buyer details box container
     pdfDoc.setDrawColor(180, 180, 180);
     pdfDoc.setLineWidth(0.3);
-    pdfDoc.rect(20, 39, 170, 32); // Outer box border
-    pdfDoc.line(20, 45, 190, 45); // Horizontal divider under column titles
+    pdfDoc.rect(20, 39, 170, 32);
+    pdfDoc.line(20, 45, 190, 45);
 
-    // Check if separate shipping details are present
     const hasDiffShipping = invoice.partyShippingAddress && invoice.partyShippingAddress !== invoice.partyAddress;
 
     pdfDoc.setFont('helvetica', 'bold');
@@ -77,15 +82,13 @@ function GstInvoiceHistory() {
     pdfDoc.setTextColor(0, 0, 0);
 
     if (hasDiffShipping) {
-      // 3-Column Layout: Billing, Shipping, Invoice
       pdfDoc.text('Billing Details', 22, 43);
       pdfDoc.text('Shipping Details', 77, 43);
       pdfDoc.text('Invoice Details', 134, 43);
 
-      pdfDoc.line(75, 39, 75, 71);  // Vertical line 1
-      pdfDoc.line(132, 39, 132, 71); // Vertical line 2
+      pdfDoc.line(75, 39, 75, 71);
+      pdfDoc.line(132, 39, 132, 71);
 
-      // Column 1: Billing
       pdfDoc.setFont('helvetica', 'normal');
       pdfDoc.setFontSize(8);
       pdfDoc.text(invoice.partyName || 'N/A', 22, 49);
@@ -94,38 +97,29 @@ function GstInvoiceHistory() {
       pdfDoc.text('Phone: ' + (invoice.partyPhone || 'N/A'), 22, 63);
       pdfDoc.text('GSTIN: ' + (invoice.partyGstin || 'URD (Unregistered)'), 22, 67);
 
-      // Column 2: Shipping
-      pdfDoc.setFont('helvetica', 'normal');
-      pdfDoc.setFontSize(8);
       pdfDoc.text(invoice.partyShippingName || invoice.partyName || 'N/A', 77, 49);
       const splitShipAddr = pdfDoc.splitTextToSize(invoice.partyShippingAddress || 'N/A', 50);
       pdfDoc.text(splitShipAddr, 77, 53);
       pdfDoc.text('Phone: ' + (invoice.partyShippingPhone || 'N/A'), 77, 63);
       pdfDoc.text('GSTIN: ' + (invoice.partyShippingGstin || 'URD (Unregistered)'), 77, 67);
 
-      // Column 3: Invoice
-      pdfDoc.setFont('helvetica', 'normal');
-      pdfDoc.setFontSize(8);
       pdfDoc.text('Invoice No. - ' + invoice.invoiceNumber, 134, 49);
-      pdfDoc.text('Invoice Date - ' + invoice.date, 134, 54);
+      pdfDoc.text('Invoice Date - ' + formatDDMMYYYY(invoice.date), 134, 54);
       const dueDateVal = (() => {
         const d = new Date(invoice.date);
-        if (isNaN(d.getTime())) return invoice.date;
+        if (isNaN(d.getTime())) return formatDDMMYYYY(invoice.date);
         d.setDate(d.getDate() + 15);
-        return d.toISOString().split('T')[0];
+        return formatDDMMYYYY(d);
       })();
       pdfDoc.text('Due Date - ' + dueDateVal, 134, 59);
       const posVal = (invoice.partyShippingStateCode || invoice.partyStateCode || '19') + ' - ' + (invoice.partyShippingStateName || invoice.partyStateName || 'West Bengal');
       pdfDoc.text('Place of Supply - ' + posVal, 134, 64);
-
     } else {
-      // 2-Column Layout: Billing/Shipping combined, Invoice
       pdfDoc.text('Billing Details', 22, 43);
       pdfDoc.text('Invoice Details', 127, 43);
 
-      pdfDoc.line(125, 39, 125, 71); // Vertical divider
+      pdfDoc.line(125, 39, 125, 71);
 
-      // Column 1: Billing & Shipping
       pdfDoc.setFont('helvetica', 'normal');
       pdfDoc.setFontSize(8);
       pdfDoc.text(invoice.partyName || 'N/A', 22, 49);
@@ -134,24 +128,20 @@ function GstInvoiceHistory() {
       pdfDoc.text('Phone: ' + (invoice.partyPhone || 'N/A'), 22, 63);
       pdfDoc.text('GSTIN: ' + (invoice.partyGstin || 'URD (Unregistered)'), 22, 67);
 
-      // Column 2: Invoice
-      pdfDoc.setFont('helvetica', 'normal');
-      pdfDoc.setFontSize(8);
       pdfDoc.text('Invoice No. - ' + invoice.invoiceNumber, 127, 49);
-      pdfDoc.text('Invoice Date - ' + invoice.date, 127, 54);
+      pdfDoc.text('Invoice Date - ' + formatDDMMYYYY(invoice.date), 127, 54);
       const dueDateVal = (() => {
         const d = new Date(invoice.date);
-        if (isNaN(d.getTime())) return invoice.date;
+        if (isNaN(d.getTime())) return formatDDMMYYYY(invoice.date);
         d.setDate(d.getDate() + 15);
-        return d.toISOString().split('T')[0];
+        return formatDDMMYYYY(d);
       })();
       pdfDoc.text('Due Date - ' + dueDateVal, 127, 59);
       const posVal = (invoice.partyStateCode || '19') + ' - ' + (invoice.partyStateName || 'West Bengal');
       pdfDoc.text('Place of Supply - ' + posVal, 127, 64);
     }
 
-    // Table mapping
-    const tableData = invoice.items.map((item, index) => {
+    const tableData = (invoice.items || []).map((item, index) => {
       const qty = item.quantity || 1;
       const hsn = item.hsnCode || '7307';
       const mrpVal = item.mrp !== undefined ? item.mrp : (item.finalPrice || item.price || 0);
@@ -200,18 +190,18 @@ function GstInvoiceHistory() {
       ]
     ];
 
-    const totalQty = invoice.items.reduce((sum, item) => sum + (item.quantity || 0), 0);
-    const totalTaxable = invoice.items.reduce((sum, item) => {
+    const totalQty = (invoice.items || []).reduce((sum, item) => sum + (item.quantity || 0), 0);
+    const totalTaxable = (invoice.items || []).reduce((sum, item) => {
       const taxPrice = item.taxablePrice !== undefined ? item.taxablePrice : (item.price || 0);
       return sum + taxPrice;
     }, 0);
-    const totalGstAmt = invoice.items.reduce((sum, item) => {
+    const totalGstAmt = (invoice.items || []).reduce((sum, item) => {
       const taxPrice = item.taxablePrice !== undefined ? item.taxablePrice : (item.price || 0);
       const gstRate = item.gstRate !== undefined ? item.gstRate : 18;
       const gstAmt = item.gstAmount !== undefined ? item.gstAmount : (taxPrice * (gstRate / 100));
       return sum + gstAmt;
     }, 0);
-    const totalFinalPrice = invoice.items.reduce((sum, item) => {
+    const totalFinalPrice = (invoice.items || []).reduce((sum, item) => {
       const taxPrice = item.taxablePrice !== undefined ? item.taxablePrice : (item.price || 0);
       const gstRate = item.gstRate !== undefined ? item.gstRate : 18;
       const finalPrice = item.finalPrice !== undefined ? item.finalPrice : (taxPrice * (1 + gstRate / 100));
@@ -530,13 +520,28 @@ function GstInvoiceHistory() {
       pdfDoc.setTextColor(60, 60, 60);
       pdfDoc.text('Authorized Signatory', dividerX + signWidth / 2, boxTop + boxHeight - 3, { align: 'center' });
 
-      const pdfBlob = pdfDoc.output('blob');
-      const pdfUrl = URL.createObjectURL(pdfBlob);
-      const printWindow = window.open('', '_blank', 'width=900,height=650');
-      if (printWindow) {
-        printWindow.document.write(
-          `<html><head><title>Print Invoice ${invoice.invoiceNumber}</title></head><body style="margin:0;"><embed width="100%" height="100%" src="${pdfUrl}" type="application/pdf"></body></html>`
-        );
+      const safeNumStr = String(invoice.invoiceNumber).replace(/[/\\?%*:|"<>]/g, '_');
+      const fileName = `GST_Invoice_${safeNumStr}.pdf`;
+
+      if (isDownload) {
+        pdfDoc.save(fileName);
+      } else {
+        const pdfBlob = pdfDoc.output('blob');
+        const pdfFile = new File([pdfBlob], fileName, { type: 'application/pdf' });
+
+        if (navigator.canShare && navigator.canShare({ files: [pdfFile] })) {
+          navigator.share({
+            files: [pdfFile],
+            title: `GST Invoice ${invoice.invoiceNumber}`
+          }).catch((err) => {
+            console.warn('System Open With dismissed, opening in browser tab:', err);
+            const pdfUrl = URL.createObjectURL(pdfBlob);
+            window.open(pdfUrl, '_blank');
+          });
+        } else {
+          const pdfUrl = URL.createObjectURL(pdfBlob);
+          window.open(pdfUrl, '_blank');
+        }
       }
     };
 
@@ -546,6 +551,298 @@ function GstInvoiceHistory() {
     ]).then(([sigDataUrl, qrDataUrl]) => {
       drawBottomSection(qrDataUrl, sigDataUrl);
     });
+  };
+
+  const handleDownloadPDF = (invoice) => {
+    buildGSTPDF(invoice, true);
+  };
+
+  const handleView = (invoice) => {
+    buildGSTPDF(invoice, false);
+  };
+
+  const getInvoicePartyPhone = (invoice) => {
+    const rawPhone = invoice.partyPhone || invoice.partyShippingPhone || invoice.phone || invoice.mobile || '';
+    const digits = String(rawPhone).replace(/[^0-9]/g, '');
+    if (!digits) return '';
+    if (digits.length === 10) return `91${digits}`;
+    if (digits.length === 12 && digits.startsWith('91')) return digits;
+    return digits;
+  };
+
+  const shareInvoiceWhatsApp = async (invoice) => {
+    const text = `Hello ${invoice.partyName || ''},\nHere is your GST Invoice details:\nInvoice No: ${invoice.invoiceNumber}\nDate: ${formatDDMMYYYY(invoice.date)}\nTotal Amount: ₹${invoice.grandTotal?.toFixed(2)}\nPaid: ₹${(invoice.paidAmount || 0).toFixed(2)}\nDue: ₹${(invoice.due || 0).toFixed(2)}\n\nThank you for doing business with NEW MONDAL PLUMBING AND SANITATION!`;
+    const cleanPhone = getInvoicePartyPhone(invoice);
+
+    try {
+      // Build PDF document for attachment
+      const pdfDoc = new jsPDF();
+      pdfDoc.setFont('helvetica');
+
+      pdfDoc.setFontSize(16);
+      pdfDoc.setFont('helvetica', 'bold');
+      pdfDoc.setTextColor(0, 0, 0);
+      pdfDoc.text('NEW MONDAL PLUMBING AND SANITATION', 20, 20);
+      pdfDoc.setFontSize(8.5);
+      pdfDoc.setFont('helvetica', 'normal');
+      pdfDoc.text('Vill+P.O- Uttardeepur, P.S- Diamond Harbour, Dist- South 24 Parganas, Pin- 743331', 20, 25);
+      pdfDoc.text('Mobile: 9732738873 / 9735824593 | Email: mondalplumbing2024@gmail.com', 20, 29);
+      pdfDoc.line(20, 32, 190, 32);
+
+      pdfDoc.setFontSize(13);
+      pdfDoc.setFont('helvetica', 'bold');
+      pdfDoc.text('TAX INVOICE', 105, 39, { align: 'center' });
+      pdfDoc.rect(20, 43, 170, 27);
+      pdfDoc.line(125, 43, 125, 70);
+
+      pdfDoc.setFontSize(8.5);
+      pdfDoc.setFont('helvetica', 'bold');
+      pdfDoc.text('Billed To / Customer Details:', 22, 48);
+      pdfDoc.setFont('helvetica', 'normal');
+      pdfDoc.text('Name: ' + (invoice.partyName || 'N/A'), 22, 53);
+      pdfDoc.text('Address: ' + (invoice.partyAddress || 'N/A'), 22, 58);
+      pdfDoc.text('Phone: ' + (invoice.partyPhone || 'N/A'), 22, 63);
+      pdfDoc.text('GSTIN: ' + (invoice.partyGstin || 'URD (Unregistered)'), 22, 67);
+
+      pdfDoc.setFont('helvetica', 'normal');
+      pdfDoc.setFontSize(8);
+      pdfDoc.text('Invoice No. - ' + invoice.invoiceNumber, 127, 49);
+      pdfDoc.text('Invoice Date - ' + formatDDMMYYYY(invoice.date), 127, 54);
+
+      const tableData = (invoice.items || []).map((item, index) => [
+        String(index + 1),
+        item.name + (item.variationSize ? ` (${item.variationSize})` : ''),
+        item.hsnCode || item.hsn || '',
+        String(item.quantity || 1),
+        (item.mrp || 0).toFixed(2),
+        (item.taxablePrice || 0).toFixed(2),
+        `${item.gstRate || 18}%`,
+        (item.gstAmount || 0).toFixed(2),
+        (item.finalPrice || 0).toFixed(2),
+        `${item.discountPercent || 0}%`,
+        (item.discountAmount || 0).toFixed(2),
+        (item.rowAmount || 0).toFixed(2)
+      ]);
+
+      pdfDoc.autoTable({
+        startY: 75,
+        head: [[
+          'SL No', 'Item Name', 'HSN', 'Qty', 'MRP', 'Taxable Price', 'GST %', 'GST AMT', 'Final Price', 'Disc %', 'Disc AMT', 'Amount'
+        ]],
+        body: tableData,
+        theme: 'grid',
+        headStyles: { fillColor: [44, 62, 80], textColor: [255, 255, 255], fontSize: 7 }
+      });
+
+      const pdfBlob = pdfDoc.output('blob');
+      const safeNumStr = String(invoice.invoiceNumber).replace(/[/\\?%*:|"<>]/g, '_');
+      const file = new File([pdfBlob], `GST_Invoice_${safeNumStr}.pdf`, { type: 'application/pdf' });
+
+      // Try native Web Share API with file + text (supported in mobile browsers & modern apps)
+      if (navigator.canShare && navigator.canShare({ files: [file] })) {
+        await navigator.share({
+          title: `GST Invoice ${invoice.invoiceNumber}`,
+          text: text,
+          files: [file]
+        });
+        return;
+      }
+    } catch (err) {
+      console.warn('Web Share with PDF file not supported/cancelled, falling back to direct link:', err);
+    }
+
+    // Fallback to WhatsApp Business direct message link
+    const encodedText = encodeURIComponent(text);
+    const businessUrl = cleanPhone 
+      ? `whatsapp://send?phone=${cleanPhone}&text=${encodedText}`
+      : `whatsapp://send?text=${encodedText}`;
+    const webUrl = cleanPhone 
+      ? `https://api.whatsapp.com/send?phone=${cleanPhone}&text=${encodedText}`
+      : `https://api.whatsapp.com/send?text=${encodedText}`;
+
+    const win = window.open(businessUrl, '_blank');
+    if (!win || win.closed || typeof win.closed === 'undefined') {
+      window.open(webUrl, '_blank');
+    }
+  };
+
+  const sendDueReminder = async (invoice) => {
+    const dueAmount = invoice.due !== undefined ? invoice.due : Math.max(0, (invoice.grandTotal || 0) - (invoice.paidAmount || 0));
+    const customerName = invoice.partyName || 'Customer';
+    const invoiceNo = invoice.invoiceNumber || '';
+    const invoiceDate = formatDDMMYYYY(invoice.date);
+    const totalAmount = (invoice.grandTotal || 0).toFixed(2);
+    const paidAmount = (invoice.paidAmount || 0).toFixed(2);
+    const dueAmountStr = dueAmount.toFixed(2);
+    const businessName = 'NEW MONDAL PLUMBING AND SANITATION';
+
+    const text = `Hello ${customerName},
+This is a reminder regarding your pending payment.
+Invoice No: ${invoiceNo}
+Invoice Date: ${invoiceDate}
+Total Amount: ₹${totalAmount}
+Paid: ₹${paidAmount}
+*Due Amount: ₹${dueAmountStr}*
+Kindly clear the outstanding amount at your earliest convenience.
+Pay at : 9434504491@ybl
+Thank you for your business. 🙏
+*${businessName}*`;
+
+    const cleanPhone = getInvoicePartyPhone(invoice);
+    const encodedText = encodeURIComponent(text);
+
+    if (!cleanPhone) {
+      alert(`No phone number found for party: ${customerName}`);
+      return;
+    }
+
+    try {
+      let qrBlob;
+      try {
+        const response = await fetch('/qr_code.png');
+        if (response.ok) {
+          qrBlob = await response.blob();
+        }
+      } catch (e) {
+        console.warn('Fetch /qr_code.png failed, attempting canvas generation:', e);
+      }
+
+      if (!qrBlob) {
+        // Fallback: draw QR image onto canvas to produce PNG Blob
+        const img = new Image();
+        img.crossOrigin = 'Anonymous';
+        await new Promise((resolve) => {
+          img.onload = resolve;
+          img.onerror = resolve;
+          img.src = '/qr_code.png';
+        });
+        if (img.width > 0) {
+          const canvas = document.createElement('canvas');
+          canvas.width = img.width;
+          canvas.height = img.height;
+          const ctx = canvas.getContext('2d');
+          ctx.drawImage(img, 0, 0);
+          qrBlob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/png'));
+        }
+      }
+
+      if (qrBlob) {
+        const qrFile = new File([qrBlob], 'payment_qr_code.png', { type: 'image/png' });
+
+        if (navigator.share) {
+          const shareData = {
+            title: `Due Payment Reminder - ${invoiceNo}`,
+            text: text
+          };
+          if (navigator.canShare && navigator.canShare({ files: [qrFile] })) {
+            shareData.files = [qrFile];
+          }
+          await navigator.share(shareData);
+          return;
+        }
+      }
+    } catch (err) {
+      console.warn('Web Share with QR image file failed or cancelled:', err);
+    }
+
+    // Direct WhatsApp web link fallback
+    const waUrl = `https://api.whatsapp.com/send?phone=${cleanPhone}&text=${encodedText}`;
+    window.open(waUrl, '_blank');
+  };
+
+  const shareEpsonSmartPanel = async (invoice) => {
+    try {
+      // Create invoice PDF blob for Web Share API or Epson URI scheme
+      const pdfDoc = new jsPDF();
+      pdfDoc.setFont('helvetica');
+      
+      pdfDoc.setFontSize(16);
+      pdfDoc.setFont('helvetica', 'bold');
+      pdfDoc.text('NEW MONDAL PLUMBING AND SANITATION', 20, 20);
+      pdfDoc.setFontSize(8.5);
+      pdfDoc.setFont('helvetica', 'normal');
+      pdfDoc.text('Vill+P.O- Uttardeepur, P.S- Diamond Harbour, Dist- South 24 Parganas, Pin- 743331', 20, 25);
+      pdfDoc.text('Mobile: 9732738873 / 9735824593 | Email: mondalplumbing2024@gmail.com', 20, 29);
+      pdfDoc.line(20, 32, 190, 32);
+
+      pdfDoc.setFontSize(13);
+      pdfDoc.setFont('helvetica', 'bold');
+      pdfDoc.text('TAX INVOICE', 105, 39, { align: 'center' });
+      pdfDoc.rect(20, 43, 170, 27);
+      pdfDoc.line(125, 43, 125, 70);
+
+      pdfDoc.setFontSize(8.5);
+      pdfDoc.setFont('helvetica', 'bold');
+      pdfDoc.text('Billed To / Customer Details:', 22, 48);
+      pdfDoc.setFont('helvetica', 'normal');
+      pdfDoc.text('Name: ' + (invoice.partyName || 'N/A'), 22, 53);
+      pdfDoc.text('Address: ' + (invoice.partyAddress || 'N/A'), 22, 58);
+      pdfDoc.text('Phone: ' + (invoice.partyPhone || 'N/A'), 22, 63);
+      pdfDoc.text('GSTIN: ' + (invoice.partyGstin || 'URD (Unregistered)'), 22, 67);
+
+      pdfDoc.setFont('helvetica', 'normal');
+      pdfDoc.setFontSize(8);
+      pdfDoc.text('Invoice No. - ' + invoice.invoiceNumber, 127, 49);
+      pdfDoc.text('Invoice Date - ' + formatDDMMYYYY(invoice.date), 127, 54);
+
+      const tableData = (invoice.items || []).map((item, index) => [
+        String(index + 1),
+        item.name + (item.variationSize ? ` (${item.variationSize})` : ''),
+        item.hsnCode || item.hsn || '',
+        String(item.quantity || 1),
+        (item.mrp || 0).toFixed(2),
+        (item.taxablePrice || 0).toFixed(2),
+        `${item.gstRate || 18}%`,
+        (item.gstAmount || 0).toFixed(2),
+        (item.finalPrice || 0).toFixed(2),
+        `${item.discountPercent || 0}%`,
+        (item.discountAmount || 0).toFixed(2),
+        (item.rowAmount || 0).toFixed(2)
+      ]);
+
+      pdfDoc.autoTable({
+        startY: 75,
+        head: [[
+          'SL No', 'Item Name', 'HSN', 'Qty', 'MRP', 'Taxable Price', 'GST %', 'GST AMT', 'Final Price', 'Disc %', 'Disc AMT', 'Amount'
+        ]],
+        body: tableData,
+        theme: 'grid',
+        headStyles: { fillColor: [44, 62, 80], textColor: [255, 255, 255], fontSize: 7 }
+      });
+
+      const pdfBlob = pdfDoc.output('blob');
+      const safeNumStr = String(invoice.invoiceNumber).replace(/[/\\?%*:|"<>]/g, '_');
+      const file = new File([pdfBlob], `GST_Invoice_${safeNumStr}.pdf`, { type: 'application/pdf' });
+
+      if (navigator.canShare && navigator.canShare({ files: [file] })) {
+        await navigator.share({
+          files: [file],
+          title: `GST Invoice ${invoice.invoiceNumber}`,
+          text: `Epson Smart Panel - Print GST Invoice ${invoice.invoiceNumber}`
+        });
+      } else {
+        // Fallback for Epson app scheme / browser print view
+        const epsonSchemeUrl = `epsoniprint://print?file=${encodeURIComponent(URL.createObjectURL(pdfBlob))}`;
+        window.open(epsonSchemeUrl, '_blank') || window.open(URL.createObjectURL(pdfBlob), '_blank');
+      }
+    } catch (err) {
+      console.error('Error sharing with Epson Smart Panel:', err);
+      // Open PDF in new tab as fallback
+      handleDownloadPDF(invoice);
+    }
+  };
+
+  const deleteInvoice = async (invoiceId) => {
+    if (!window.confirm('Are you sure you want to delete this GST invoice? This action cannot be undone.')) {
+      return;
+    }
+    try {
+      await deleteDoc(doc(db, 'gst_invoices', invoiceId));
+      alert('GST Invoice deleted successfully.');
+    } catch (err) {
+      console.error('Error deleting GST invoice:', err);
+      alert('Failed to delete GST invoice.');
+    }
   };
 
   // Filters logic
@@ -562,14 +859,19 @@ function GstInvoiceHistory() {
       dateMatch = dateMatch && inv.date <= endDate;
     }
 
-    return textMatch && dateMatch;
+    let dueMatch = true;
+    if (showDueOnly) {
+      dueMatch = (inv.due || 0) > 0;
+    }
+
+    return textMatch && dateMatch && dueMatch;
   });
 
   return (
     <div className="stock-management"> {/* Reuse styles for card panels and layout */}
       <h2>GST Invoice History</h2>
 
-      <div style={{ display: 'flex', gap: '15px', flexWrap: 'wrap', marginBottom: '20px', background: '#fff', padding: '15px', borderRadius: '8px', border: '1px solid #eee' }}>
+      <div style={{ display: 'flex', gap: '15px', flexWrap: 'wrap', alignItems: 'center', marginBottom: '20px', background: '#fff', padding: '15px', borderRadius: '8px', border: '1px solid #eee' }}>
         <div style={{ flex: 2, minWidth: '250px' }}>
           <label style={{ display: 'block', marginBottom: '5px', fontSize: '0.85em', color: '#666', fontWeight: 'bold' }}>Search Invoices</label>
           <input
@@ -598,11 +900,23 @@ function GstInvoiceHistory() {
             style={{ padding: '8px', border: '1px solid #ddd', borderRadius: '4px' }}
           />
         </div>
-        <div style={{ display: 'flex', alignItems: 'flex-end' }}>
+        <div style={{ display: 'flex', alignItems: 'center', marginTop: '20px', gap: '6px' }}>
+          <input
+            type="checkbox"
+            id="showDueOnly"
+            checked={showDueOnly}
+            onChange={(e) => setShowDueOnly(e.target.checked)}
+            style={{ width: '16px', height: '16px', cursor: 'pointer', accentColor: '#e74c3c' }}
+          />
+          <label htmlFor="showDueOnly" style={{ margin: 0, fontSize: '0.9em', fontWeight: 600, color: '#e74c3c', cursor: 'pointer' }}>
+            Show Due Bills Only
+          </label>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'flex-end', marginTop: '20px' }}>
           <button 
-            onClick={() => { setSearchQuery(''); setStartDate(''); setEndDate(''); }}
+            onClick={() => { setSearchQuery(''); setStartDate(''); setEndDate(''); setShowDueOnly(false); }}
             className="remove-btn" 
-            style={{ padding: '9px 15px', whiteSpace: 'nowrap' }}
+            style={{ padding: '8px 14px', whiteSpace: 'nowrap' }}
           >
             Clear Filters
           </button>
@@ -622,6 +936,7 @@ function GstInvoiceHistory() {
                   <th>Invoice No</th>
                   <th>Date</th>
                   <th>Customer Name</th>
+                  <th>Phone No</th>
                   <th>Taxable Total</th>
                   <th>Total Tax</th>
                   <th>Grand Total</th>
@@ -634,8 +949,9 @@ function GstInvoiceHistory() {
                 {filteredInvoices.map((inv) => (
                   <tr key={inv.id}>
                     <td><strong>{inv.invoiceNumber}</strong></td>
-                    <td>{new Date(inv.date).toLocaleDateString('en-GB')}</td>
+                    <td>{formatDDMMYYYY(inv.date)}</td>
                     <td>{inv.partyName}</td>
+                    <td>{inv.partyPhone || inv.partyShippingPhone || inv.phone || '—'}</td>
                     <td>₹{inv.taxableTotal?.toFixed(2)}</td>
                     <td>₹{inv.totalTax?.toFixed(2)}</td>
                     <td><strong style={{ color: '#2c3e50' }}>₹{inv.grandTotal?.toFixed(2)}</strong></td>
@@ -643,14 +959,209 @@ function GstInvoiceHistory() {
                     <td style={{ color: inv.due > 0 ? '#e74c3c' : '#27ae60', fontWeight: 'bold' }}>
                       ₹{inv.due?.toFixed(2)}
                     </td>
-                    <td>
-                      <button 
-                        onClick={() => handlePrint(inv)} 
-                        className="add-product-btn" 
-                        style={{ padding: '4px 10px', fontSize: '0.85em', width: 'auto' }}
+                    <td style={{ textAlign: 'center' }}>
+                      <div
+                        style={{
+                          display: 'flex',
+                          gap: '6px',
+                          flexWrap: 'nowrap',
+                          alignItems: 'center',
+                          justifyContent: 'center'
+                        }}
                       >
-                        🖨️ Reprint
-                      </button>
+                        <button
+                          type="button"
+                          className="low-stock-more-btn"
+                          style={{
+                            padding: '4px 10px',
+                            fontSize: '12px',
+                            fontWeight: 600,
+                            borderRadius: '4px',
+                            border: '1px solid #ccc',
+                            background: '#fff',
+                            cursor: 'pointer',
+                            color: '#333'
+                          }}
+                          onClick={() => handleView(inv)}
+                          title="View"
+                        >
+                          View
+                        </button>
+                        <button
+                          type="button"
+                          className="low-stock-more-btn"
+                          style={{
+                            padding: '4px 10px',
+                            fontSize: '12px',
+                            fontWeight: 600,
+                            borderRadius: '4px',
+                            border: '1px solid #d63384',
+                            background: '#e83e8c',
+                            cursor: 'pointer',
+                            color: '#fff'
+                          }}
+                          onClick={() => handleDownloadPDF(inv)}
+                          title="Print / Download PDF"
+                        >
+                          Print
+                        </button>
+                        <div
+                          className="po-menu-container"
+                          style={{ position: 'relative', display: 'inline-flex' }}
+                        >
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setOpenShareInvoiceId(null);
+                              setOpenMenuInvoiceId(
+                                openMenuInvoiceId === inv.id ? null : inv.id
+                              );
+                            }}
+                            style={{
+                              background: 'none',
+                              border: 'none',
+                              cursor: 'pointer',
+                              fontSize: '18px',
+                              padding: '4px 6px',
+                              color: '#333',
+                              display: 'flex',
+                              flexDirection: 'column',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              borderRadius: '4px',
+                              fontWeight: 'bold',
+                              lineHeight: '0.45',
+                              gap: '2px'
+                            }}
+                            title="More options"
+                          >
+                            <span>•</span>
+                            <span>•</span>
+                            <span>•</span>
+                          </button>
+                          {openMenuInvoiceId === inv.id && (
+                            <div
+                              style={{
+                                position: 'absolute',
+                                top: '100%',
+                                right: 0,
+                                backgroundColor: 'white',
+                                border: '1px solid #ddd',
+                                borderRadius: '5px',
+                                boxShadow: '0 2px 8px rgba(0,0,0,0.15)',
+                                zIndex: 1000,
+                                minWidth: '150px',
+                                marginTop: '4px',
+                                overflow: 'hidden'
+                              }}
+                            >
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setOpenMenuInvoiceId(null);
+                                  // Load invoice into GST Bill Generation screen for full editing without saving to draft list automatically
+                                  const editData = {
+                                    editingInvoiceId: inv.id,
+                                    invoiceNumber: inv.invoiceNumber,
+                                    partyId: inv.partyId,
+                                    partyName: inv.partyName,
+                                    cart: (inv.items || []).map(item => ({
+                                      ...item,
+                                      cartItemId: item.cartItemId || item.id || `item_${Date.now()}_${Math.random()}`
+                                    })),
+                                    invoiceForm: {
+                                      date: inv.date || new Date().toISOString().split('T')[0],
+                                      discount: String(inv.discount || ''),
+                                      paidAmount: String(inv.paidAmount || '')
+                                    },
+                                    adjustments: inv.adjustments || []
+                                  };
+                                  try {
+                                    localStorage.setItem('mondal_gst_active_edit', JSON.stringify(editData));
+                                  } catch (err) {
+                                    console.error('Error setting active edit payload:', err);
+                                  }
+                                  navigate('/dashboard/gst-bills');
+                                }}
+                                style={{
+                                  width: '100%',
+                                  padding: '10px 15px',
+                                  border: 'none',
+                                  background: 'none',
+                                  textAlign: 'left',
+                                  cursor: 'pointer',
+                                  fontSize: '14px',
+                                  color: '#333'
+                                }}
+                                onMouseEnter={(e) => {
+                                  e.currentTarget.style.backgroundColor = '#f5f5f5';
+                                }}
+                                onMouseLeave={(e) => {
+                                  e.currentTarget.style.backgroundColor = 'white';
+                                }}
+                              >
+                                ✏️ Edit
+                              </button>
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setOpenMenuInvoiceId(null);
+                                  sendDueReminder(inv);
+                                }}
+                                style={{
+                                  width: '100%',
+                                  padding: '10px 15px',
+                                  border: 'none',
+                                  background: 'none',
+                                  textAlign: 'left',
+                                  cursor: 'pointer',
+                                  fontSize: '14px',
+                                  color: '#e67e22',
+                                  borderTop: '1px solid #eee'
+                                }}
+                                onMouseEnter={(e) => {
+                                  e.currentTarget.style.backgroundColor = '#fff8f0';
+                                }}
+                                onMouseLeave={(e) => {
+                                  e.currentTarget.style.backgroundColor = 'white';
+                                }}
+                              >
+                                🔔 Due Reminder
+                              </button>
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setOpenMenuInvoiceId(null);
+                                  deleteInvoice(inv.id);
+                                }}
+                                style={{
+                                  width: '100%',
+                                  padding: '10px 15px',
+                                  border: 'none',
+                                  background: 'none',
+                                  textAlign: 'left',
+                                  cursor: 'pointer',
+                                  fontSize: '14px',
+                                  color: '#dc3545',
+                                  borderTop: '1px solid #eee'
+                                }}
+                                onMouseEnter={(e) => {
+                                  e.currentTarget.style.backgroundColor = '#fff5f5';
+                                }}
+                                onMouseLeave={(e) => {
+                                  e.currentTarget.style.backgroundColor = 'white';
+                                }}
+                              >
+                                🗑️ Delete
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      </div>
                     </td>
                   </tr>
                 ))}
