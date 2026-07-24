@@ -254,10 +254,6 @@ function BillGeneration() {
     const customerName = bill.fullName || bill.customerName || 'Customer';
     const billNo = bill.billNumber || bill.id.slice(0, 8);
     const billDate = bill.date || '';
-    const subtotal = getOriginalBillSubtotal(bill);
-    const discount = getOriginalBillDiscount(bill);
-    const totalAmount = (subtotal - discount).toFixed(2);
-    const paidAmount = (parseFloat(bill.paidAmount) || 0).toFixed(2);
     const dueAmountStr = finalDue.toFixed(2);
     const businessName = 'NEW MONDAL PLUMBING AND SANITATION';
 
@@ -1917,7 +1913,6 @@ Thank you for your business. 🙏
       pdfDoc.setFont('helvetica');
       
       // Company Information
-      const companyName = 'MONDAL PLUMBING & SANITATION';
       const companyAddress = '89 Road, Chintamani Para, Diamond Harbour';
       const companyEmail = 'mondalplumbingandsanitation@gmail.com';
       const companyPhone = '9434504491';
@@ -2160,7 +2155,6 @@ Thank you for your business. 🙏
       let initialDue = getInitialDueForBill(billToDownload);
       const returnedItems = billToDownload.returnedItems || [];
       const dueHistory = billToDownload.dueHistory || [];
-      const currentOutstandingDue = parseFloat(billToDownload.due || 0);
       
       const paidAmount = billToDownload.paidAmount !== undefined ? parseFloat(billToDownload.paidAmount) : (initialDue > 0 ? (total - initialDue) : total);
       pdfDoc.text('Paid Rs.', 150, summaryY, { align: 'right' });
@@ -2391,7 +2385,6 @@ Thank you for your business. 🙏
       pdfDoc.setFont('helvetica');
       
       // Company Information
-      const companyName = 'MONDAL PLUMBING & SANITATION';
       const companyAddress = '89 Road, Chintamani Para, Diamond Harbour';
       const companyEmail = 'mondalplumbingandsanitation@gmail.com';
       const companyPhone = '9434504491';
@@ -2634,7 +2627,6 @@ Thank you for your business. 🙏
       let initialDue = getInitialDueForBill(billToPrint);
       const returnedItems = billToPrint.returnedItems || [];
       const dueHistory = billToPrint.dueHistory || [];
-      const currentOutstandingDue = parseFloat(billToPrint.due || 0);
       
       const paidAmount = billToPrint.paidAmount !== undefined ? parseFloat(billToPrint.paidAmount) : (initialDue > 0 ? (total - initialDue) : total);
       pdfDoc.text('Paid Rs.', 150, summaryY, { align: 'right' });

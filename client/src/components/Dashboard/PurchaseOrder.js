@@ -736,43 +736,7 @@ function PurchaseOrder() {
     setPreviewSearchQuery('');
   };
 
-  const shareOrderOnWhatsApp = (order) => {
-    let dateLabel = '-';
-    if (order.date) {
-      dateLabel = order.date.includes('.')
-        ? order.date
-        : formatDateDDMMYYYY(new Date(order.date));
-    } else if (order.createdAt?.toDate) {
-      dateLabel = formatDateDDMMYYYY(order.createdAt.toDate());
-    }
 
-    const orderNumber =
-      order.orderNumber || formatPurchaseOrderNumber(getOrderNumberValueFromOrder(order, 0));
-    const nameLabel = order.name || '';
-    const items = Array.isArray(order.items) ? order.items : [];
-
-    const lines = items
-      .map((it, idx) => {
-        const qty = it.quantityText != null ? it.quantityText : it.quantity;
-        if (qty == null || String(qty).trim() === '') return null;
-        const unit = it.orderUnit || it.unit || '';
-        const qtyLabel = unit ? `${qty} ${unit}` : String(qty);
-        return `${idx + 1}. ${it.name || 'Item'} — ${qtyLabel}`;
-      })
-      .filter(Boolean);
-
-    if (lines.length === 0) {
-      alert('This purchase order has no items with quantity to share.');
-      return;
-    }
-
-    let message = `*Purchase Order*\n${orderNumber}\nDate: ${dateLabel}`;
-    if (nameLabel) message += `\nName: ${nameLabel}`;
-    message += `\n\n*Items:*\n${lines.join('\n')}`;
-
-    const url = `https://wa.me/?text=${encodeURIComponent(message)}`;
-    window.open(url, '_blank', 'noopener,noreferrer');
-  };
 
   const goToPreview = () => {
     const items = [];

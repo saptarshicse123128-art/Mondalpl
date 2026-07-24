@@ -499,7 +499,6 @@ function GstBillGeneration() {
 
   const handleEditValueChange = (field, value, item) => {
     const mrp = parseFloat(item.mrp) || 0;
-    const gstRateVal = item.gstRate || 18;
 
     let updated = { ...editingCartValues, [field]: value };
 
