@@ -556,6 +556,10 @@ function GstInvoiceHistory() {
     buildGSTPDF(invoice, true);
   };
 
+  const handleView = (invoice) => {
+    buildGSTPDF(invoice, false);
+  };
+
   const getInvoicePartyPhone = (invoice) => {
     const rawPhone = invoice.partyPhone || invoice.partyShippingPhone || invoice.phone || invoice.mobile || '';
     const digits = String(rawPhone).replace(/[^0-9]/g, '');
