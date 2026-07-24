@@ -556,10 +556,6 @@ function GstInvoiceHistory() {
     buildGSTPDF(invoice, true);
   };
 
-  const handleView = (invoice) => {
-    buildGSTPDF(invoice, false);
-  };
-
   const getInvoicePartyPhone = (invoice) => {
     const rawPhone = invoice.partyPhone || invoice.partyShippingPhone || invoice.phone || invoice.mobile || '';
     const digits = String(rawPhone).replace(/[^0-9]/g, '');
@@ -567,6 +563,59 @@ function GstInvoiceHistory() {
     if (digits.length === 10) return `91${digits}`;
     if (digits.length === 12 && digits.startsWith('91')) return digits;
     return digits;
+  };
+
+  const sendDueReminder = async (invoice) => {
+    const dueAmount = invoice.due !== undefined ? invoice.due : Math.max(0, (invoice.grandTotal || 0) - (invoice.paidAmount || 0));
+    const customerName = invoice.partyName || 'Customer';
+    const invoiceNo = invoice.invoiceNumber || '';
+    const invoiceDate = formatDDMMYYYY(invoice.date);
+    const dueAmountStr = dueAmount.toFixed(2);
+    const businessName = 'NEW MONDAL PLUMBING AND SANITATION';
+
+    const text = `Hello ${customerName},
+This is a reminder regarding your pending payment.
+Invoice No: ${invoiceNo}
+Invoice Date: ${invoiceDate}
+*Due Amount: ₹${dueAmountStr}*
+Kindly clear the outstanding amount at your earliest convenience.
+Pay at : 9434504491@ybl
+Thank you for your business. 🙏
+*${businessName}*`;
+
+    const cleanPhone = getInvoicePartyPhone(invoice);
+
+    if (!cleanPhone) {
+      alert(`No phone number found for party: ${customerName}`);
+      return;
+    }
+
+    try {
+      let qrBlob;
+      try {
+        const response = await fetch('/qr_code.png');
+        if (response.ok) {
+          qrBlob = await response.blob();
+        }
+      } catch (e) {
+        console.warn('Fetch /qr_code.png failed:', e);
+      }
+
+      if (qrBlob && navigator.share) {
+        const qrFile = new File([qrBlob], 'payment_qr_code.png', { type: 'image/png' });
+        const shareData = { title: `Due Payment Reminder - ${invoiceNo}`, text: text };
+        if (navigator.canShare && navigator.canShare({ files: [qrFile] })) {
+          shareData.files = [qrFile];
+        }
+        await navigator.share(shareData);
+        return;
+      }
+    } catch (err) {
+      console.warn('Web Share with QR image file failed:', err);
+    }
+
+    const waUrl = `https://api.whatsapp.com/send?phone=${cleanPhone}&text=${encodeURIComponent(text)}`;
+    window.open(waUrl, '_blank');
   };
 
   const deleteInvoice = async (invoiceId) => {
@@ -750,7 +799,6 @@ function GstInvoiceHistory() {
                             type="button"
                             onClick={(e) => {
                               e.stopPropagation();
-                              setOpenShareInvoiceId(null);
                               setOpenMenuInvoiceId(
                                 openMenuInvoiceId === inv.id ? null : inv.id
                               );
